@@ -3,7 +3,6 @@ Configuration du jeu Magic Pong
 """
 
 from dataclasses import dataclass
-from typing import Tuple
 
 
 @dataclass
@@ -44,17 +43,17 @@ class GameConfig:
 
     # Affichage
     FPS: int = 60
-    BACKGROUND_COLOR: Tuple[int, int, int] = (0, 0, 0)
-    BALL_COLOR: Tuple[int, int, int] = (255, 255, 255)
-    PADDLE_COLOR: Tuple[int, int, int] = (255, 255, 255)
+    BACKGROUND_COLOR: tuple[int, int, int] = (0, 0, 0)
+    BALL_COLOR: tuple[int, int, int] = (255, 255, 255)
+    PADDLE_COLOR: tuple[int, int, int] = (255, 255, 255)
     BONUS_COLORS: dict | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.BONUS_COLORS is None:
             self.BONUS_COLORS = {
-                'enlarge_paddle': (0, 255, 0),      # Vert
-                'shrink_opponent': (255, 0, 0),     # Rouge
-                'rotating_paddle': (0, 0, 255),     # Bleu
+                "enlarge_paddle": (0, 255, 0),  # Vert
+                "shrink_opponent": (255, 0, 0),  # Rouge
+                "rotating_paddle": (0, 0, 255),  # Bleu
             }
 
 
@@ -64,15 +63,15 @@ class AIConfig:
 
     # Observation space
     NORMALIZE_POSITIONS: bool = True  # Normaliser les positions entre -1 et 1
-    INCLUDE_VELOCITY: bool = True     # Inclure la vélocité de la balle
-    INCLUDE_HISTORY: bool = False     # Inclure l'historique des positions
-    HISTORY_LENGTH: int = 3           # Nombre de frames d'historique
+    INCLUDE_VELOCITY: bool = True  # Inclure la vélocité de la balle
+    INCLUDE_HISTORY: bool = False  # Inclure l'historique des positions
+    HISTORY_LENGTH: int = 3  # Nombre de frames d'historique
 
     # Reward system
     SCORE_REWARD: float = 1.0
     LOSE_PENALTY: float = -1.0
     BONUS_REWARD: float = 0.1
-    WALL_HIT_REWARD: float = 0.01     # Petit bonus pour toucher la balle
+    WALL_HIT_REWARD: float = 0.01  # Petit bonus pour toucher la balle
 
     # Training
     MAX_EPISODE_STEPS: int = 10000

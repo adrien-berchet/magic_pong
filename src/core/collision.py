@@ -3,17 +3,18 @@ Système de détection de collisions pour Magic Pong
 """
 
 import math
-from typing import Optional, Tuple, List
-from magic_pong.core.entities import Ball, Paddle, RotatingPaddle, Bonus, Vector2D
+from typing import Optional
+
+from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle, Vector2D
 
 
-def point_in_rect(point: Vector2D, rect: Tuple[float, float, float, float]) -> bool:
+def point_in_rect(point: Vector2D, rect: tuple[float, float, float, float]) -> bool:
     """Vérifie si un point est dans un rectangle"""
     x, y, width, height = rect
     return x <= point.x <= x + width and y <= point.y <= y + height
 
 
-def circle_rect_collision(ball: Ball, rect: Tuple[float, float, float, float]) -> bool:
+def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -> bool:
     """Détecte la collision entre un cercle (balle) et un rectangle"""
     x, y, width, height = rect
 
@@ -122,7 +123,7 @@ def apply_paddle_bounce(ball: Ball, paddle: Paddle) -> None:
 class CollisionDetector:
     """Gestionnaire principal des collisions"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def check_ball_walls(self, ball: Ball, field_width: float, field_height: float) -> str:
@@ -186,7 +187,7 @@ class CollisionDetector:
 
         return False
 
-    def check_player_bonus(self, paddle: Paddle, bonuses: List[Bonus]) -> List[Bonus]:
+    def check_player_bonus(self, paddle: Paddle, bonuses: list[Bonus]) -> list[Bonus]:
         """Vérifie les collisions joueur-bonus"""
         collected = []
         paddle_rect = paddle.get_rect()
@@ -196,11 +197,12 @@ class CollisionDetector:
                 bonus_rect = bonus.get_rect()
 
                 # Vérification simple de chevauchement des rectangles
-                if (paddle_rect[0] < bonus_rect[0] + bonus_rect[2] and
-                    paddle_rect[0] + paddle_rect[2] > bonus_rect[0] and
-                    paddle_rect[1] < bonus_rect[1] + bonus_rect[3] and
-                    paddle_rect[1] + paddle_rect[3] > bonus_rect[1]):
-
+                if (
+                    paddle_rect[0] < bonus_rect[0] + bonus_rect[2]
+                    and paddle_rect[0] + paddle_rect[2] > bonus_rect[0]
+                    and paddle_rect[1] < bonus_rect[1] + bonus_rect[3]
+                    and paddle_rect[1] + paddle_rect[3] > bonus_rect[1]
+                ):
                     bonus.collect()
                     collected.append(bonus)
 

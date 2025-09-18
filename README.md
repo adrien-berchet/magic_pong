@@ -33,8 +33,21 @@ Un jeu de Pong élaboré conçu spécialement pour l'entraînement d'intelligenc
 git clone <repository_url>
 cd magic_pong
 
-# Installer les dépendances
-pip install -r requirements.txt
+# Installation pour l'utilisation
+pip install -e .
+
+# Installation pour le développement (recommandé)
+pip install -e ".[dev]"
+
+# Installation complète (toutes les dépendances)
+pip install -e ".[all]"
+```
+
+### Installation avec Make
+
+```bash
+# Configuration complète pour le développement
+make dev-setup
 ```
 
 ## Utilisation Rapide
@@ -208,12 +221,111 @@ Classement:
 
 ## Développement
 
+### Outils de Développement
+
+Ce projet utilise les meilleures pratiques de développement Python avec des outils modernes :
+
+#### Tests
+```bash
+# Tests avec pytest
+make test
+
+# Tests avec couverture de code
+make test-cov
+
+# Tests sur toutes les versions Python avec tox
+make test-all
+tox
+```
+
+#### Qualité de Code
+```bash
+# Vérification du linting (ruff)
+make lint
+
+# Correction automatique des problèmes de linting
+make lint-fix
+
+# Formatage du code (black)
+make format
+
+# Vérification du formatage
+make format-check
+
+# Vérification des types (mypy)
+make type-check
+
+# Tous les contrôles qualité
+make quality
+
+# Correction automatique de tous les problèmes
+make quality-fix
+```
+
+#### Tox - Tests Multi-versions
+```bash
+# Tests sur Python 3.8
+tox -e py38
+
+# Tests sur Python 3.9
+tox -e py39
+
+# Tests sur Python 3.10
+tox -e py310
+
+# Tests sur Python 3.11
+tox -e py311
+
+# Tests sur Python 3.12
+tox -e py312
+
+# Linting avec tox
+tox -e lint
+
+# Formatage avec tox
+tox -e format
+
+# Vérification des types avec tox
+tox -e type-check
+```
+
+#### Pre-commit Hooks
+```bash
+# Installer les hooks pre-commit
+make pre-commit-install
+
+# Lancer pre-commit sur tous les fichiers
+make pre-commit-run
+
+# Mettre à jour les hooks
+make pre-commit-update
+```
+
+#### Nettoyage
+```bash
+# Nettoyer les fichiers temporaires
+make clean
+```
+
+### Configuration des Outils
+
+Les outils sont configurés dans [`pyproject.toml`](pyproject.toml) :
+
+- **Black** : Formatage automatique du code (ligne 100 caractères)
+- **Ruff** : Linting rapide et moderne (remplace flake8, isort, etc.)
+- **MyPy** : Vérification statique des types
+- **Pytest** : Framework de tests avec couverture de code
+- **Tox** : Tests sur plusieurs versions de Python
+- **Pre-commit** : Hooks de validation avant commit
+- **GitHub Actions** : Intégration continue automatisée
+
 ### Structure du Code
 
 - **Séparation claire** entre logique métier et affichage
 - **Architecture modulaire** et extensible
 - **Type hints** complets pour une meilleure maintenance
-- **Tests unitaires** (à venir)
+- **Tests unitaires** avec pytest et tox
+- **Intégration continue** prête avec les outils configurés
 
 ### Ajouter de Nouveaux Bonus
 

@@ -2,12 +2,14 @@
 Exemple d'entraînement IA vs IA pour Magic Pong
 """
 
-from magic_pong.core.game_engine import TrainingManager
+from typing import Any
+
 from magic_pong.ai.examples.simple_ai import create_ai
-from magic_pong.utils.config import game_config, ai_config
+from magic_pong.core.game_engine import TrainingManager
+from magic_pong.utils.config import ai_config, game_config
 
 
-def main():
+def main() -> None:
     """Exemple d'entraînement IA vs IA"""
 
     print("=== Magic Pong - Entraînement IA vs IA ===")
@@ -21,8 +23,8 @@ def main():
     trainer = TrainingManager(headless=True)
 
     # Créer les IA
-    player1 = create_ai('aggressive', 1, name="AggressiveAI_1")
-    player2 = create_ai('defensive', 2, name="DefensiveAI_1")
+    player1 = create_ai("aggressive", 1, name="AggressiveAI_1")
+    player2 = create_ai("defensive", 2, name="DefensiveAI_1")
 
     print(f"Joueur 1: {player1.name}")
     print(f"Joueur 2: {player2.name}")
@@ -52,8 +54,12 @@ def main():
     print("=== Statistiques finales ===")
     print(f"Total épisodes: {final_stats['episodes']}")
     print(f"Total steps: {final_stats['total_steps']}")
-    print(f"Victoires {player1.name}: {final_stats['player1_wins']} ({final_stats['player1_wins']/final_stats['episodes']*100:.1f}%)")
-    print(f"Victoires {player2.name}: {final_stats['player2_wins']} ({final_stats['player2_wins']/final_stats['episodes']*100:.1f}%)")
+    print(
+        f"Victoires {player1.name}: {final_stats['player1_wins']} ({final_stats['player1_wins']/final_stats['episodes']*100:.1f}%)"
+    )
+    print(
+        f"Victoires {player2.name}: {final_stats['player2_wins']} ({final_stats['player2_wins']/final_stats['episodes']*100:.1f}%)"
+    )
     print(f"Longueur moyenne des épisodes: {final_stats['average_episode_length']:.1f} steps")
     print(f"Récompense moyenne {player1.name}: {final_stats['average_rewards']['player1']:.3f}")
     print(f"Récompense moyenne {player2.name}: {final_stats['average_rewards']['player2']:.3f}")
@@ -65,7 +71,7 @@ def main():
     print(f"Stats IA {player2.name}: {p2_stats}")
 
 
-def tournament():
+def tournament() -> None:
     """Tournoi entre différents types d'IA"""
 
     print("=== Magic Pong - Tournoi d'IA ===")
@@ -75,8 +81,8 @@ def tournament():
     game_config.GAME_SPEED_MULTIPLIER = 10.0
 
     # Types d'IA à tester
-    ai_types = ['random', 'follow_ball', 'defensive', 'aggressive', 'predictive']
-    results = {}
+    ai_types = ["random", "follow_ball", "defensive", "aggressive", "predictive"]
+    results: dict[str, dict[str, Any]] = {}
 
     trainer = TrainingManager(headless=True)
 
@@ -99,19 +105,19 @@ def tournament():
 
             for game in range(total_games):
                 episode_stats = trainer.train_episode(player1, player2, max_steps=3000)
-                if episode_stats['winner'] == 1:
+                if episode_stats["winner"] == 1:
                     wins_p1 += 1
-                elif episode_stats['winner'] == 2:
+                elif episode_stats["winner"] == 2:
                     wins_p2 += 1
 
             # Enregistrer les résultats
             match_key = f"{ai1_type}_vs_{ai2_type}"
             results[match_key] = {
-                'player1': ai1_type,
-                'player2': ai2_type,
-                'wins_p1': wins_p1,
-                'wins_p2': wins_p2,
-                'total_games': total_games
+                "player1": ai1_type,
+                "player2": ai2_type,
+                "wins_p1": wins_p1,
+                "wins_p2": wins_p2,
+                "total_games": total_games,
             }
 
             print(f"  {ai1_type}: {wins_p1}/{total_games} victoires")
@@ -119,11 +125,11 @@ def tournament():
 
     # Afficher le classement
     print("\n=== Résultats du tournoi ===")
-    ai_scores = {ai_type: 0 for ai_type in ai_types}
+    ai_scores: dict[str, int] = dict.fromkeys(ai_types, 0)
 
     for match_key, result in results.items():
-        ai_scores[result['player1']] += result['wins_p1']
-        ai_scores[result['player2']] += result['wins_p2']
+        ai_scores[result["player1"]] += result["wins_p1"]
+        ai_scores[result["player2"]] += result["wins_p2"]
 
     # Trier par score
     sorted_ais = sorted(ai_scores.items(), key=lambda x: x[1], reverse=True)
@@ -137,8 +143,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Entraînement IA Magic Pong")
-    parser.add_argument("--mode", choices=["training", "tournament"], default="training",
-                       help="Mode d'exécution")
+    parser.add_argument(
+        "--mode", choices=["training", "tournament"], default="training", help="Mode d'exécution"
+    )
 
     args = parser.parse_args()
 

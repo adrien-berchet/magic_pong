@@ -3,12 +3,9 @@ Système de physique pour Magic Pong
 """
 
 import random
-import math
-from typing import List, Tuple
-import numpy as np
 
-from magic_pong.core.entities import Ball, Paddle, RotatingPaddle, Bonus, BonusType, Vector2D
 from magic_pong.core.collision import CollisionDetector
+from magic_pong.core.entities import Action, Ball, Bonus, BonusType, Paddle, RotatingPaddle
 from magic_pong.utils.config import game_config
 
 
@@ -21,7 +18,7 @@ class BonusSpawner:
         self.spawn_timer = 0.0
         self.spawn_interval = game_config.BONUS_SPAWN_INTERVAL
 
-    def update(self, dt: float, existing_bonuses: List[Bonus]) -> List[Bonus]:
+    def update(self, dt: float, existing_bonuses: list[Bonus]) -> list[Bonus]:
         """Met à jour le spawner et retourne les nouveaux bonus"""
         self.spawn_timer += dt
         new_bonuses = []
@@ -35,7 +32,7 @@ class BonusSpawner:
 
         return new_bonuses
 
-    def _spawn_symmetric_bonuses(self) -> List[Bonus]:
+    def _spawn_symmetric_bonuses(self) -> list[Bonus]:
         """Spawne des bonus de manière symétrique"""
         bonuses = []
 
@@ -66,28 +63,21 @@ class PhysicsEngine:
         self.bonus_spawner = BonusSpawner(field_width, field_height)
 
         # État du jeu
-        self.ball = Ball(
-            field_width / 2,
-            field_height / 2,
-            game_config.BALL_SPEED,
-            0
-        )
+        self.ball = Ball(field_width / 2, field_height / 2, game_config.BALL_SPEED, 0)
 
         self.player1 = Paddle(
-            game_config.PADDLE_MARGIN,
-            field_height / 2 - game_config.PADDLE_HEIGHT / 2,
-            1
+            game_config.PADDLE_MARGIN, field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
         )
 
         self.player2 = Paddle(
             field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
             field_height / 2 - game_config.PADDLE_HEIGHT / 2,
-            2
+            2,
         )
 
-        self.bonuses: List[Bonus] = []
-        self.rotating_paddles: List[RotatingPaddle] = []
-        self.score = [0, 0]
+        self.bonuses: list[Bonus] = []
+        self.rotating_paddles: list[RotatingPaddle] = []
+        self.score: list[int] = [0, 0]
         self.game_time = 0.0
 
         # Initialiser la balle avec une direction aléatoire
@@ -99,7 +89,7 @@ class PhysicsEngine:
             direction = random.choice([-1, 1])
         self.ball.reset_to_center(direction)
 
-    def update(self, dt: float, player1_action, player2_action) -> dict:
+    def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
         """Met à jour la physique du jeu"""
         # Appliquer le multiplicateur de vitesse
         effective_dt = dt * game_config.GAME_SPEED_MULTIPLIER
@@ -133,12 +123,12 @@ class PhysicsEngine:
 
     def _check_collisions(self) -> dict:
         """Vérifie toutes les collisions et retourne les événements"""
-        events = {
-            'wall_bounces': [],
-            'paddle_hits': [],
-            'goals': [],
-            'bonus_collected': [],
-            'rotating_paddle_hits': []
+        events: dict[str, list] = {
+            "wall_bounces": [],
+            "paddle_hits": [],
+            "goals": [],
+            "bonus_collected": [],
+            "rotating_paddle_hits": [],
         }
 
         # Collisions avec les murs
@@ -148,36 +138,33 @@ class PhysicsEngine:
 
         if wall_collision == "top" or wall_collision == "bottom":
             self.ball.bounce_vertical()
-            events['wall_bounces'].append(wall_collision)
+            events["wall_bounces"].append(wall_collision)
         elif wall_collision == "left_goal":
             self.score[1] += 1  # Point pour le joueur 2
-            events['goals'].append({'player': 2, 'score': self.score.copy()})
+            events["goals"].append({"player": 2, "score": self.score.copy()})
             self.reset_ball(1)  # Relancer vers la droite
         elif wall_collision == "right_goal":
             self.score[0] += 1  # Point pour le joueur 1
-            events['goals'].append({'player': 1, 'score': self.score.copy()})
+            events["goals"].append({"player": 1, "score": self.score.copy()})
             self.reset_ball(-1)  # Relancer vers la gauche
 
         # Collisions avec les raquettes
         if self.collision_detector.check_ball_paddle(self.ball, self.player1):
-            events['paddle_hits'].append({'player': 1})
+            events["paddle_hits"].append({"player": 1})
         if self.collision_detector.check_ball_paddle(self.ball, self.player2):
-            events['paddle_hits'].append({'player': 2})
+            events["paddle_hits"].append({"player": 2})
 
         # Collisions avec les raquettes tournantes
         for rp in self.rotating_paddles:
             if self.collision_detector.check_ball_rotating_paddle(self.ball, rp):
-                events['rotating_paddle_hits'].append({'player': rp.player_id})
+                events["rotating_paddle_hits"].append({"player": rp.player_id})
 
         # Collisions joueur-bonus
         for player, paddle in [(1, self.player1), (2, self.player2)]:
             collected = self.collision_detector.check_player_bonus(paddle, self.bonuses)
             for bonus in collected:
                 self._apply_bonus_effect(bonus.type, player)
-                events['bonus_collected'].append({
-                    'player': player,
-                    'type': bonus.type.value
-                })
+                events["bonus_collected"].append({"player": player, "type": bonus.type.value})
 
         return events
 
@@ -186,17 +173,13 @@ class PhysicsEngine:
         if bonus_type == BonusType.ENLARGE_PADDLE:
             # Élargir la raquette du joueur
             paddle = self.player1 if player == 1 else self.player2
-            paddle.apply_size_effect(
-                game_config.PADDLE_SIZE_MULTIPLIER,
-                game_config.BONUS_DURATION
-            )
+            paddle.apply_size_effect(game_config.PADDLE_SIZE_MULTIPLIER, game_config.BONUS_DURATION)
 
         elif bonus_type == BonusType.SHRINK_OPPONENT:
             # Rétrécir la raquette de l'adversaire
             opponent_paddle = self.player2 if player == 1 else self.player1
             opponent_paddle.apply_size_effect(
-                game_config.PADDLE_SIZE_REDUCER,
-                game_config.BONUS_DURATION
+                game_config.PADDLE_SIZE_REDUCER, game_config.BONUS_DURATION
             )
 
         elif bonus_type == BonusType.ROTATING_PADDLE:
@@ -216,23 +199,23 @@ class PhysicsEngine:
     def get_game_state(self) -> dict:
         """Retourne l'état complet du jeu"""
         return {
-            'ball_position': self.ball.position.to_tuple(),
-            'ball_velocity': self.ball.velocity.to_tuple(),
-            'player1_position': self.player1.position.to_tuple(),
-            'player2_position': self.player2.position.to_tuple(),
-            'player1_paddle_size': self.player1.height,
-            'player2_paddle_size': self.player2.height,
-            'active_bonuses': [
+            "ball_position": self.ball.position.to_tuple(),
+            "ball_velocity": self.ball.velocity.to_tuple(),
+            "player1_position": self.player1.position.to_tuple(),
+            "player2_position": self.player2.position.to_tuple(),
+            "player1_paddle_size": self.player1.height,
+            "player2_paddle_size": self.player2.height,
+            "active_bonuses": [
                 (bonus.position.x, bonus.position.y, bonus.type.value)
-                for bonus in self.bonuses if not bonus.collected
+                for bonus in self.bonuses
+                if not bonus.collected
             ],
-            'rotating_paddles': [
-                (rp.center.x, rp.center.y, rp.angle)
-                for rp in self.rotating_paddles
+            "rotating_paddles": [
+                (rp.center.x, rp.center.y, rp.angle) for rp in self.rotating_paddles
             ],
-            'score': self.score.copy(),
-            'time_elapsed': self.game_time,
-            'field_bounds': (0, self.field_width, 0, self.field_height)
+            "score": self.score.copy(),
+            "time_elapsed": self.game_time,
+            "field_bounds": (0, self.field_width, 0, self.field_height),
         }
 
     def is_game_over(self) -> bool:

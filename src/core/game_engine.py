@@ -2,12 +2,12 @@
 Moteur principal du jeu Magic Pong
 """
 
-from typing import Optional, Dict, Any, Tuple
 import time
+from typing import Any, Optional
 
-from magic_pong.core.physics import PhysicsEngine
+from magic_pong.ai.interface import AIPlayer, GameEnvironment
 from magic_pong.core.entities import Action
-from magic_pong.ai.interface import GameEnvironment
+from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config
 
 
@@ -16,10 +16,7 @@ class GameEngine:
 
     def __init__(self, headless: bool = False):
         self.headless = headless
-        self.physics_engine = PhysicsEngine(
-            game_config.FIELD_WIDTH,
-            game_config.FIELD_HEIGHT
-        )
+        self.physics_engine = PhysicsEngine(game_config.FIELD_WIDTH, game_config.FIELD_HEIGHT)
 
         # Environnement pour l'IA
         self.ai_environment = GameEnvironment(self.physics_engine, headless)
@@ -30,27 +27,27 @@ class GameEngine:
         self.last_update_time = 0.0
 
         # Joueurs (peuvent être humains ou IA)
-        self.player1 = None
-        self.player2 = None
+        self.player1: Optional[AIPlayer] = None
+        self.player2: Optional[AIPlayer] = None
 
         # Statistiques
         self.total_games = 0
         self.game_stats = {
-            'player1_wins': 0,
-            'player2_wins': 0,
-            'total_steps': 0,
-            'average_game_length': 0.0
+            "player1_wins": 0,
+            "player2_wins": 0,
+            "total_steps": 0,
+            "average_game_length": 0.0,
         }
 
-    def set_players(self, player1, player2) -> None:
+    def set_players(self, player1: Optional[AIPlayer], player2: Optional[AIPlayer]) -> None:
         """Définit les joueurs (humains ou IA)"""
         self.player1 = player1
         self.player2 = player2
 
         # Notifier les joueurs IA du début d'épisode
-        if hasattr(player1, 'on_episode_start'):
+        if player1 and hasattr(player1, "on_episode_start"):
             player1.on_episode_start()
-        if hasattr(player2, 'on_episode_start'):
+        if player2 and hasattr(player2, "on_episode_start"):
             player2.on_episode_start()
 
     def start_game(self) -> None:
@@ -68,9 +65,9 @@ class GameEngine:
         self.running = False
 
         # Notifier les joueurs IA de la fin d'épisode
-        if hasattr(self.player1, 'on_episode_end'):
+        if self.player1 and hasattr(self.player1, "on_episode_end"):
             self.player1.on_episode_end(0.0)
-        if hasattr(self.player2, 'on_episode_end'):
+        if self.player2 and hasattr(self.player2, "on_episode_end"):
             self.player2.on_episode_end(0.0)
 
     def pause_game(self) -> None:
@@ -79,7 +76,7 @@ class GameEngine:
         if not self.paused:
             self.last_update_time = time.time()
 
-    def update(self, dt: Optional[float] = None) -> Dict[str, Any]:
+    def update(self, dt: Optional[float] = None) -> dict[str, Any]:
         """
         Met à jour le jeu d'un frame
 
@@ -90,7 +87,7 @@ class GameEngine:
             Dict contenant les événements et l'état du jeu
         """
         if not self.running or self.paused:
-            return {'events': {}, 'game_state': self.physics_engine.get_game_state()}
+            return {"events": {}, "game_state": self.physics_engine.get_game_state()}
 
         # Calculer le delta time
         if dt is None:
@@ -109,82 +106,86 @@ class GameEngine:
         obs1, obs2, reward1, reward2, done, info = self.ai_environment.step(action1, action2)
 
         # Notifier les joueurs IA
-        if hasattr(self.player1, 'on_step'):
-            self.player1.on_step(obs1, action1, reward1, done, info)
-        if hasattr(self.player2, 'on_step'):
-            self.player2.on_step(obs2, action2, reward2, done, info)
+        if self.player1 and hasattr(self.player1, "on_step"):
+            # Créer une action par défaut si None
+            safe_action1 = action1 if action1 is not None else Action(move_x=0.0, move_y=0.0)
+            self.player1.on_step(obs1, safe_action1, reward1, done, info)
+        if self.player2 and hasattr(self.player2, "on_step"):
+            # Créer une action par défaut si None
+            safe_action2 = action2 if action2 is not None else Action(move_x=0.0, move_y=0.0)
+            self.player2.on_step(obs2, safe_action2, reward2, done, info)
 
         # Vérifier la fin de partie
         if done:
             self._handle_game_end(info)
 
         return {
-            'events': info['events'],
-            'game_state': info['game_state'],
-            'observations': {'player1': obs1, 'player2': obs2},
-            'rewards': {'player1': reward1, 'player2': reward2},
-            'done': done,
-            'info': info
+            "events": info["events"],
+            "game_state": info["game_state"],
+            "observations": {"player1": obs1, "player2": obs2},
+            "rewards": {"player1": reward1, "player2": reward2},
+            "done": done,
+            "info": info,
         }
 
-    def _get_player_action(self, player, player_id: int) -> Optional[Action]:
+    def _get_player_action(self, player: Optional[AIPlayer], player_id: int) -> Optional[Action]:
         """Obtient l'action d'un joueur"""
         if player is None:
             return None
 
-        if hasattr(player, 'get_action'):
+        if hasattr(player, "get_action"):
             # Joueur IA
             game_state = self.physics_engine.get_game_state()
             observation = self.ai_environment.observation_processor.process_game_state(
                 game_state, player_id
             )
-            return player.get_action(observation)
-        elif hasattr(player, 'get_human_action'):
+            action: Action = player.get_action(observation)
+            return action
+        elif hasattr(player, "get_human_action"):
             # Joueur humain (à implémenter avec l'interface graphique)
-            return player.get_human_action()
+            human_action: Optional[Action] = player.get_human_action()
+            return human_action
         else:
             return None
 
-    def _handle_game_end(self, info: Dict[str, Any]) -> None:
+    def _handle_game_end(self, info: dict[str, Any]) -> None:
         """Gère la fin d'une partie"""
-        winner = info.get('winner', 0)
+        winner = info.get("winner", 0)
 
         # Mettre à jour les statistiques
         self.total_games += 1
         if winner == 1:
-            self.game_stats['player1_wins'] += 1
+            self.game_stats["player1_wins"] += 1
         elif winner == 2:
-            self.game_stats['player2_wins'] += 1
+            self.game_stats["player2_wins"] += 1
 
-        self.game_stats['total_steps'] += info.get('step_count', 0)
-        self.game_stats['average_game_length'] = (
-            self.game_stats['total_steps'] / self.total_games
-        )
+        self.game_stats["total_steps"] += info.get("step_count", 0)
+        self.game_stats["average_game_length"] = self.game_stats["total_steps"] / self.total_games
 
         # Notifier les joueurs IA
-        if hasattr(self.player1, 'on_episode_end'):
+        if self.player1 and hasattr(self.player1, "on_episode_end"):
             final_reward = 1.0 if winner == 1 else -1.0 if winner == 2 else 0.0
             self.player1.on_episode_end(final_reward)
-        if hasattr(self.player2, 'on_episode_end'):
+        if self.player2 and hasattr(self.player2, "on_episode_end"):
             final_reward = 1.0 if winner == 2 else -1.0 if winner == 1 else 0.0
             self.player2.on_episode_end(final_reward)
 
         # Arrêter le jeu
         self.running = False
 
-    def get_game_state(self) -> Dict[str, Any]:
+    def get_game_state(self) -> dict[str, Any]:
         """Retourne l'état complet du jeu"""
         return self.physics_engine.get_game_state()
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Retourne les statistiques du jeu"""
-        stats = self.game_stats.copy()
+        stats: dict[str, Any] = self.game_stats.copy()
 
         # Ajouter les stats des joueurs IA
-        if hasattr(self.player1, 'get_stats'):
-            stats['player1_ai_stats'] = self.player1.get_stats()
-        if hasattr(self.player2, 'get_stats'):
-            stats['player2_ai_stats'] = self.player2.get_stats()
+        if self.player1 and hasattr(self.player1, "get_stats"):
+            stats["player1_ai_stats"] = self.player1.get_stats()
+        if self.player2 and hasattr(self.player2, "get_stats"):
+            stats["player2_ai_stats"] = self.player2.get_stats()
 
         return stats
 
@@ -192,10 +193,10 @@ class GameEngine:
         """Remet les statistiques à zéro"""
         self.total_games = 0
         self.game_stats = {
-            'player1_wins': 0,
-            'player2_wins': 0,
-            'total_steps': 0,
-            'average_game_length': 0.0
+            "player1_wins": 0,
+            "player2_wins": 0,
+            "total_steps": 0,
+            "average_game_length": 0.0,
         }
 
     def set_speed_multiplier(self, multiplier: float) -> None:
@@ -224,16 +225,18 @@ class TrainingManager:
 
     def __init__(self, headless: bool = True):
         self.game_engine = GameEngine(headless=headless)
-        self.training_stats = {
-            'episodes': 0,
-            'total_steps': 0,
-            'player1_wins': 0,
-            'player2_wins': 0,
-            'average_episode_length': 0.0,
-            'average_rewards': {'player1': 0.0, 'player2': 0.0}
+        self.training_stats: dict[str, Any] = {
+            "episodes": 0,
+            "total_steps": 0,
+            "player1_wins": 0,
+            "player2_wins": 0,
+            "average_episode_length": 0.0,
+            "average_rewards": {"player1": 0.0, "player2": 0.0},
         }
 
-    def train_episode(self, player1, player2, max_steps: int = 10000) -> Dict[str, Any]:
+    def train_episode(
+        self, player1: AIPlayer, player2: AIPlayer, max_steps: int = 10000
+    ) -> dict[str, Any]:
         """
         Entraîne une épisode complet
 
@@ -248,24 +251,24 @@ class TrainingManager:
         self.game_engine.set_players(player1, player2)
         self.game_engine.start_game()
 
-        episode_stats = {
-            'steps': 0,
-            'winner': 0,
-            'total_reward_p1': 0.0,
-            'total_reward_p2': 0.0,
-            'events': []
+        episode_stats: dict[str, Any] = {
+            "steps": 0,
+            "winner": 0,
+            "total_reward_p1": 0.0,
+            "total_reward_p2": 0.0,
+            "events": [],
         }
 
-        while self.game_engine.is_running() and episode_stats['steps'] < max_steps:
+        while self.game_engine.is_running() and episode_stats["steps"] < max_steps:
             result = self.game_engine.update()
 
-            episode_stats['steps'] += 1
-            episode_stats['total_reward_p1'] += result['rewards']['player1']
-            episode_stats['total_reward_p2'] += result['rewards']['player2']
-            episode_stats['events'].extend(result['events'].get('goals', []))
+            episode_stats["steps"] += 1
+            episode_stats["total_reward_p1"] += result["rewards"]["player1"]
+            episode_stats["total_reward_p2"] += result["rewards"]["player2"]
+            episode_stats["events"].extend(result["events"].get("goals", []))
 
-            if result['done']:
-                episode_stats['winner'] = result['info'].get('winner', 0)
+            if result["done"]:
+                episode_stats["winner"] = result["info"].get("winner", 0)
                 break
 
         # Mettre à jour les statistiques d'entraînement
@@ -273,42 +276,40 @@ class TrainingManager:
 
         return episode_stats
 
-    def _update_training_stats(self, episode_stats: Dict[str, Any]) -> None:
+    def _update_training_stats(self, episode_stats: dict[str, Any]) -> None:
         """Met à jour les statistiques d'entraînement"""
-        self.training_stats['episodes'] += 1
-        self.training_stats['total_steps'] += episode_stats['steps']
+        self.training_stats["episodes"] += 1
+        self.training_stats["total_steps"] += episode_stats["steps"]
 
-        if episode_stats['winner'] == 1:
-            self.training_stats['player1_wins'] += 1
-        elif episode_stats['winner'] == 2:
-            self.training_stats['player2_wins'] += 1
+        if episode_stats["winner"] == 1:
+            self.training_stats["player1_wins"] += 1
+        elif episode_stats["winner"] == 2:
+            self.training_stats["player2_wins"] += 1
 
         # Moyenne mobile des récompenses
         alpha = 0.01  # Facteur de lissage
-        self.training_stats['average_rewards']['player1'] = (
-            (1 - alpha) * self.training_stats['average_rewards']['player1'] +
-            alpha * episode_stats['total_reward_p1']
-        )
-        self.training_stats['average_rewards']['player2'] = (
-            (1 - alpha) * self.training_stats['average_rewards']['player2'] +
-            alpha * episode_stats['total_reward_p2']
+        self.training_stats["average_rewards"]["player1"] = (1 - alpha) * self.training_stats[
+            "average_rewards"
+        ]["player1"] + alpha * episode_stats["total_reward_p1"]
+        self.training_stats["average_rewards"]["player2"] = (1 - alpha) * self.training_stats[
+            "average_rewards"
+        ]["player2"] + alpha * episode_stats["total_reward_p2"]
+
+        self.training_stats["average_episode_length"] = (
+            self.training_stats["total_steps"] / self.training_stats["episodes"]
         )
 
-        self.training_stats['average_episode_length'] = (
-            self.training_stats['total_steps'] / self.training_stats['episodes']
-        )
-
-    def get_training_stats(self) -> Dict[str, Any]:
+    def get_training_stats(self) -> dict[str, Any]:
         """Retourne les statistiques d'entraînement"""
         return self.training_stats.copy()
 
     def reset_training_stats(self) -> None:
         """Remet les statistiques d'entraînement à zéro"""
         self.training_stats = {
-            'episodes': 0,
-            'total_steps': 0,
-            'player1_wins': 0,
-            'player2_wins': 0,
-            'average_episode_length': 0.0,
-            'average_rewards': {'player1': 0.0, 'player2': 0.0}
+            "episodes": 0,
+            "total_steps": 0,
+            "player1_wins": 0,
+            "player2_wins": 0,
+            "average_episode_length": 0.0,
+            "average_rewards": {"player1": 0.0, "player2": 0.0},
         }
