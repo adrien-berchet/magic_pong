@@ -5,7 +5,6 @@ Entités du jeu Magic Pong : balle, raquettes, bonus
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 import numpy as np
 from magic_pong.utils.config import game_config
@@ -55,7 +54,7 @@ class Ball:
         self.position = Vector2D(x, y)
         self.velocity = Vector2D(vx, vy)
         self.radius = game_config.BALL_RADIUS
-        self.last_paddle_hit: Optional[int] = None  # Pour éviter les rebonds multiples
+        self.last_paddle_hit: int | None = None  # Pour éviter les rebonds multiples
 
     def update(self, dt: float) -> None:
         """Met à jour la position de la balle"""

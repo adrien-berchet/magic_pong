@@ -3,7 +3,7 @@ Moteur principal du jeu Magic Pong
 """
 
 import time
-from typing import Any, Optional
+from typing import Any
 
 from magic_pong.ai.interface import AIPlayer, GameEnvironment
 from magic_pong.core.entities import Action
@@ -27,8 +27,8 @@ class GameEngine:
         self.last_update_time = 0.0
 
         # Joueurs (peuvent être humains ou IA)
-        self.player1: Optional[AIPlayer] = None
-        self.player2: Optional[AIPlayer] = None
+        self.player1: AIPlayer | None = None
+        self.player2: AIPlayer | None = None
 
         # Statistiques
         self.total_games = 0
@@ -39,7 +39,7 @@ class GameEngine:
             "average_game_length": 0.0,
         }
 
-    def set_players(self, player1: Optional[AIPlayer], player2: Optional[AIPlayer]) -> None:
+    def set_players(self, player1: AIPlayer | None, player2: AIPlayer | None) -> None:
         """Définit les joueurs (humains ou IA)"""
         self.player1 = player1
         self.player2 = player2
@@ -76,7 +76,7 @@ class GameEngine:
         if not self.paused:
             self.last_update_time = time.time()
 
-    def update(self, dt: Optional[float] = None) -> dict[str, Any]:
+    def update(self, dt: float | None = None) -> dict[str, Any]:
         """
         Met à jour le jeu d'un frame
 
@@ -128,7 +128,7 @@ class GameEngine:
             "info": info,
         }
 
-    def _get_player_action(self, player: Optional[AIPlayer], player_id: int) -> Optional[Action]:
+    def _get_player_action(self, player: AIPlayer | None, player_id: int) -> Action | None:
         """Obtient l'action d'un joueur"""
         if player is None:
             return None
@@ -143,7 +143,7 @@ class GameEngine:
             return action
         elif hasattr(player, "get_human_action"):
             # Joueur humain (à implémenter avec l'interface graphique)
-            human_action: Optional[Action] = player.get_human_action()
+            human_action: Action | None = player.get_human_action()
             return human_action
         else:
             return None

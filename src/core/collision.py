@@ -3,7 +3,6 @@ Système de détection de collisions pour Magic Pong
 """
 
 import math
-from typing import Optional
 
 from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle, Vector2D
 
@@ -60,7 +59,7 @@ def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) 
     return distance <= ball.radius
 
 
-def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Optional[Vector2D]:
+def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Vector2D | None:
     """Calcule la normale de collision avec une raquette"""
     rect = paddle.get_rect()
     x, y, width, height = rect

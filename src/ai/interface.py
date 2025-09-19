@@ -3,7 +3,7 @@ Interface IA agnostique pour Magic Pong
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 from magic_pong.core.entities import Action
@@ -259,7 +259,7 @@ class GameEnvironment:
         return obs1, obs2
 
     def step(
-        self, action1: Optional[Action], action2: Optional[Action]
+        self, action1: Action | None, action2: Action | None
     ) -> tuple[dict[str, Any], dict[str, Any], float, float, bool, dict[str, Any]]:
         """
         Effectue un step dans l'environnement
@@ -308,7 +308,7 @@ class GameEnvironment:
 
         return obs1, obs2, reward1, reward2, done, info
 
-    def render(self) -> Optional[np.ndarray]:
+    def render(self) -> np.ndarray | None:
         """Rendu de l'environnement (à implémenter avec l'interface graphique)"""
         if self.headless:
             return None
