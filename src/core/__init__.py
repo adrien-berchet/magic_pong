@@ -2,7 +2,16 @@
 Core module of Magic Pong game
 """
 
-from .entities import Action, Ball, Bonus, BonusType, GameState, Paddle, RotatingPaddle, Vector2D
+from magic_pong.core.entities import (
+    Action,
+    Ball,
+    Bonus,
+    BonusType,
+    GameState,
+    Paddle,
+    RotatingPaddle,
+    Vector2D,
+)
 
 __all__ = [
     "Ball",

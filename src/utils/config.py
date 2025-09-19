@@ -4,6 +4,61 @@ Magic Pong game configuration
 
 from dataclasses import dataclass
 
+import pygame
+
+
+@dataclass
+class KeyboardLayout:
+    """Configuration for keyboard layouts"""
+
+    name: str
+    wasd_keys: dict[str, int]
+    arrow_keys: dict[str, int]
+    display_names: dict[str, str]
+
+
+# Définition des layouts de clavier supportés
+KEYBOARD_LAYOUTS = {
+    "qwerty": KeyboardLayout(
+        name="QWERTY",
+        wasd_keys={"up": pygame.K_w, "down": pygame.K_s, "left": pygame.K_a, "right": pygame.K_d},
+        arrow_keys={
+            "up": pygame.K_UP,
+            "down": pygame.K_DOWN,
+            "left": pygame.K_LEFT,
+            "right": pygame.K_RIGHT,
+        },
+        display_names={"up": "W", "down": "S", "left": "A", "right": "D"},
+    ),
+    "azerty": KeyboardLayout(
+        name="AZERTY",
+        wasd_keys={
+            "up": pygame.K_z,  # Z à la place de W
+            "down": pygame.K_s,
+            "left": pygame.K_q,  # Q à la place de A
+            "right": pygame.K_d,
+        },
+        arrow_keys={
+            "up": pygame.K_UP,
+            "down": pygame.K_DOWN,
+            "left": pygame.K_LEFT,
+            "right": pygame.K_RIGHT,
+        },
+        display_names={"up": "Z", "down": "S", "left": "Q", "right": "D"},
+    ),
+    "qwertz": KeyboardLayout(
+        name="QWERTZ",
+        wasd_keys={"up": pygame.K_w, "down": pygame.K_s, "left": pygame.K_a, "right": pygame.K_d},
+        arrow_keys={
+            "up": pygame.K_UP,
+            "down": pygame.K_DOWN,
+            "left": pygame.K_LEFT,
+            "right": pygame.K_RIGHT,
+        },
+        display_names={"up": "W", "down": "S", "left": "A", "right": "D"},
+    ),
+}
+
 
 @dataclass
 class GameConfig:
@@ -41,6 +96,9 @@ class GameConfig:
     MAX_SCORE: int = 11
     GAME_SPEED_MULTIPLIER: float = 1.0  # To accelerate training
 
+    # Keyboard layout
+    KEYBOARD_LAYOUT: str = "azerty"  # Default layout for French users
+
     # Display
     FPS: int = 60
     BACKGROUND_COLOR: tuple[int, int, int] = (0, 0, 0)
@@ -55,6 +113,10 @@ class GameConfig:
                 "shrink_opponent": (255, 0, 0),  # Red
                 "rotating_paddle": (0, 0, 255),  # Blue
             }
+
+    def get_keyboard_layout(self) -> KeyboardLayout:
+        """Get the current keyboard layout configuration"""
+        return KEYBOARD_LAYOUTS.get(self.KEYBOARD_LAYOUT, KEYBOARD_LAYOUTS["qwerty"])
 
 
 @dataclass

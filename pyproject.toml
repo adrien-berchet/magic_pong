@@ -65,9 +65,11 @@ Documentation = "https://github.com/adrien-berchet/magic-pong#readme"
 [project.scripts]
 magic-pong-tournament = "magic_pong.ai.examples.ai_vs_ai:tournament"
 magic-pong-training = "magic_pong.ai.examples.ai_vs_ai:training"
+magic-pong-gui = "magic_pong.gui.game_app:main"
+magic-pong = "magic_pong.gui.game_app:main"
 
 [tool.setuptools]
-packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.examples", "magic_pong.utils"]
+packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.examples", "magic_pong.utils", "magic_pong.gui"]
 
 [tool.setuptools.package-dir]
 "magic_pong" = "src"

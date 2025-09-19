@@ -1,6 +1,7 @@
 """
 Physics system for Magic Pong
 """
+
 import random
 from typing import Any
 

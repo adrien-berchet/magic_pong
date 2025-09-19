@@ -133,7 +133,11 @@ class GameEngine:
         if player is None:
             return None
 
-        if hasattr(player, "get_action"):
+        if hasattr(player, "get_human_action"):
+            # Human player (check this first!)
+            human_action: Action | None = player.get_human_action()
+            return human_action
+        elif hasattr(player, "get_action"):
             # AI player
             game_state = self.physics_engine.get_game_state()
             observation = self.ai_environment.observation_processor.process_game_state(
@@ -141,10 +145,6 @@ class GameEngine:
             )
             action: Action = player.get_action(observation)
             return action
-        elif hasattr(player, "get_human_action"):
-            # Human player (to implement with graphical interface)
-            human_action: Action | None = player.get_human_action()
-            return human_action
         else:
             return None
 
