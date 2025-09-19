@@ -101,7 +101,7 @@ def tournament() -> None:
             # Play multiple games
             wins_p1 = 0
             wins_p2 = 0
-            total_games = 20
+            total_games = 100
 
             for _ in range(total_games):
                 episode_stats = trainer.train_episode(player1, player2, max_steps=3000)
