@@ -1,5 +1,5 @@
 """
-Magic Pong - Jeu de Pong élaboré pour l'entraînement d'IA
+Magic Pong - Advanced Pong game for AI training
 """
 
 __version__ = "0.1.0"

@@ -1,5 +1,5 @@
 """
-Exemples d'IA pour Magic Pong
+AI examples for Magic Pong
 """
 
 from magic_pong.ai.examples.simple_ai import (

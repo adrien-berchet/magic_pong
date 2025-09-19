@@ -1,5 +1,5 @@
 """
-Entités du jeu Magic Pong : balle, raquettes, bonus
+Magic Pong game entities: ball, paddles, bonuses
 """
 
 import math
@@ -11,7 +11,7 @@ from magic_pong.utils.config import game_config
 
 
 class BonusType(Enum):
-    """Types de bonus disponibles"""
+    """Available bonus types"""
 
     ENLARGE_PADDLE = "enlarge_paddle"
     SHRINK_OPPONENT = "shrink_opponent"
@@ -20,7 +20,7 @@ class BonusType(Enum):
 
 @dataclass
 class Vector2D:
-    """Vecteur 2D simple pour les positions et vélocités"""
+    """Simple 2D vector for positions and velocities"""
 
     x: float
     y: float
@@ -48,42 +48,42 @@ class Vector2D:
 
 
 class Ball:
-    """Balle du jeu"""
+    """Game ball"""
 
     def __init__(self, x: float, y: float, vx: float, vy: float):
         self.position = Vector2D(x, y)
         self.velocity = Vector2D(vx, vy)
         self.radius = game_config.BALL_RADIUS
-        self.last_paddle_hit: int | None = None  # Pour éviter les rebonds multiples
+        self.last_paddle_hit: int | None = None  # To avoid multiple bounces
 
     def update(self, dt: float) -> None:
-        """Met à jour la position de la balle"""
+        """Updates the ball position"""
         self.position = self.position + self.velocity * dt
 
     def reset_to_center(self, direction: int = 1) -> None:
-        """Remet la balle au centre avec une direction donnée"""
+        """Resets the ball to center with a given direction"""
         self.position = Vector2D(game_config.FIELD_WIDTH / 2, game_config.FIELD_HEIGHT / 2)
 
-        # Direction aléatoire mais contrôlée
-        angle = np.random.uniform(-math.pi / 4, math.pi / 4)  # ±45 degrés
+        # Random but controlled direction
+        angle = np.random.uniform(-math.pi / 4, math.pi / 4)  # ±45 degrees
         speed = game_config.BALL_SPEED
 
         self.velocity = Vector2D(direction * speed * math.cos(angle), speed * math.sin(angle))
 
     def bounce_vertical(self) -> None:
-        """Rebond vertical (murs haut/bas)"""
+        """Vertical bounce (top/bottom walls)"""
         self.velocity.y = -self.velocity.y
 
     def bounce_horizontal(self) -> None:
-        """Rebond horizontal (raquettes)"""
+        """Horizontal bounce (paddles)"""
         self.velocity.x = -self.velocity.x
-        # Légère accélération après chaque rebond
-        speed_increase = game_config.BALL_SPEED_INCREASE
-        self.velocity = self.velocity * speed_increase
+        # Slight acceleration after each bounce
+        # speed_increase = game_config.BALL_SPEED_INCREASE
+        # self.velocity = self.velocity * speed_increase
 
 
 class Paddle:
-    """Raquette de joueur"""
+    """Player paddle"""
 
     def __init__(self, x: float, y: float, player_id: int):
         self.position = Vector2D(x, y)
@@ -93,11 +93,11 @@ class Paddle:
         self.original_height = game_config.PADDLE_HEIGHT
         self.size_effect_timer = 0.0
 
-        # Limites de mouvement selon le joueur
-        if player_id == 1:  # Joueur gauche
+        # Movement limits according to player
+        if player_id == 1:  # Left player
             self.min_x = 0.0
             self.max_x = game_config.FIELD_WIDTH / 2 - self.width
-        else:  # Joueur droite
+        else:  # Right player
             self.min_x = game_config.FIELD_WIDTH / 2
             self.max_x = game_config.FIELD_WIDTH - self.width
 
@@ -105,43 +105,43 @@ class Paddle:
         self.max_y = game_config.FIELD_HEIGHT - self.height
 
     def update(self, dt: float) -> None:
-        """Met à jour la raquette (effets temporaires)"""
+        """Updates the paddle (temporary effects)"""
         if self.size_effect_timer > 0:
             self.size_effect_timer -= dt
             if self.size_effect_timer <= 0:
                 self.reset_size()
 
     def move(self, dx: float, dy: float, dt: float) -> None:
-        """Déplace la raquette avec contraintes"""
+        """Moves the paddle with constraints"""
         speed = game_config.PADDLE_SPEED * dt
         new_x = self.position.x + dx * speed
         new_y = self.position.y + dy * speed
 
-        # Contraintes de mouvement
+        # Movement constraints
         self.position.x = max(self.min_x, min(self.max_x, new_x))
         self.position.y = max(self.min_y, min(self.max_y, new_y))
 
     def apply_size_effect(self, multiplier: float, duration: float) -> None:
-        """Applique un effet de taille temporaire"""
+        """Applies a temporary size effect"""
         self.height = self.original_height * multiplier
         self.size_effect_timer = duration
-        # Réajuster les limites Y
+        # Readjust Y limits
         self.max_y = game_config.FIELD_HEIGHT - self.height
         if self.position.y > self.max_y:
             self.position.y = self.max_y
 
     def reset_size(self) -> None:
-        """Remet la taille normale"""
+        """Resets to normal size"""
         self.height = self.original_height
         self.max_y = game_config.FIELD_HEIGHT - self.height
 
     def get_rect(self) -> tuple[float, float, float, float]:
-        """Retourne le rectangle de collision (x, y, width, height)"""
+        """Returns the collision rectangle (x, y, width, height)"""
         return (self.position.x, self.position.y, self.width, self.height)
 
 
 class RotatingPaddle:
-    """Raquette tournante (bonus)"""
+    """Rotating paddle (bonus)"""
 
     def __init__(self, x: float, y: float, player_id: int):
         self.center = Vector2D(x, y)
@@ -153,14 +153,14 @@ class RotatingPaddle:
         self.lifetime = game_config.ROTATING_PADDLE_DURATION
 
     def update(self, dt: float) -> bool:
-        """Met à jour la rotation et la durée de vie"""
+        """Updates rotation and lifetime"""
         self.angle += self.angular_speed * dt
         self.lifetime -= dt
         return self.lifetime > 0
 
     def get_line_segments(self) -> list[tuple[Vector2D, Vector2D]]:
-        """Retourne les segments de ligne pour la collision"""
-        # Quatre segments formant un carré tournant
+        """Returns line segments for collision"""
+        # Four segments forming a rotating square
         segments = []
         for i in range(4):
             angle1 = self.angle + i * math.pi / 2
@@ -180,34 +180,34 @@ class RotatingPaddle:
 
 
 class Bonus:
-    """Bonus qui apparaît sur le terrain"""
+    """Bonus that appears on the field"""
 
     def __init__(self, x: float, y: float, bonus_type: BonusType):
         self.position = Vector2D(x, y)
         self.type = bonus_type
         self.size = game_config.BONUS_SIZE
         self.collected = False
-        self.lifetime = 30.0  # Disparaît après 30 secondes si pas collecté
+        self.lifetime = 30.0  # Disappears after 30 seconds if not collected
 
     def update(self, dt: float) -> bool:
-        """Met à jour le bonus, retourne False si expiré"""
+        """Updates the bonus, returns False if expired"""
         self.lifetime -= dt
         return self.lifetime > 0 and not self.collected
 
     def collect(self) -> BonusType:
-        """Collecte le bonus"""
+        """Collects the bonus"""
         self.collected = True
         return self.type
 
     def get_rect(self) -> tuple[float, float, float, float]:
-        """Retourne le rectangle de collision"""
+        """Returns the collision rectangle"""
         half_size = self.size / 2
         return (self.position.x - half_size, self.position.y - half_size, self.size, self.size)
 
 
 @dataclass
 class GameState:
-    """État complet du jeu pour l'IA"""
+    """Complete game state for AI"""
 
     ball_position: tuple[float, float]
     ball_velocity: tuple[float, float]
@@ -224,12 +224,12 @@ class GameState:
 
 @dataclass
 class Action:
-    """Action d'un joueur"""
+    """Player action"""
 
-    move_x: float  # -1.0 à 1.0
-    move_y: float  # -1.0 à 1.0
+    move_x: float  # -1.0 to 1.0
+    move_y: float  # -1.0 to 1.0
 
     def __post_init__(self) -> None:
-        # Clamp les valeurs entre -1 et 1
+        # Clamp values between -1 and 1
         self.move_x = max(-1.0, min(1.0, self.move_x))
         self.move_y = max(-1.0, min(1.0, self.move_y))

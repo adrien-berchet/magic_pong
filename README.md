@@ -1,83 +1,83 @@
 # Magic Pong
 
-Un jeu de Pong élaboré conçu spécialement pour l'entraînement d'intelligence artificielle, avec des fonctionnalités avancées et une architecture flexible.
+An advanced Pong game specifically designed for artificial intelligence training, featuring advanced functionality and flexible architecture.
 
-## Fonctionnalités
+## Features
 
-### Gameplay Avancé
-- **Mouvement libre** : Les joueurs peuvent se déplacer librement dans leur moitié de terrain (pas seulement verticalement)
-- **Système de bonus symétriques** :
-  - Élargissement de la raquette du joueur
-  - Rétrécissement de la raquette adverse
-  - Raquette tournante supplémentaire
-- **Physique réaliste** avec rebonds et effets
+### Advanced Gameplay
+- **Free movement**: Players can move freely within their half of the field (not just vertically)
+- **Symmetric bonus system**:
+  - Player paddle enlargement
+  - Opponent paddle shrinking
+  - Additional rotating paddle
+- **Realistic physics** with bounces and effects
 
-### Interface IA
-- **Architecture agnostique** : Compatible avec différents frameworks d'IA (PyTorch, TensorFlow, etc.)
-- **Mode headless** : Entraînement ultra-rapide sans affichage graphique
-- **Vitesse variable** : Accélération jusqu'à 1000x pour l'entraînement
-- **Système de récompenses** configurable
-- **Observations normalisées** pour l'apprentissage
+### AI Interface
+- **Framework agnostic architecture**: Compatible with different AI frameworks (PyTorch, TensorFlow, etc.)
+- **Headless mode**: Ultra-fast training without graphics display
+- **Variable speed**: Acceleration up to 1000x for training
+- **Configurable reward system**
+- **Normalized observations** for learning
 
-### Exemples d'IA Inclus
-- **RandomAI** : Mouvements aléatoires
-- **FollowBallAI** : Suit la balle
-- **DefensiveAI** : Stratégie défensive
-- **AggressiveAI** : Cherche les bonus et attaque
-- **PredictiveAI** : Prédit la trajectoire de la balle
+### Included AI Examples
+- **RandomAI**: Random movements
+- **FollowBallAI**: Follows the ball
+- **DefensiveAI**: Defensive strategy
+- **AggressiveAI**: Seeks bonuses and attacks
+- **PredictiveAI**: Predicts ball trajectory
 
 ## Installation
 
 ```bash
-# Cloner le projet
+# Clone the project
 git clone <repository_url>
 cd magic_pong
 
-# Installation pour l'utilisation
+# Installation for usage
 pip install -e .
 
-# Installation pour le développement (recommandé)
+# Installation for development (recommended)
 pip install -e ".[dev]"
 
-# Installation complète (toutes les dépendances)
+# Complete installation (all dependencies)
 pip install -e ".[all]"
 ```
 
-### Installation avec Make
+### Installation with Make
 
 ```bash
-# Configuration complète pour le développement
+# Complete setup for development
 make dev-setup
 ```
 
-## Utilisation Rapide
+## Quick Usage
 
-### Entraînement IA vs IA
+### AI vs AI Training
 
 ```python
 from src.core.game_engine import TrainingManager
 from src.ai.examples.simple_ai import create_ai
 
-# Créer le gestionnaire d'entraînement
+# Create training manager
 trainer = TrainingManager(headless=True)
 
-# Créer les IA
+# Create AIs
 player1 = create_ai('aggressive', 1)
 player2 = create_ai('defensive', 2)
 
-# Entraîner un épisode
+# Train one episode
 stats = trainer.train_episode(player1, player2)
-print(f"Gagnant: Joueur {stats['winner']}")
+print(f"Winner: Player {stats['winner']}")
 ```
 
-### Tournoi d'IA
+### AI Tournament
 
 ```bash
 cd magic_pong
 python examples/ai_vs_ai.py --mode tournament
 ```
 
-### Entraînement Simple
+### Simple Training
 
 ```bash
 cd magic_pong
@@ -89,63 +89,63 @@ python examples/ai_vs_ai.py --mode training
 ```
 magic_pong/
 ├── src/
-│   ├── core/           # Moteur de jeu et physique
-│   ├── ai/             # Interface IA et exemples
-│   ├── graphics/       # Rendu graphique (à venir)
-│   └── utils/          # Configuration et utilitaires
-├── examples/           # Exemples d'utilisation
+│   ├── core/           # Game engine and physics
+│   ├── ai/             # AI interface and examples
+│   ├── graphics/       # Graphics rendering (coming soon)
+│   └── utils/          # Configuration and utilities
+├── examples/           # Usage examples
 └── docs/              # Documentation
 ```
 
-### Composants Principaux
+### Main Components
 
-- **PhysicsEngine** : Gère la physique du jeu, collisions, bonus
-- **GameEngine** : Orchestre le jeu et gère les joueurs
-- **TrainingManager** : Optimisé pour l'entraînement d'IA
-- **AIPlayer** : Interface abstraite pour les IA
-- **GameEnvironment** : Environnement compatible avec les frameworks RL
+- **PhysicsEngine**: Manages game physics, collisions, bonuses
+- **GameEngine**: Orchestrates the game and manages players
+- **TrainingManager**: Optimized for AI training
+- **AIPlayer**: Abstract interface for AIs
+- **GameEnvironment**: Environment compatible with RL frameworks
 
 ## Configuration
 
-Le jeu est hautement configurable via [`src/utils/config.py`](src/utils/config.py):
+The game is highly configurable via [`src/utils/config.py`](src/utils/config.py):
 
 ```python
 from src.utils.config import game_config, ai_config
 
-# Configuration du jeu
+# Game configuration
 game_config.FIELD_WIDTH = 800
 game_config.FIELD_HEIGHT = 600
 game_config.BALL_SPEED = 300.0
 
-# Configuration IA
+# AI configuration
 ai_config.HEADLESS_MODE = True
 ai_config.FAST_MODE_MULTIPLIER = 10.0
 ```
 
-## Créer une IA Personnalisée
+## Create a Custom AI
 
 ```python
 from src.ai.interface import AIPlayer
 from src.core.entities import Action
 
-class MonIA(AIPlayer):
+class MyAI(AIPlayer):
     def get_action(self, observation):
-        # Votre logique ici
+        # Your logic here
         ball_pos = observation['ball_pos']
         player_pos = observation['player_pos']
 
-        # Calculer l'action
+        # Calculate action
         move_x = ball_pos[0] - player_pos[0]
         move_y = ball_pos[1] - player_pos[1]
 
         return Action(move_x, move_y)
 
     def on_step(self, observation, action, reward, done, info):
-        # Apprentissage ici
+        # Learning here
         self.current_episode_reward += reward
 ```
 
-## Interface avec PyTorch
+## PyTorch Interface
 
 ```python
 import torch
@@ -158,210 +158,210 @@ class PyTorchAI(AIPlayer):
         self.model = model
 
     def get_action(self, observation):
-        # Convertir l'observation en tensor
+        # Convert observation to tensor
         state = self._obs_to_tensor(observation)
 
-        # Prédiction du modèle
+        # Model prediction
         with torch.no_grad():
             action_probs = self.model(state)
 
-        # Convertir en Action
+        # Convert to Action
         return Action(
             move_x=action_probs[0].item(),
             move_y=action_probs[1].item()
         )
 ```
 
-## Observations pour l'IA
+## AI Observations
 
-L'observation fournie à chaque IA contient :
+The observation provided to each AI contains:
 
 ```python
 observation = {
-    'ball_pos': [x, y],                    # Position de la balle
-    'ball_vel': [vx, vy],                  # Vélocité de la balle
-    'player_pos': [x, y],                  # Position du joueur
-    'opponent_pos': [x, y],                # Position de l'adversaire
-    'player_paddle_size': float,           # Taille de la raquette
-    'opponent_paddle_size': float,         # Taille raquette adverse
-    'bonuses': [[x, y, type], ...],        # Bonus actifs
-    'rotating_paddles': [[x, y, angle]], # Raquettes tournantes
-    'score_diff': int,                     # Différence de score
-    'time_elapsed': float                  # Temps écoulé
+    'ball_pos': [x, y],                    # Ball position
+    'ball_vel': [vx, vy],                  # Ball velocity
+    'player_pos': [x, y],                  # Player position
+    'opponent_pos': [x, y],                # Opponent position
+    'player_paddle_size': float,           # Paddle size
+    'opponent_paddle_size': float,         # Opponent paddle size
+    'bonuses': [[x, y, type], ...],        # Active bonuses
+    'rotating_paddles': [[x, y, angle]], # Rotating paddles
+    'score_diff': int,                     # Score difference
+    'time_elapsed': float                  # Elapsed time
 }
 ```
 
-## Système de Récompenses
+## Reward System
 
-- **+1.0** : Marquer un point
-- **-1.0** : Encaisser un point
-- **+0.1** : Collecter un bonus
-- **+0.01** : Toucher la balle
-- **+0.02** : Utiliser une raquette tournante
+- **+1.0**: Score a point
+- **-1.0**: Concede a point
+- **+0.1**: Collect a bonus
+- **+0.01**: Touch the ball
+- **+0.02**: Use a rotating paddle
 
 ## Performance
 
-En mode headless avec accélération :
-- **Vitesse normale** : ~60 FPS
-- **Mode rapide** : ~600-6000 FPS (10-100x plus rapide)
-- **Entraînement** : Milliers d'épisodes par minute
+In headless mode with acceleration:
+- **Normal speed**: ~60 FPS
+- **Fast mode**: ~600-6000 FPS (10-100x faster)
+- **Training**: Thousands of episodes per minute
 
-## Exemples de Résultats
+## Example Results
 
-Tournoi entre les IA incluses (20 parties chacune) :
+Tournament between included AIs (20 games each):
 
 ```
-Classement:
-1. aggressive: 52 victoires
-2. predictive: 48 victoires
-3. defensive: 31 victoires
-4. follow_ball: 28 victoires
-5. random: 1 victoire
+Rankings:
+1. aggressive: 52 victories
+2. predictive: 48 victories
+3. defensive: 31 victories
+4. follow_ball: 28 victories
+5. random: 1 victory
 ```
 
-## Développement
+## Development
 
-### Outils de Développement
+### Development Tools
 
-Ce projet utilise les meilleures pratiques de développement Python avec des outils modernes :
+This project uses Python development best practices with modern tools:
 
 #### Tests
 ```bash
-# Tests avec pytest
+# Tests with pytest
 make test
 
-# Tests avec couverture de code
+# Tests with code coverage
 make test-cov
 
-# Tests sur toutes les versions Python avec tox
+# Tests on all Python versions with tox
 make test-all
 tox
 ```
 
-#### Qualité de Code
+#### Code Quality
 ```bash
-# Vérification du linting (ruff)
+# Linting check (ruff)
 make lint
 
-# Correction automatique des problèmes de linting
+# Automatic fixing of linting issues
 make lint-fix
 
-# Formatage du code (black)
+# Code formatting (black)
 make format
 
-# Vérification du formatage
+# Format checking
 make format-check
 
-# Vérification des types (mypy)
+# Type checking (mypy)
 make type-check
 
-# Tous les contrôles qualité
+# All quality checks
 make quality
 
-# Correction automatique de tous les problèmes
+# Automatic fixing of all issues
 make quality-fix
 ```
 
-#### Tox - Tests Multi-versions
+#### Tox - Multi-version Testing
 ```bash
-# Tests sur Python 3.8
+# Tests on Python 3.8
 tox -e py38
 
-# Tests sur Python 3.9
+# Tests on Python 3.9
 tox -e py39
 
-# Tests sur Python 3.10
+# Tests on Python 3.10
 tox -e py310
 
-# Tests sur Python 3.11
+# Tests on Python 3.11
 tox -e py311
 
-# Tests sur Python 3.12
+# Tests on Python 3.12
 tox -e py312
 
-# Linting avec tox
+# Linting with tox
 tox -e lint
 
-# Formatage avec tox
+# Formatting with tox
 tox -e format
 
-# Vérification des types avec tox
+# Type checking with tox
 tox -e type-check
 ```
 
 #### Pre-commit Hooks
 ```bash
-# Installer les hooks pre-commit
+# Install pre-commit hooks
 make pre-commit-install
 
-# Lancer pre-commit sur tous les fichiers
+# Run pre-commit on all files
 make pre-commit-run
 
-# Mettre à jour les hooks
+# Update hooks
 make pre-commit-update
 ```
 
-#### Nettoyage
+#### Cleanup
 ```bash
-# Nettoyer les fichiers temporaires
+# Clean temporary files
 make clean
 ```
 
-### Configuration des Outils
+### Tool Configuration
 
-Les outils sont configurés dans [`pyproject.toml`](pyproject.toml) :
+Tools are configured in [`pyproject.toml`](pyproject.toml):
 
-- **Black** : Formatage automatique du code (ligne 100 caractères)
-- **Ruff** : Linting rapide et moderne (remplace flake8, isort, etc.)
-- **MyPy** : Vérification statique des types
-- **Pytest** : Framework de tests avec couverture de code
-- **Tox** : Tests sur plusieurs versions de Python
-- **Pre-commit** : Hooks de validation avant commit
-- **GitHub Actions** : Intégration continue automatisée
+- **Black**: Automatic code formatting (100 character line)
+- **Ruff**: Fast and modern linting (replaces flake8, isort, etc.)
+- **MyPy**: Static type checking
+- **Pytest**: Testing framework with code coverage
+- **Tox**: Testing across multiple Python versions
+- **Pre-commit**: Validation hooks before commit
+- **GitHub Actions**: Automated continuous integration
 
-### Structure du Code
+### Code Structure
 
-- **Séparation claire** entre logique métier et affichage
-- **Architecture modulaire** et extensible
-- **Type hints** complets pour une meilleure maintenance
-- **Tests unitaires** avec pytest et tox
-- **Intégration continue** prête avec les outils configurés
+- **Clear separation** between business logic and display
+- **Modular and extensible** architecture
+- **Complete type hints** for better maintenance
+- **Unit tests** with pytest and tox
+- **Ready continuous integration** with configured tools
 
-### Ajouter de Nouveaux Bonus
+### Adding New Bonuses
 
 ```python
-# Dans entities.py
+# In entities.py
 class BonusType(Enum):
-    MON_BONUS = "mon_bonus"
+    MY_BONUS = "my_bonus"
 
-# Dans physics.py
+# In physics.py
 def _apply_bonus_effect(self, bonus_type, player):
-    if bonus_type == BonusType.MON_BONUS:
-        # Votre effet ici
+    if bonus_type == BonusType.MY_BONUS:
+        # Your effect here
         pass
 ```
 
 ## Roadmap
 
-- [ ] Interface graphique Pygame
-- [ ] Mode multijoueur en réseau
-- [ ] Intégration Gymnasium
-- [ ] Sauvegarde/chargement de modèles
-- [ ] Métriques avancées et visualisations
-- [ ] Support GPU pour l'entraînement
+- [ ] Pygame graphical interface
+- [ ] Network multiplayer mode
+- [ ] Gymnasium integration
+- [ ] Model save/load
+- [ ] Advanced metrics and visualizations
+- [ ] GPU support for training
 
-## Contribution
+## Contributing
 
-Les contributions sont les bienvenues ! Voir [`CONTRIBUTING.md`](CONTRIBUTING.md) pour les guidelines.
+Contributions are welcome! See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
-## Licence
+## License
 
-MIT License - voir [`LICENSE`](LICENSE) pour les détails.
+MIT License - see [`LICENSE`](LICENSE) for details.
 
-## Auteur
+## Author
 
-Adrien Berchet - Projet Magic Pong pour l'entraînement d'IA
+Adrien Berchet - Magic Pong Project for AI Training
 
 ---
 
-**Magic Pong** - Où l'IA apprend à jouer ! 🏓🤖
+**Magic Pong** - Where AI learns to play! 🏓🤖

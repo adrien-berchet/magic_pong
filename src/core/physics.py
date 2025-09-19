@@ -1,8 +1,8 @@
 """
-Système de physique pour Magic Pong
+Physics system for Magic Pong
 """
-
 import random
+from typing import Any
 
 from magic_pong.core.collision import CollisionDetector
 from magic_pong.core.entities import Action, Ball, Bonus, BonusType, Paddle, RotatingPaddle
@@ -10,7 +10,7 @@ from magic_pong.utils.config import game_config
 
 
 class BonusSpawner:
-    """Gestionnaire d'apparition des bonus"""
+    """Bonus spawning manager"""
 
     def __init__(self, field_width: float, field_height: float):
         self.field_width = field_width
@@ -19,34 +19,34 @@ class BonusSpawner:
         self.spawn_interval = game_config.BONUS_SPAWN_INTERVAL
 
     def update(self, dt: float, existing_bonuses: list[Bonus]) -> list[Bonus]:
-        """Met à jour le spawner et retourne les nouveaux bonus"""
+        """Updates the spawner and returns new bonuses"""
         self.spawn_timer += dt
         new_bonuses = []
 
         if self.spawn_timer >= self.spawn_interval:
             self.spawn_timer = 0.0
 
-            # Ne pas spawner s'il y a déjà trop de bonus
+            # Don't spawn if there are already too many bonuses
             if len(existing_bonuses) < 4:
                 new_bonuses = self._spawn_symmetric_bonuses()
 
         return new_bonuses
 
     def _spawn_symmetric_bonuses(self) -> list[Bonus]:
-        """Spawne des bonus de manière symétrique"""
+        """Spawns bonuses symmetrically"""
         bonuses = []
 
-        # Choisir un type de bonus aléatoire
+        # Choose a random bonus type
         bonus_type = random.choice(list(BonusType))
 
-        # Position aléatoire dans la moitié gauche
+        # Random position in the left half
         left_x = random.uniform(50, self.field_width / 2 - 50)
         y = random.uniform(50, self.field_height - 50)
 
-        # Position symétrique dans la moitié droite
+        # Symmetric position in the right half
         right_x = self.field_width - left_x
 
-        # Créer les bonus symétriques
+        # Create symmetric bonuses
         bonuses.append(Bonus(left_x, y, bonus_type))
         bonuses.append(Bonus(right_x, y, bonus_type))
 
@@ -54,7 +54,7 @@ class BonusSpawner:
 
 
 class PhysicsEngine:
-    """Moteur de physique principal"""
+    """Main physics engine"""
 
     def __init__(self, field_width: float, field_height: float):
         self.field_width = field_width
@@ -62,7 +62,7 @@ class PhysicsEngine:
         self.collision_detector = CollisionDetector()
         self.bonus_spawner = BonusSpawner(field_width, field_height)
 
-        # État du jeu
+        # Game state
         self.ball = Ball(field_width / 2, field_height / 2, game_config.BALL_SPEED, 0)
 
         self.player1 = Paddle(
@@ -80,49 +80,49 @@ class PhysicsEngine:
         self.score: list[int] = [0, 0]
         self.game_time = 0.0
 
-        # Initialiser la balle avec une direction aléatoire
+        # Initialize ball with random direction
         self.reset_ball()
 
     def reset_ball(self, direction: int = 0) -> None:
-        """Remet la balle au centre"""
+        """Resets the ball to center"""
         if direction == 0:
             direction = random.choice([-1, 1])
         self.ball.reset_to_center(direction)
 
     def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
-        """Met à jour la physique du jeu"""
-        # Appliquer le multiplicateur de vitesse
+        """Updates game physics"""
+        # Apply speed multiplier
         effective_dt = dt * game_config.GAME_SPEED_MULTIPLIER
         self.game_time += effective_dt
 
-        # Déplacer les joueurs
+        # Move players
         if player1_action:
             self.player1.move(player1_action.move_x, player1_action.move_y, effective_dt)
         if player2_action:
             self.player2.move(player2_action.move_x, player2_action.move_y, effective_dt)
 
-        # Mettre à jour les entités
+        # Update entities
         self.ball.update(effective_dt)
         self.player1.update(effective_dt)
         self.player2.update(effective_dt)
 
-        # Mettre à jour les raquettes tournantes
+        # Update rotating paddles
         self.rotating_paddles = [rp for rp in self.rotating_paddles if rp.update(effective_dt)]
 
-        # Mettre à jour les bonus
+        # Update bonuses
         self.bonuses = [bonus for bonus in self.bonuses if bonus.update(effective_dt)]
 
-        # Spawner de nouveaux bonus
+        # Spawn new bonuses
         new_bonuses = self.bonus_spawner.update(effective_dt, self.bonuses)
         self.bonuses.extend(new_bonuses)
 
-        # Vérifier les collisions
+        # Check collisions
         events = self._check_collisions()
 
         return events
 
     def _check_collisions(self) -> dict:
-        """Vérifie toutes les collisions et retourne les événements"""
+        """Checks all collisions and returns events"""
         events: dict[str, list] = {
             "wall_bounces": [],
             "paddle_hits": [],
@@ -131,7 +131,7 @@ class PhysicsEngine:
             "rotating_paddle_hits": [],
         }
 
-        # Collisions avec les murs
+        # Wall collisions
         wall_collision = self.collision_detector.check_ball_walls(
             self.ball, self.field_width, self.field_height
         )
@@ -140,26 +140,26 @@ class PhysicsEngine:
             self.ball.bounce_vertical()
             events["wall_bounces"].append(wall_collision)
         elif wall_collision == "left_goal":
-            self.score[1] += 1  # Point pour le joueur 2
+            self.score[1] += 1  # Point for player 2
             events["goals"].append({"player": 2, "score": self.score.copy()})
-            self.reset_ball(1)  # Relancer vers la droite
+            self.reset_ball(1)  # Restart towards the right
         elif wall_collision == "right_goal":
-            self.score[0] += 1  # Point pour le joueur 1
+            self.score[0] += 1  # Point for player 1
             events["goals"].append({"player": 1, "score": self.score.copy()})
-            self.reset_ball(-1)  # Relancer vers la gauche
+            self.reset_ball(-1)  # Restart towards the left
 
-        # Collisions avec les raquettes
+        # Paddle collisions
         if self.collision_detector.check_ball_paddle(self.ball, self.player1):
             events["paddle_hits"].append({"player": 1})
         if self.collision_detector.check_ball_paddle(self.ball, self.player2):
             events["paddle_hits"].append({"player": 2})
 
-        # Collisions avec les raquettes tournantes
+        # Rotating paddle collisions
         for rp in self.rotating_paddles:
             if self.collision_detector.check_ball_rotating_paddle(self.ball, rp):
                 events["rotating_paddle_hits"].append({"player": rp.player_id})
 
-        # Collisions joueur-bonus
+        # Player-bonus collisions
         for player, paddle in [(1, self.player1), (2, self.player2)]:
             collected = self.collision_detector.check_player_bonus(paddle, self.bonuses)
             for bonus in collected:
@@ -169,26 +169,26 @@ class PhysicsEngine:
         return events
 
     def _apply_bonus_effect(self, bonus_type: BonusType, player: int) -> None:
-        """Applique l'effet d'un bonus"""
+        """Applies a bonus effect"""
         if bonus_type == BonusType.ENLARGE_PADDLE:
-            # Élargir la raquette du joueur
+            # Enlarge player's paddle
             paddle = self.player1 if player == 1 else self.player2
             paddle.apply_size_effect(game_config.PADDLE_SIZE_MULTIPLIER, game_config.BONUS_DURATION)
 
         elif bonus_type == BonusType.SHRINK_OPPONENT:
-            # Rétrécir la raquette de l'adversaire
+            # Shrink opponent's paddle
             opponent_paddle = self.player2 if player == 1 else self.player1
             opponent_paddle.apply_size_effect(
                 game_config.PADDLE_SIZE_REDUCER, game_config.BONUS_DURATION
             )
 
         elif bonus_type == BonusType.ROTATING_PADDLE:
-            # Ajouter une raquette tournante
+            # Add a rotating paddle
             if player == 1:
-                # Position dans la moitié gauche
+                # Position in left half
                 x = random.uniform(100, self.field_width / 2 - 100)
             else:
-                # Position dans la moitié droite
+                # Position in right half
                 x = random.uniform(self.field_width / 2 + 100, self.field_width - 100)
 
             y = random.uniform(100, self.field_height - 100)
@@ -196,8 +196,8 @@ class PhysicsEngine:
             rotating_paddle = RotatingPaddle(x, y, player)
             self.rotating_paddles.append(rotating_paddle)
 
-    def get_game_state(self) -> dict:
-        """Retourne l'état complet du jeu"""
+    def get_game_state(self) -> dict[str, Any]:
+        """Returns the complete game state"""
         return {
             "ball_position": self.ball.position.to_tuple(),
             "ball_velocity": self.ball.velocity.to_tuple(),
@@ -219,11 +219,11 @@ class PhysicsEngine:
         }
 
     def is_game_over(self) -> bool:
-        """Vérifie si la partie est terminée"""
+        """Checks if the game is over"""
         return max(self.score) >= game_config.MAX_SCORE
 
     def get_winner(self) -> int:
-        """Retourne le gagnant (1 ou 2), ou 0 si pas de gagnant"""
+        """Returns the winner (1 or 2), or 0 if no winner"""
         if self.score[0] >= game_config.MAX_SCORE:
             return 1
         elif self.score[1] >= game_config.MAX_SCORE:
@@ -231,17 +231,17 @@ class PhysicsEngine:
         return 0
 
     def reset_game(self) -> None:
-        """Remet le jeu à zéro"""
+        """Resets the game to zero"""
         self.score = [0, 0]
         self.game_time = 0.0
         self.bonuses.clear()
         self.rotating_paddles.clear()
 
-        # Remettre les raquettes à leur position initiale
+        # Reset paddles to their initial position
         self.player1.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
         self.player2.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
         self.player1.reset_size()
         self.player2.reset_size()
 
-        # Remettre la balle au centre
+        # Reset ball to center
         self.reset_ball()

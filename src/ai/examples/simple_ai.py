@@ -1,5 +1,5 @@
 """
-Exemples d'IA simples pour Magic Pong
+Simple AI examples for Magic Pong
 """
 
 import math
@@ -11,13 +11,13 @@ from magic_pong.core.entities import Action
 
 
 class RandomAI(AIPlayer):
-    """IA qui joue de manière complètement aléatoire"""
+    """AI that plays completely randomly"""
 
     def __init__(self, player_id: int, name: str = "RandomAI"):
         super().__init__(player_id, name)
 
     def get_action(self, observation: dict[str, Any]) -> Action:
-        """Retourne une action aléatoire"""
+        """Returns a random action"""
         return Action(move_x=random.uniform(-1.0, 1.0), move_y=random.uniform(-1.0, 1.0))
 
     def on_step(
@@ -28,27 +28,27 @@ class RandomAI(AIPlayer):
         done: bool,
         info: dict[str, Any],
     ) -> None:
-        """L'IA aléatoire n'apprend pas"""
+        """Random AI doesn't learn"""
         self.current_episode_reward += reward
 
 
 class FollowBallAI(AIPlayer):
-    """IA simple qui suit la balle"""
+    """Simple AI that follows the ball"""
 
     def __init__(self, player_id: int, name: str = "FollowBallAI", aggressiveness: float = 0.8):
         super().__init__(player_id, name)
-        self.aggressiveness = aggressiveness  # Entre 0 et 1
+        self.aggressiveness = aggressiveness
 
     def get_action(self, observation: dict[str, Any]) -> Action:
-        """Suit la balle avec une certaine agressivité"""
+        """Follows the ball with a certain aggressiveness"""
         ball_pos = observation["ball_pos"]
         player_pos = observation["player_pos"]
 
-        # Calculer la direction vers la balle
+        # Calculate direction towards the ball
         dx = ball_pos[0] - player_pos[0]
         dy = ball_pos[1] - player_pos[1]
 
-        # Normaliser et appliquer l'agressivité
+        # Normalize
         distance = math.sqrt(dx * dx + dy * dy)
         if distance > 0:
             move_x = (dx / distance) * self.aggressiveness
@@ -67,37 +67,37 @@ class FollowBallAI(AIPlayer):
         done: bool,
         info: dict[str, Any],
     ) -> None:
-        """L'IA simple n'apprend pas"""
+        """Simple AI doesn't learn"""
         self.current_episode_reward += reward
 
 
 class DefensiveAI(AIPlayer):
-    """IA défensive qui reste près de son but"""
+    """Defensive AI that stays near its goal"""
 
     def __init__(self, player_id: int, name: str = "DefensiveAI"):
         super().__init__(player_id, name)
 
     def get_action(self, observation: dict[str, Any]) -> Action:
-        """Stratégie défensive"""
+        """Defensive strategy"""
         ball_pos = observation["ball_pos"]
         ball_vel = observation.get("ball_vel", [0, 0])
         player_pos = observation["player_pos"]
 
-        # Position défensive (près du but)
-        if self.player_id == 1:  # Joueur gauche
-            target_x = 0.1  # Près du bord gauche
-        else:  # Joueur droite
-            target_x = 0.9  # Près du bord droit
+        # Defensive position (near goal)
+        if self.player_id == 1:  # Left player
+            target_x = 0.1  # Near left edge
+        else:  # Right player
+            target_x = 0.9  # Near right edge
 
-        # Prédire où la balle va aller
-        predicted_y = ball_pos[1] + ball_vel[1] * 0.5  # Prédiction simple
+        # Predict where the ball will go
+        predicted_y = ball_pos[1] + ball_vel[1] * 0.5  # Simple prediction
         target_y = max(0.1, min(0.9, predicted_y))  # Clamp
 
-        # Se diriger vers la position cible
+        # Move towards target position
         dx = target_x - player_pos[0]
         dy = target_y - player_pos[1]
 
-        # Normaliser
+        # Normalize
         distance = math.sqrt(dx * dx + dy * dy)
         if distance > 0:
             move_x = dx / distance
@@ -116,24 +116,24 @@ class DefensiveAI(AIPlayer):
         done: bool,
         info: dict[str, Any],
     ) -> None:
-        """L'IA défensive n'apprend pas"""
+        """Defensive AI doesn't learn"""
         self.current_episode_reward += reward
 
 
 class AggressiveAI(AIPlayer):
-    """IA agressive qui cherche les bonus et attaque"""
+    """Aggressive AI that seeks bonuses and attacks"""
 
     def __init__(self, player_id: int, name: str = "AggressiveAI"):
         super().__init__(player_id, name)
         self.target_bonus = None
 
     def get_action(self, observation: dict[str, Any]) -> Action:
-        """Stratégie agressive"""
+        """Aggressive strategy"""
         ball_pos = observation["ball_pos"]
         player_pos = observation["player_pos"]
         bonuses = observation.get("bonuses", [])
 
-        # Chercher le bonus le plus proche
+        # Look for the closest bonus
         closest_bonus = None
         closest_distance = float("inf")
 
@@ -144,18 +144,18 @@ class AggressiveAI(AIPlayer):
                 closest_distance = distance
                 closest_bonus = (bonus_x, bonus_y)
 
-        # Décider de la cible
-        if closest_bonus and closest_distance < 0.3:  # Bonus proche
+        # Decide target
+        if closest_bonus and closest_distance < 0.3:  # Close bonus
             target_x, target_y = closest_bonus
         else:
-            # Sinon, aller vers la balle
+            # Otherwise, go towards the ball
             target_x, target_y = ball_pos
 
-        # Se diriger vers la cible
+        # Move towards target
         dx = target_x - player_pos[0]
         dy = target_y - player_pos[1]
 
-        # Normaliser avec agressivité maximale
+        # Normalize with maximum aggressiveness
         distance = math.sqrt(dx * dx + dy * dy)
         if distance > 0:
             move_x = dx / distance
@@ -174,40 +174,42 @@ class AggressiveAI(AIPlayer):
         done: bool,
         info: dict[str, Any],
     ) -> None:
-        """L'IA agressive n'apprend pas"""
+        """Aggressive AI doesn't learn"""
         self.current_episode_reward += reward
 
 
 class PredictiveAI(AIPlayer):
-    """IA qui essaie de prédire la trajectoire de la balle"""
+    """AI that tries to predict the ball's trajectory"""
 
     def __init__(self, player_id: int, name: str = "PredictiveAI", prediction_time: float = 1.0):
         super().__init__(player_id, name)
         self.prediction_time = prediction_time
 
     def get_action(self, observation: dict[str, Any]) -> Action:
-        """Prédit où sera la balle et s'y positionne"""
+        """Predicts where the ball will be and positions accordingly"""
         ball_pos = observation["ball_pos"]
         ball_vel = observation.get("ball_vel", [0, 0])
         player_pos = observation["player_pos"]
 
-        # Prédire la position future de la balle
+        # Predict ball's future position
         predicted_x = ball_pos[0] + ball_vel[0] * self.prediction_time
         predicted_y = ball_pos[1] + ball_vel[1] * self.prediction_time
 
-        # Gérer les rebonds sur les murs (approximation simple)
-        if predicted_y < 0 or predicted_y > 1:
-            predicted_y = ball_pos[1] - ball_vel[1] * self.prediction_time
+        # Handle wall bounces (simple approximation)
+        if predicted_y < 0:
+            predicted_y = -predicted_y
+        elif predicted_y > 1:
+            predicted_y = 2 - predicted_y
 
-        # Clamp dans les limites du terrain
+        # Clamp within field bounds
         predicted_x = max(0, min(1, predicted_x))
         predicted_y = max(0, min(1, predicted_y))
 
-        # Se diriger vers la position prédite
+        # Move towards predicted position
         dx = predicted_x - player_pos[0]
         dy = predicted_y - player_pos[1]
 
-        # Normaliser
+        # Normalize
         distance = math.sqrt(dx * dx + dy * dy)
         if distance > 0:
             move_x = dx / distance
@@ -226,12 +228,12 @@ class PredictiveAI(AIPlayer):
         done: bool,
         info: dict[str, Any],
     ) -> None:
-        """L'IA prédictive n'apprend pas"""
+        """Predictive AI doesn't learn"""
         self.current_episode_reward += reward
 
 
 class HumanPlayer:
-    """Classe pour représenter un joueur humain (pour l'interface graphique)"""
+    """Class to represent a human player (for graphical interface)"""
 
     def __init__(self, player_id: int, name: str = "Human"):
         self.player_id = player_id
@@ -239,30 +241,30 @@ class HumanPlayer:
         self.current_action = Action(0.0, 0.0)
 
     def set_action(self, move_x: float, move_y: float) -> None:
-        """Définit l'action actuelle du joueur humain"""
+        """Sets the current action of the human player"""
         self.current_action = Action(move_x, move_y)
 
     def get_human_action(self) -> Action:
-        """Retourne l'action actuelle"""
+        """Returns the current action"""
         return self.current_action
 
     def get_stats(self) -> dict[str, float]:
-        """Retourne des stats vides pour compatibilité"""
+        """Returns empty stats for compatibility"""
         return {"mean_reward": 0.0, "episodes": 0}
 
 
-# Factory pour créer facilement des IA
+# Factory to easily create AIs
 def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
     """
-    Factory pour créer des IA
+    Factory to create AIs
 
     Args:
-        ai_type: Type d'IA ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive')
-        player_id: ID du joueur (1 ou 2)
-        **kwargs: Arguments supplémentaires pour l'IA
+        ai_type: AI type ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive')
+        player_id: Player ID (1 or 2)
+        **kwargs: Additional arguments for the AI
 
     Returns:
-        AIPlayer: Instance de l'IA demandée
+        AIPlayer: Instance of the requested AI
     """
     ai_classes: dict[str, type[AIPlayer]] = {
         "random": RandomAI,
@@ -273,9 +275,7 @@ def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
     }
 
     if ai_type not in ai_classes:
-        raise ValueError(
-            f"Type d'IA inconnu: {ai_type}. Types disponibles: {list(ai_classes.keys())}"
-        )
+        raise ValueError(f"Unknown AI type: {ai_type}. Available types: {list(ai_classes.keys())}")
 
     ai_class = ai_classes[ai_type]
     return ai_class(player_id, **kwargs)

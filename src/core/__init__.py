@@ -1,5 +1,5 @@
 """
-Module core du jeu Magic Pong
+Core module of Magic Pong game
 """
 
 from .entities import Action, Ball, Bonus, BonusType, GameState, Paddle, RotatingPaddle, Vector2D
