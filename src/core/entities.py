@@ -53,11 +53,13 @@ class Ball:
     def __init__(self, x: float, y: float, vx: float, vy: float):
         self.position = Vector2D(x, y)
         self.velocity = Vector2D(vx, vy)
+        self.prev_position = Vector2D(x, y) - self.velocity * (1 / 60)  # Assume initial dt=1/60
         self.radius = game_config.BALL_RADIUS
         self.last_paddle_hit: int | None = None  # To avoid multiple bounces
 
     def update(self, dt: float) -> None:
         """Updates the ball position"""
+        self.prev_position = Vector2D(self.position.x, self.position.y)
         self.position = self.position + self.velocity * dt
 
     def reset_to_center(self, direction: int = 1) -> None:
@@ -87,6 +89,7 @@ class Paddle:
 
     def __init__(self, x: float, y: float, player_id: int):
         self.position = Vector2D(x, y)
+        self.prev_position = Vector2D(x, y)
         self.player_id = player_id
         self.width = game_config.PADDLE_WIDTH
         self.height = game_config.PADDLE_HEIGHT
@@ -113,6 +116,7 @@ class Paddle:
 
     def move(self, dx: float, dy: float, dt: float) -> None:
         """Moves the paddle with constraints"""
+        self.prev_position = Vector2D(self.position.x, self.position.y)
         speed = game_config.PADDLE_SPEED * dt
         new_x = self.position.x + dx * speed
         new_y = self.position.y + dy * speed

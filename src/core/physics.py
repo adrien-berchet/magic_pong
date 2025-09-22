@@ -118,11 +118,11 @@ class PhysicsEngine:
         self.bonuses.extend(new_bonuses)
 
         # Check collisions
-        events = self._check_collisions()
+        events = self._check_collisions(effective_dt)
 
         return events
 
-    def _check_collisions(self) -> dict:
+    def _check_collisions(self, effective_dt: float) -> dict:
         """Checks all collisions and returns events"""
         events: dict[str, list] = {
             "wall_bounces": [],
@@ -149,10 +149,10 @@ class PhysicsEngine:
             events["goals"].append({"player": 1, "score": self.score.copy()})
             self.reset_ball(-1)  # Restart towards the left
 
-        # Paddle collisions
-        if self.collision_detector.check_ball_paddle(self.ball, self.player1):
+        # Paddle collisions with continuous detection
+        if self.collision_detector.check_ball_paddle(self.ball, self.player1, effective_dt):
             events["paddle_hits"].append({"player": 1})
-        if self.collision_detector.check_ball_paddle(self.ball, self.player2):
+        if self.collision_detector.check_ball_paddle(self.ball, self.player2, effective_dt):
             events["paddle_hits"].append({"player": 2})
 
         # Rotating paddle collisions

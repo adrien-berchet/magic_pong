@@ -76,7 +76,7 @@ class GameConfig:
     # Player paddles
     PADDLE_WIDTH: float = 15.0
     PADDLE_HEIGHT: float = 80.0
-    PADDLE_SPEED: float = 400.0  # pixels per second
+    PADDLE_SPEED: float = 500.0  # pixels per second
     PADDLE_MARGIN: float = 50.0  # Distance from field edge
 
     # Bonuses

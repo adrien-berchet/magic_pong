@@ -27,6 +27,142 @@ def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -
     return distance <= ball.radius
 
 
+def continuous_circle_rect_collision(
+    ball: Ball, rect: tuple[float, float, float, float], dt: float
+) -> tuple[bool, float]:
+    """
+    Detects collision between a moving circle and a rectangle using continuous collision detection.
+    Uses the ball's previous position to determine if it's entering or exiting the rectangle.
+    Returns (collision_occurred, collision_time) where collision_time is between 0 and 1.
+    """
+    x, y, width, height = rect
+
+    # Use the ball's stored previous position instead of calculating it
+    prev_pos = ball.prev_position
+    current_pos = ball.position
+
+    # Check collision state at start and end
+    prev_in_collision = circle_rect_collision_at_position(prev_pos, ball.radius, rect)
+    curr_in_collision = circle_rect_collision_at_position(current_pos, ball.radius, rect)
+
+    # If ball was outside and is now inside -> entering collision
+    if not prev_in_collision and curr_in_collision:
+        # Find the exact entry point
+        return True, find_entry_collision_time(prev_pos, current_pos, ball.radius, rect)
+
+    # If ball was inside and is now outside -> was in collision (but exiting)
+    if prev_in_collision and not curr_in_collision:
+        # Ball was in collision but is now exiting, no new collision to process
+        return False, 0.0
+
+    # If ball was outside and is still outside, check if it crossed through
+    if not prev_in_collision and not curr_in_collision:
+        # Check if the ball passed through the rectangle during the movement
+        return check_trajectory_intersection(prev_pos, current_pos, ball.radius, rect)
+
+    # If ball was inside and is still inside -> already in collision
+    if prev_in_collision and curr_in_collision:
+        return True, 0.0
+
+    return False, 0.0
+
+
+def find_entry_collision_time(
+    start_pos: Vector2D, end_pos: Vector2D, radius: float, rect: tuple[float, float, float, float]
+) -> float:
+    """Find the exact time when the ball enters the rectangle using binary search"""
+    epsilon = 0.001  # Precision threshold
+    t_start = 0.0
+    t_end = 1.0
+
+    # Binary search to find the entry point
+    while t_end - t_start > epsilon:
+        t_mid = (t_start + t_end) / 2
+        mid_pos = Vector2D(
+            start_pos.x + (end_pos.x - start_pos.x) * t_mid,
+            start_pos.y + (end_pos.y - start_pos.y) * t_mid,
+        )
+
+        if circle_rect_collision_at_position(mid_pos, radius, rect):
+            # Ball is in collision at t_mid, so entry is before this point
+            t_end = t_mid
+        else:
+            # Ball is not in collision at t_mid, so entry is after this point
+            t_start = t_mid
+
+    return t_end  # Return the first time where collision occurs
+
+
+def check_trajectory_intersection(
+    start_pos: Vector2D, end_pos: Vector2D, radius: float, rect: tuple[float, float, float, float]
+) -> tuple[bool, float]:
+    """
+    Check if the ball trajectory intersects with the rectangle (high-speed tunneling case).
+    This handles cases where the ball is fast enough to completely pass through in one frame.
+    """
+    x, y, width, height = rect
+
+    # Sample the trajectory at regular intervals
+    num_samples = 30  # More samples for high-speed detection
+
+    for i in range(1, num_samples):
+        t = i / num_samples
+        sample_pos = Vector2D(
+            start_pos.x + (end_pos.x - start_pos.x) * t, start_pos.y + (end_pos.y - start_pos.y) * t
+        )
+
+        if circle_rect_collision_at_position(sample_pos, radius, rect):
+            # Found intersection, find precise entry time
+            t_prev = (i - 1) / num_samples
+            return True, find_entry_collision_time_range(
+                start_pos, end_pos, radius, rect, t_prev, t
+            )
+
+    return False, 0.0
+
+
+def find_entry_collision_time_range(
+    start_pos: Vector2D,
+    end_pos: Vector2D,
+    radius: float,
+    rect: tuple[float, float, float, float],
+    t_start: float,
+    t_end: float,
+) -> float:
+    """Find precise entry collision time in a specific range"""
+    epsilon = 0.001
+
+    while t_end - t_start > epsilon:
+        t_mid = (t_start + t_end) / 2
+        mid_pos = Vector2D(
+            start_pos.x + (end_pos.x - start_pos.x) * t_mid,
+            start_pos.y + (end_pos.y - start_pos.y) * t_mid,
+        )
+
+        if circle_rect_collision_at_position(mid_pos, radius, rect):
+            t_end = t_mid
+        else:
+            t_start = t_mid
+
+    return t_end
+
+
+def circle_rect_collision_at_position(
+    position: Vector2D, radius: float, rect: tuple[float, float, float, float]
+) -> bool:
+    """Helper function to check collision at a specific position"""
+    x, y, width, height = rect
+
+    # Closest point on the rectangle to the ball center
+    closest_x = max(x, min(position.x, x + width))
+    closest_y = max(y, min(position.y, y + height))
+
+    # Distance between ball center and closest point
+    distance = math.sqrt((position.x - closest_x) ** 2 + (position.y - closest_y) ** 2)
+
+    return distance <= radius
+
+
 def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) -> bool:
     """Detects collision between a circle and a line segment"""
     # Line vector
@@ -143,13 +279,13 @@ class CollisionDetector:
 
         return "none"
 
-    def check_ball_paddle(self, ball: Ball, paddle: Paddle) -> bool:
-        """Checks and handles ball-paddle collision"""
+    def check_ball_paddle(self, ball: Ball, paddle: Paddle, dt: float) -> bool:
+        """Checks and handles ball-paddle collision with continuous detection"""
         rect = paddle.get_rect()
+
         if ball.last_paddle_hit == paddle.player_id:
             # Avoid multiple bounces on the same paddle
             # Check if ball is moving away from paddle
-
             if paddle.player_id == 1:  # Left paddle
                 if ball.velocity.x > 0:  # Ball moving away to the right
                     ball.last_paddle_hit = None
@@ -159,12 +295,65 @@ class CollisionDetector:
 
             return False
 
-        if circle_rect_collision(ball, rect):
+        # Use continuous collision detection
+        collision_occurred, collision_time = continuous_circle_rect_collision(ball, rect, dt)
+
+        if collision_occurred:
+            # Calculate position at collision time using stored previous position
+            prev_pos = ball.prev_position
+            collision_pos = Vector2D(
+                prev_pos.x + (ball.position.x - prev_pos.x) * collision_time,
+                prev_pos.y + (ball.position.y - prev_pos.y) * collision_time,
+            )
+
+            # Set ball position to collision point
+            ball.position = collision_pos
+
+            # Apply bounce
             apply_paddle_bounce(ball, paddle)
             ball.last_paddle_hit = paddle.player_id
+
+            # Move ball out of collision after bounce to prevent overlap
+            self._separate_ball_from_paddle(ball, paddle)
+
             return True
 
         return False
+
+    def _separate_ball_from_paddle(self, ball: Ball, paddle: Paddle) -> None:
+        """Ensures the ball is positioned outside the paddle after collision"""
+        rect = paddle.get_rect()
+        x, y, width, height = rect
+
+        # Calculate which side of the rectangle the ball is closest to
+        ball_center_x = ball.position.x
+        ball_center_y = ball.position.y
+
+        # Calculate distances to each edge
+        dist_to_left = ball_center_x - x
+        dist_to_right = (x + width) - ball_center_x
+        dist_to_top = ball_center_y - y
+        dist_to_bottom = (y + height) - ball_center_y
+
+        # Find the closest edge
+        min_dist = min(dist_to_left, dist_to_right, dist_to_top, dist_to_bottom)
+
+        # Push ball away from the closest edge
+        safety_margin = 1.0
+        required_distance = ball.radius + safety_margin
+
+        if min_dist == dist_to_left:
+            # Ball is closest to left edge, push it left
+            ball.position.x = x - required_distance
+        elif min_dist == dist_to_right:
+            # Ball is closest to right edge, push it right
+            ball.position.x = x + width + required_distance
+        elif min_dist == dist_to_top:
+            # Ball is closest to top edge, push it up
+            ball.position.y = y - required_distance
+        else:
+            # Ball is closest to bottom edge, push it down
+            ball.position.y = y + height + required_distance
 
     def check_ball_rotating_paddle(self, ball: Ball, rotating_paddle: RotatingPaddle) -> bool:
         """Checks collision with a rotating paddle"""
