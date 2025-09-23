@@ -32,6 +32,84 @@ class RandomAI(AIPlayer):
         self.current_episode_reward += reward
 
 
+class DummyAI(AIPlayer):
+    """AI that never moves - perfect for Phase 1 training (learning to hit the ball)"""
+
+    def __init__(self, player_id: int, name: str = "DummyAI"):
+        super().__init__(player_id, name)
+
+    def get_action(self, observation: dict[str, Any]) -> Action:
+        """Never moves - stays completely still"""
+        return Action(move_x=0.0, move_y=0.0)
+
+    def on_step(
+        self,
+        observation: dict[str, Any],
+        action: Action,
+        reward: float,
+        done: bool,
+        info: dict[str, Any],
+    ) -> None:
+        """Dummy AI doesn't learn"""
+        self.current_episode_reward += reward
+
+
+class TrainingDummyAI(AIPlayer):
+    """
+    Specialized AI for Phase 1 training - moves very minimally and predictably
+    to ensure the learning agent can focus purely on ball contact
+    """
+
+    def __init__(
+        self, player_id: int, name: str = "TrainingDummyAI", movement_factor: float = 0.02
+    ):
+        super().__init__(player_id, name)
+        self.movement_factor = movement_factor  # Very small movement to add minimal variation
+        self.center_x = 0.0  # Will be set based on player side
+
+    def get_action(self, observation: dict[str, Any]) -> Action:
+        """Very minimal movement around center position"""
+        import math
+        import time
+
+        # Get player info to determine which side we're on
+        field_width = observation.get("field_width", 800)
+        if self.player_id == 2:  # Right side
+            self.center_x = field_width * 0.75
+        else:  # Left side
+            self.center_x = field_width * 0.25
+
+        player_pos = observation["player_pos"]
+
+        # Very slow, predictable movement around center position
+        time_factor = time.time() * 0.5  # Slow oscillation
+        target_x = self.center_x + 20 * math.sin(time_factor)  # Small horizontal movement
+        target_y = observation.get("field_height", 600) / 2 + 15 * math.cos(
+            time_factor * 0.7
+        )  # Small vertical movement
+
+        # Very gentle movement towards target
+        dx = (target_x - player_pos[0]) * self.movement_factor
+        dy = (target_y - player_pos[1]) * self.movement_factor
+
+        # Clamp movement to be very small
+        dx = max(-0.1, min(0.1, dx))
+        dy = max(-0.1, min(0.1, dy))
+
+        return Action(move_x=dx, move_y=dy)
+
+    def on_step(
+        self,
+        observation: dict[str, Any],
+        action: Action,
+        reward: float,
+        done: bool,
+        info: dict[str, Any],
+    ) -> None:
+        """Training dummy doesn't learn"""
+        self.current_episode_reward += reward
+
+
 class FollowBallAI(AIPlayer):
     """Simple AI that follows the ball"""
 
@@ -259,7 +337,7 @@ def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
     Factory to create AIs
 
     Args:
-        ai_type: AI type ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive')
+        ai_type: AI type ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive', 'dummy', 'training_dummy')
         player_id: Player ID (1 or 2)
         **kwargs: Additional arguments for the AI
 
@@ -268,6 +346,8 @@ def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
     """
     ai_classes: dict[str, type[AIPlayer]] = {
         "random": RandomAI,
+        "dummy": DummyAI,
+        "training_dummy": TrainingDummyAI,
         "follow_ball": FollowBallAI,
         "defensive": DefensiveAI,
         "aggressive": AggressiveAI,

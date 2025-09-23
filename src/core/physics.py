@@ -21,6 +21,10 @@ class BonusSpawner:
 
     def update(self, dt: float, existing_bonuses: list[Bonus]) -> list[Bonus]:
         """Updates the spawner and returns new bonuses"""
+        # Don't spawn bonuses if they are disabled
+        if not game_config.BONUSES_ENABLED:
+            return []
+
         self.spawn_timer += dt
         new_bonuses = []
 
@@ -171,6 +175,10 @@ class PhysicsEngine:
 
     def _apply_bonus_effect(self, bonus_type: BonusType, player: int) -> None:
         """Applies a bonus effect"""
+        # Don't apply bonus effects if bonuses are disabled
+        if not game_config.BONUSES_ENABLED:
+            return
+
         if bonus_type == BonusType.ENLARGE_PADDLE:
             # Enlarge player's paddle
             paddle = self.player1 if player == 1 else self.player2

@@ -80,6 +80,7 @@ class GameConfig:
     PADDLE_MARGIN: float = 50.0  # Distance from field edge
 
     # Bonuses
+    BONUSES_ENABLED: bool = True  # Master switch for all bonus features
     BONUS_SIZE: float = 20.0
     BONUS_SPAWN_INTERVAL: float = 15.0  # seconds
     BONUS_DURATION: float = 10.0  # seconds
@@ -133,7 +134,7 @@ class AIConfig:
     SCORE_REWARD: float = 1.0
     LOSE_PENALTY: float = -1.0
     BONUS_REWARD: float = 0.1
-    WALL_HIT_REWARD: float = 0.01  # Small bonus for hitting the ball
+    WALL_HIT_REWARD: float = 0.1  # Small bonus for hitting the ball
 
     # Training
     MAX_EPISODE_STEPS: int = 10000
