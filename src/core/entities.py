@@ -62,15 +62,22 @@ class Ball:
         self.prev_position = Vector2D(self.position.x, self.position.y)
         self.position = self.position + self.velocity * dt
 
-    def reset_to_center(self, direction: int = 1) -> None:
-        """Resets the ball to center with a given direction"""
+    def reset_to_center(self, direction: int = 1, angle: float | None = None) -> None:
+        """Resets the ball to center with a given direction and optional specific angle"""
         self.position = Vector2D(game_config.FIELD_WIDTH / 2, game_config.FIELD_HEIGHT / 2)
 
-        # Random but controlled direction
-        angle = np.random.uniform(-math.pi / 4, math.pi / 4)  # ±45 degrees
-        speed = game_config.BALL_SPEED
+        # Use specific angle if provided, otherwise random within controlled range
+        if angle is not None:
+            # Use the provided angle directly
+            ball_angle = angle
+        else:
+            # Random but controlled direction (±45 degrees)
+            ball_angle = np.random.uniform(-math.pi / 4, math.pi / 4)
 
-        self.velocity = Vector2D(direction * speed * math.cos(angle), speed * math.sin(angle))
+        speed = game_config.BALL_SPEED
+        self.velocity = Vector2D(
+            direction * speed * math.cos(ball_angle), speed * math.sin(ball_angle)
+        )
 
     def bounce_vertical(self) -> None:
         """Vertical bounce (top/bottom walls)"""

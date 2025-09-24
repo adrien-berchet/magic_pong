@@ -13,19 +13,19 @@ This script provides extensive customization for DQN training including:
 
 import argparse
 import json
+import math
 import os
-
-# Import pour configuration des jeux
 import time
 from datetime import datetime
 from pathlib import Path
 
+# Import pour configuration des jeux
 import matplotlib.pyplot as plt
 import numpy as np
 from magic_pong.ai.examples.dqn_ai import DQNAgent
 from magic_pong.ai.examples.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
-from magic_pong.utils.config import game_config
+from magic_pong.utils.config import ai_config, game_config
 
 AI_TYPES = [
     "follow_ball",
@@ -53,6 +53,44 @@ def create_agent_from_args(args):
         tau=args.tau,
         memory_size=args.memory_size,
     )
+
+
+def get_ball_config_from_args(args):
+    """Get ball direction and angle configuration from command line arguments"""
+    verbose = args.verbose
+
+    # If specific angle is provided, use it
+    if args.ball_angle is not None:
+        angle_rad = math.radians(args.ball_angle)
+        direction = 1
+
+    # Convert direction name to angle and direction
+    direction_configs = {
+        "right": (1, math.radians(0)),
+        "up_right": (1, math.radians(-45)),
+        "down_right": (1, math.radians(45)),
+        "left": (1, math.radians(180)),
+        "up_left": (1, math.radians(-135)),
+        "down_left": (1, math.radians(135)),
+    }
+    cone_direction_configs = {
+        "cone_right": (1, math.pi / 4, -math.pi / 4),  # -45° to 45°
+        "cone_left": (-1, math.pi / 4, -math.pi / 4),  # 135° to 225°
+    }
+
+    if args.ball_direction in direction_configs:
+        direction, angle_rad = direction_configs[args.ball_direction]
+    elif args.ball_direction in cone_direction_configs:
+        direction, angle_min, angle_max = cone_direction_configs[args.ball_direction]
+        angle_rad = np.random.uniform(angle_min, angle_max)
+    else:
+        direction, angle_rad = 0, None  # fallback to random
+
+    if verbose:
+        print(
+            f"Ball initial direction: {args.ball_direction} -> direction={direction}, angle={angle_rad}"
+        )
+    return direction, angle_rad
 
 
 def save_checkpoint(
@@ -157,6 +195,9 @@ def train_phase(
         episodes_since_improvement = 0
 
         for episode in range(start_episode, start_episode + episodes):
+            ball_direction, ball_angle = get_ball_config_from_args(args)
+            training_manager.set_ball_initial_direction(ball_direction, ball_angle)
+
             agent.on_episode_start()
 
             episode_stats = training_manager.train_episode(
@@ -242,7 +283,7 @@ def create_optimized_agent():
     """Create a DQN agent with optimized hyperparameters for convergence"""
     return DQNAgent(
         state_size=28,
-        action_size=3,
+        action_size=9,
         lr=0.0003,  # Reduced learning rate for stability
         gamma=0.99,
         epsilon=1.0,
@@ -263,7 +304,11 @@ def train_with_curriculum(agent, args):
     """
     print("=== CURRICULUM LEARNING TRAINING ===")
 
-    training_manager = TrainingManager(headless=True)
+    # Get ball configuration
+    ball_direction, ball_angle = get_ball_config_from_args(args)
+    training_manager = TrainingManager(
+        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
+    )
 
     # Phase 1: Basic training
     phase1_opponent = get_opponent(args.phase1_opponent)
@@ -317,6 +362,9 @@ def train_with_curriculum(agent, args):
             args,
         )
 
+    # Cleanup training manager
+    training_manager.cleanup()
+
     return agent, {
         "phase1_avg": np.mean(phase1_rewards[-100:])
         if len(phase1_rewards) >= 100
@@ -339,7 +387,11 @@ def train_single_phase(agent, args):
     """Training with a single phase (no curriculum)"""
     print("=== SINGLE PHASE TRAINING ===")
 
-    training_manager = TrainingManager(headless=True)
+    # Get ball configuration
+    ball_direction, ball_angle = get_ball_config_from_args(args)
+    training_manager = TrainingManager(
+        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
+    )
     opponent = get_opponent(args.opponent)
 
     rewards, wins, episodes = train_phase(
@@ -361,6 +413,9 @@ def train_single_phase(agent, args):
     # Create training plots
     if args.save_plots:
         create_single_phase_plots(rewards, wins / episodes * 100 if episodes > 0 else 0, args)
+
+    # Cleanup training manager
+    training_manager.cleanup()
 
     return agent, {
         "avg_reward": np.mean(rewards[-100:])
@@ -392,10 +447,14 @@ def train_progressive_curriculum(agent, args):
     original_bonuses_enabled = game_config.BONUSES_ENABLED
     game_config.BONUSES_ENABLED = False
 
-    training_manager = TrainingManager(headless=True)
+    # Get ball configuration
+    training_manager = TrainingManager(headless=args.headless)
 
     all_phase_data = []
     total_episodes_count = 0
+
+    initial_ball_direction = args.ball_direction
+    args.ball_direction = "cone_left"
 
     # Phase 1: Learn to hit the ball - vs dummy or training_dummy
     print("\n🎯 PHASE 1: Learning to Hit the Ball")
@@ -406,6 +465,13 @@ def train_progressive_curriculum(agent, args):
     else:
         print("Opponent: Training Dummy AI (minimal predictable movement)")
         print("Focus: Ball contact with minimal, non-threatening opponent movement")
+
+    initial_score_reward = ai_config.SCORE_REWARD
+    initial_lose_penalty = ai_config.LOSE_PENALTY
+    initial_wall_hit_reward = ai_config.WALL_HIT_REWARD
+    ai_config.SCORE_REWARD = 0
+    ai_config.LOSE_PENALTY = 0
+    ai_config.WALL_HIT_REWARD = 1  # Increase reward for hitting wall to encourage contact
 
     phase1_opponent = get_opponent(args.phase1_training_opponent)
     phase1_rewards, phase1_wins, phase1_episodes = train_phase(
@@ -419,6 +485,9 @@ def train_progressive_curriculum(agent, args):
         total_phases=4,
         start_episode=0,
     )
+    ai_config.SCORE_REWARD = initial_score_reward
+    ai_config.LOSE_PENALTY = initial_lose_penalty
+    ai_config.WALL_HIT_REWARD = initial_wall_hit_reward
 
     total_episodes_count += phase1_episodes
     all_phase_data.append(
@@ -442,6 +511,13 @@ def train_progressive_curriculum(agent, args):
     print("Objective: Return ball to opponent's side")
     print("Opponent: Defensive AI (predictable positioning)")
 
+    initial_score_reward = ai_config.SCORE_REWARD
+    initial_lose_penalty = ai_config.LOSE_PENALTY
+    initial_wall_hit_reward = ai_config.WALL_HIT_REWARD
+    ai_config.SCORE_REWARD = 0.5
+    ai_config.LOSE_PENALTY = -0.5
+    ai_config.WALL_HIT_REWARD = 1  # Increase reward for hitting wall to encourage contact
+
     # Reduce exploration slightly for phase 2
     if args.progressive_epsilon_reduction > 0:
         agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
@@ -459,6 +535,9 @@ def train_progressive_curriculum(agent, args):
         total_phases=4,
         start_episode=total_episodes_count,
     )
+    ai_config.SCORE_REWARD = initial_score_reward
+    ai_config.LOSE_PENALTY = initial_lose_penalty
+    ai_config.WALL_HIT_REWARD = initial_wall_hit_reward
 
     total_episodes_count += phase2_episodes
     all_phase_data.append(
@@ -480,19 +559,21 @@ def train_progressive_curriculum(agent, args):
     # Phase 3: Play against intelligent opponent - vs predictive (no bonuses)
     print("\n🧠 PHASE 3: Playing vs Intelligent AI")
     print("Objective: Compete against smart opponent")
-    print("Opponent: Predictive AI (anticipates ball trajectory)")
+    print("Opponent: Aggressive AI (anticipates ball trajectory)")
     print("Bonuses: DISABLED for focused strategic learning")
+
+    args.ball_direction = initial_ball_direction
 
     # Further reduce exploration for phase 3
     if args.progressive_epsilon_reduction > 0:
         agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
-    phase3_opponent = get_opponent("predictive")
+    phase3_opponent = get_opponent("aggressive")
     phase3_rewards, phase3_wins, phase3_episodes = train_phase(
         agent,
         phase3_opponent,
-        "Strategic play vs Predictive AI (no bonuses)",
+        "Strategic play vs Aggressive AI (no bonuses)",
         args.progressive_episodes_per_phase,
         training_manager,
         args,
@@ -521,7 +602,7 @@ def train_progressive_curriculum(agent, args):
     # Phase 4: Master the game with bonuses - vs predictive with bonuses
     print("\n🏆 PHASE 4: Mastering with Bonuses")
     print("Objective: Master complete game with all features")
-    print("Opponent: Predictive AI with bonuses enabled")
+    print("Opponent: Aggressive AI with bonuses enabled")
     print("Features: Rotating paddles, bonuses, full complexity")
     print("Bonuses: ENABLED for complete game mastery")
 
@@ -533,11 +614,11 @@ def train_progressive_curriculum(agent, args):
         agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
         print(f"Final epsilon: {agent.epsilon:.3f}")
 
-    phase4_opponent = get_opponent("predictive")
+    phase4_opponent = get_opponent("aggressive")
     phase4_rewards, phase4_wins, phase4_episodes = train_phase(
         agent,
         phase4_opponent,
-        "Master training vs Predictive AI + Bonuses",
+        "Master training vs Aggressive AI + Bonuses",
         args.progressive_episodes_per_phase,
         training_manager,
         args,
@@ -569,6 +650,9 @@ def train_progressive_curriculum(agent, args):
     # Create comprehensive training plots
     if args.save_plots:
         create_progressive_training_plots(all_phase_data, args)
+
+    # Cleanup training manager
+    training_manager.cleanup()
 
     # Calculate results
     final_avg = (
@@ -1092,6 +1176,9 @@ def evaluate_final_performance(agent, args):
     """Final performance evaluation of the agent"""
     print(f"\n🎯 FINAL EVALUATION ({args.eval_episodes} episodes)")
 
+    original_max_score = game_config.MAX_SCORE
+    game_config.MAX_SCORE = args.eval_max_score
+
     # Test against different opponents
     opponents = {
         "follow_ball": get_opponent("follow_ball"),
@@ -1101,7 +1188,11 @@ def evaluate_final_performance(agent, args):
         "predictive": get_opponent("predictive"),
     }
 
-    training_manager = TrainingManager(headless=True)
+    # Get ball configuration
+    ball_direction, ball_angle = get_ball_config_from_args(args)
+    training_manager = TrainingManager(
+        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
+    )
 
     # Disable exploration for evaluation
     original_epsilon = agent.epsilon
@@ -1145,6 +1236,11 @@ def evaluate_final_performance(agent, args):
         with open(eval_path, "w") as f:
             json.dump(results, f, indent=2)
         print(f"Evaluation results saved: {eval_path}")
+
+    # Cleanup training manager
+    training_manager.cleanup()
+
+    game_config.MAX_SCORE = original_max_score
 
     return results
 
@@ -1203,7 +1299,7 @@ def parse_arguments():
 
     # DQN hyperparameters
     parser.add_argument("--state_size", type=int, default=28, help="Size of the state space")
-    parser.add_argument("--action_size", type=int, default=3, help="Size of the action space")
+    parser.add_argument("--action_size", type=int, default=9, help="Size of the action space")
     parser.add_argument(
         "--learning_rate", type=float, default=0.0003, help="Learning rate for the neural network"
     )
@@ -1240,7 +1336,7 @@ def parse_arguments():
     parser.add_argument(
         "--training_max_score",
         type=int,
-        default=3,
+        default=1,
         help="Score needed to win during training (default: 3, game default: 11)",
     )
     parser.add_argument(
@@ -1322,6 +1418,12 @@ def parse_arguments():
     parser.add_argument(
         "--save_eval_results", action="store_true", help="Save evaluation results to JSON file"
     )
+    parser.add_argument(
+        "--eval_max_score",
+        type=int,
+        default=1,
+        help="Score needed to win during evaluation (default: 1, game default: 11)",
+    )
 
     # Output and logging
     parser.add_argument(
@@ -1332,6 +1434,45 @@ def parse_arguments():
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
+    # Ball direction control
+    parser.add_argument(
+        "--ball_direction",
+        type=str,
+        default="random",
+        choices=[
+            "random",
+            "left",
+            "right",
+            "up_left",
+            "up_right",
+            "down_left",
+            "down_right",
+            "cone_left",
+            "cone_right",
+        ],
+        help="Initial ball direction: random, left, right, up_left, up_right, down_left, down_right, cone_left, cone_right",
+    )
+    parser.add_argument(
+        "--ball_angle",
+        type=float,
+        default=None,
+        help="Specific ball angle in degrees (0-360). Overrides --ball_direction if specified",
+    )
+
+    # Display settings
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        default=True,
+        help="Run in headless mode (no GUI). Use --no-headless to enable GUI display",
+    )
+    parser.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        help="Enable GUI display during training/evaluation",
+    )
+
     return parser.parse_args()
 
 
@@ -1340,6 +1481,7 @@ def main():
 
     print("🚀 ADVANCED DQN TRAINING STARTED")
     print(f"Mode: {args.mode}")
+    print(f"Display: {'Headless (no GUI)' if args.headless else 'GUI enabled'}")
     if args.mode == "progressive":
         print(f"Configuration: {args.progressive_episodes_per_phase} episodes per phase (4 phases)")
     else:

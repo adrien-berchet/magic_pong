@@ -2,6 +2,7 @@
 Physics system for Magic Pong
 """
 
+import math
 import random
 from typing import Any
 
@@ -88,11 +89,16 @@ class PhysicsEngine:
         # Initialize ball with random direction
         self.reset_ball()
 
-    def reset_ball(self, direction: int = 0) -> None:
-        """Resets the ball to center"""
+    def reset_ball(self, direction: int = 0, angle: float | None = None) -> None:
+        """Resets the ball to center with optional specific angle"""
         if direction == 0:
             direction = random.choice([-1, 1])
-        self.ball.reset_to_center(direction)
+        self.ball.reset_to_center(direction, angle)
+
+    def set_ball_initial_direction(self, direction: int = 1, angle_degrees: float = 0.0) -> None:
+        """Sets a specific initial direction for the ball (useful for training)"""
+        angle_radians = math.radians(angle_degrees)
+        self.reset_ball(direction, angle_radians)
 
     def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
         """Updates game physics"""
@@ -247,7 +253,11 @@ class PhysicsEngine:
         self.rotating_paddles.clear()
 
         # Reset paddles to their initial position
+        self.player1.position.x = game_config.PADDLE_MARGIN
         self.player1.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
+        self.player2.position.x = (
+            game_config.FIELD_WIDTH - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH
+        )
         self.player2.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
         self.player1.reset_size()
         self.player2.reset_size()

@@ -210,6 +210,7 @@ class PygameRenderer:
         options = [
             "1 vs 1 (Two players)",
             "1 vs AI (Player vs AI)",
+            "Play vs Trained Model",
             "AI vs AI (Demonstration)",
             "Quit",
         ]
@@ -227,6 +228,141 @@ class PygameRenderer:
         inst_rect = inst_surface.get_rect()
         inst_rect.center = (self.width // 2, self.height * 3 // 4 + 50)
         self.screen.blit(inst_surface, inst_rect)
+
+    def draw_model_selection_menu(self, available_models: list, selected_model: int = 0) -> None:
+        """Draw the model selection menu"""
+        self.clear_screen()
+
+        # Title
+        title_surface = self.font_large.render("SELECT TRAINED MODEL", True, self.colors["text"])
+        title_rect = title_surface.get_rect()
+        title_rect.center = (self.width // 2, self.height // 6)
+        self.screen.blit(title_surface, title_rect)
+
+        # Check if models are available
+        if not available_models:
+            no_models_surface = self.font_medium.render(
+                "No trained models found!", True, (255, 100, 100)
+            )
+            no_models_rect = no_models_surface.get_rect()
+            no_models_rect.center = (self.width // 2, self.height // 2)
+            self.screen.blit(no_models_surface, no_models_rect)
+
+            back_surface = self.font_small.render(
+                "Press ESCAPE to return to main menu", True, self.colors["text"]
+            )
+            back_rect = back_surface.get_rect()
+            back_rect.center = (self.width // 2, self.height // 2 + 60)
+            self.screen.blit(back_surface, back_rect)
+            return
+
+        # Display models list
+        start_y = self.height // 3
+        max_visible = min(6, len(available_models))  # Show max 6 models at once
+
+        # Calculate scroll offset if there are more models than can fit
+        scroll_offset = 0
+        if selected_model >= max_visible - 1:
+            scroll_offset = selected_model - max_visible + 1
+
+        for i in range(max_visible):
+            model_index = i + scroll_offset
+            if model_index >= len(available_models):
+                break
+
+            model = available_models[model_index]
+            is_selected = model_index == selected_model
+
+            # Model name
+            color = (255, 255, 0) if is_selected else self.colors["text"]
+            model_surface = self.font_medium.render(model["name"], True, color)
+            model_rect = model_surface.get_rect()
+            model_rect.center = (self.width // 2, start_y + i * 50)
+            self.screen.blit(model_surface, model_rect)
+
+            # Model file name (smaller text)
+            if is_selected:
+                file_surface = self.font_small.render(f"({model['file']})", True, (180, 180, 180))
+                file_rect = file_surface.get_rect()
+                file_rect.center = (self.width // 2, start_y + i * 50 + 25)
+                self.screen.blit(file_surface, file_rect)
+
+        # Scroll indicators
+        if scroll_offset > 0:
+            up_arrow = self.font_small.render("↑ More models above", True, (150, 150, 150))
+            up_rect = up_arrow.get_rect()
+            up_rect.center = (self.width // 2, start_y - 30)
+            self.screen.blit(up_arrow, up_rect)
+
+        if scroll_offset + max_visible < len(available_models):
+            down_arrow = self.font_small.render("↓ More models below", True, (150, 150, 150))
+            down_rect = down_arrow.get_rect()
+            down_rect.center = (self.width // 2, start_y + max_visible * 50 + 20)
+            self.screen.blit(down_arrow, down_rect)
+
+        # Instructions
+        instructions = [
+            "Use UP/DOWN arrows to select",
+            "Press ENTER to load model",
+            "Press ESCAPE to return to main menu",
+        ]
+
+        for i, instruction in enumerate(instructions):
+            inst_surface = self.font_small.render(instruction, True, self.colors["text"])
+            inst_rect = inst_surface.get_rect()
+            inst_rect.center = (self.width // 2, self.height * 4 // 5 + i * 25)
+            self.screen.blit(inst_surface, inst_rect)
+
+    def draw_error_message(self, message: str) -> None:
+        """Draw an error message overlay"""
+        # Semi-transparent background
+        overlay = pygame.Surface((self.width, self.height))
+        overlay.set_alpha(128)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+
+        # Error box background
+        box_width = min(600, self.width - 100)
+        box_height = 120
+        box_x = (self.width - box_width) // 2
+        box_y = (self.height - box_height) // 2
+
+        error_box = pygame.Surface((box_width, box_height))
+        error_box.fill((139, 0, 0))  # Dark red
+        pygame.draw.rect(error_box, (255, 0, 0), error_box.get_rect(), 3)  # Red border
+        self.screen.blit(error_box, (box_x, box_y))
+
+        # Error title
+        title_surface = self.font_medium.render("ERROR", True, (255, 255, 255))
+        title_rect = title_surface.get_rect()
+        title_rect.center = (self.width // 2, box_y + 25)
+        self.screen.blit(title_surface, title_rect)
+
+        # Error message (word wrap for long messages)
+        words = message.split(" ")
+        lines = []
+        current_line: list[str] = []
+
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            text_width = self.font_small.size(test_line)[0]
+
+            if text_width <= box_width - 40:  # 20px margin on each side
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [word]
+
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        # Display message lines
+        for i, line in enumerate(lines[:3]):  # Max 3 lines
+            line_surface = self.font_small.render(line, True, (255, 255, 255))
+            line_rect = line_surface.get_rect()
+            line_rect.center = (self.width // 2, box_y + 55 + i * 20)
+            self.screen.blit(line_surface, line_rect)
 
     def draw_controls_help(self) -> None:
         """Draw controls help overlay"""

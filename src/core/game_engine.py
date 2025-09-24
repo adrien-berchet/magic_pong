@@ -5,6 +5,7 @@ Magic Pong main game engine
 import time
 from typing import Any
 
+import pygame
 from magic_pong.ai.interface import AIPlayer, GameEnvironment
 from magic_pong.core.entities import Action
 from magic_pong.core.physics import PhysicsEngine
@@ -223,8 +224,29 @@ class GameEngine:
 class TrainingManager:
     """Manager for AI training"""
 
-    def __init__(self, headless: bool = True):
+    def __init__(
+        self,
+        headless: bool = True,
+        initial_ball_direction: int = 0,
+        initial_ball_angle: float | None = None,
+    ):
         self.game_engine = GameEngine(headless=headless)
+        self.headless = headless
+        self.renderer = None
+        self.initial_ball_direction = initial_ball_direction
+        self.initial_ball_angle = initial_ball_angle
+
+        # Initialize renderer if not headless
+        if not headless:
+            try:
+                from magic_pong.gui.pygame_renderer import PygameRenderer
+
+                self.renderer = PygameRenderer()
+                print("🎮 GUI renderer initialized for training visualization")
+            except ImportError:
+                print("⚠️  Warning: Could not import PygameRenderer, falling back to headless mode")
+                self.headless = True
+
         self.training_stats: dict[str, Any] = {
             "episodes": 0,
             "total_steps": 0,
@@ -251,6 +273,11 @@ class TrainingManager:
         self.game_engine.set_players(player1, player2)
         self.game_engine.start_game()
 
+        # Set initial ball direction if specified
+        if self.initial_ball_direction != 0 or self.initial_ball_angle is not None:
+            physics_engine = self.game_engine.ai_environment.physics_engine
+            physics_engine.reset_ball(self.initial_ball_direction, self.initial_ball_angle)
+
         episode_stats: dict[str, Any] = {
             "steps": 0,
             "winner": 0,
@@ -260,7 +287,38 @@ class TrainingManager:
         }
 
         while self.game_engine.is_running() and episode_stats["steps"] < max_steps:
+            # Handle pygame events if renderer is active
+            if self.renderer is not None:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        print("Training interrupted by user")
+                        return episode_stats
+                    elif event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE:
+                            print("Training interrupted by ESC key")
+                            return episode_stats
+
             result = self.game_engine.update()
+
+            # Render the game if renderer is available
+            if self.renderer is not None:
+                game_state = result["game_state"]
+
+                # Add training info to display
+                training_info = {
+                    "episode": self.training_stats["episodes"] + 1,
+                    "step": episode_stats["steps"],
+                    "reward_p1": episode_stats["total_reward_p1"],
+                    "reward_p2": episode_stats["total_reward_p2"],
+                    "player1_wins": self.training_stats["player1_wins"],
+                    "player2_wins": self.training_stats["player2_wins"],
+                }
+
+                self.renderer.render_game_state(game_state, {"training_info": training_info})
+                self.renderer.present()
+
+                # Control frame rate to make visualization watchable
+                self.renderer.update()
 
             episode_stats["steps"] += 1
             episode_stats["total_reward_p1"] += result["rewards"]["player1"]
@@ -313,3 +371,16 @@ class TrainingManager:
             "average_episode_length": 0.0,
             "average_rewards": {"player1": 0.0, "player2": 0.0},
         }
+
+    def set_ball_initial_direction(
+        self, direction: int = 0, angle_rad: float | None = None
+    ) -> None:
+        """Set the initial ball direction for the next episodes"""
+        self.initial_ball_direction = direction
+        self.initial_ball_angle = angle_rad
+
+    def cleanup(self) -> None:
+        """Clean up resources, especially the renderer"""
+        if self.renderer is not None:
+            self.renderer.cleanup()
+            self.renderer = None
