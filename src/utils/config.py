@@ -135,6 +135,12 @@ class AIConfig:
     LOSE_PENALTY: float = -1.0
     BONUS_REWARD: float = 0.1
     WALL_HIT_REWARD: float = 0.1  # Small bonus for hitting the ball
+    USE_PROXIMITY_REWARD: bool = False  # Enable proximity reward
+    PROXIMITY_REWARD_FACTOR: float = 0.001  # Reward factor for getting closer to the ball
+    PROXIMITY_PENALTY_FACTOR: float = 0.005  # Penalty factor for moving away from the ball
+    MAX_PROXIMITY_REWARD: float = 0.05  # Cap for proximity reward per step
+    DEBUG_OPTIMAL_POINTS: bool = False  # Display optimal interception points for debugging
+    SHOW_OPTIMAL_POINTS_GUI: bool = False  # Show optimal points in graphical interface
 
     # Training
     MAX_EPISODE_STEPS: int = 10000

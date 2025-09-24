@@ -469,9 +469,18 @@ def train_progressive_curriculum(agent, args):
     initial_score_reward = ai_config.SCORE_REWARD
     initial_lose_penalty = ai_config.LOSE_PENALTY
     initial_wall_hit_reward = ai_config.WALL_HIT_REWARD
+    initial_use_proximity_reward = ai_config.USE_PROXIMITY_REWARD
+    initial_proximity_reward_factor = ai_config.PROXIMITY_REWARD_FACTOR
+    initial_proximity_penalty_factor = ai_config.PROXIMITY_PENALTY_FACTOR
+    initial_max_proximity_reward = ai_config.MAX_PROXIMITY_REWARD
     ai_config.SCORE_REWARD = 0
     ai_config.LOSE_PENALTY = 0
-    ai_config.WALL_HIT_REWARD = 1  # Increase reward for hitting wall to encourage contact
+    ai_config.WALL_HIT_REWARD = 1
+    ai_config.USE_PROXIMITY_REWARD = True
+    ai_config.PROXIMITY_REWARD_FACTOR = 0.1
+    ai_config.PROXIMITY_PENALTY_FACTOR = 0.1
+    ai_config.MAX_PROXIMITY_REWARD = 0.5
+    ai_config.SHOW_OPTIMAL_POINTS_GUI = True
 
     phase1_opponent = get_opponent(args.phase1_training_opponent)
     phase1_rewards, phase1_wins, phase1_episodes = train_phase(
@@ -488,6 +497,11 @@ def train_progressive_curriculum(agent, args):
     ai_config.SCORE_REWARD = initial_score_reward
     ai_config.LOSE_PENALTY = initial_lose_penalty
     ai_config.WALL_HIT_REWARD = initial_wall_hit_reward
+    ai_config.USE_PROXIMITY_REWARD = initial_use_proximity_reward
+    ai_config.PROXIMITY_REWARD_FACTOR = initial_proximity_reward_factor
+    ai_config.PROXIMITY_PENALTY_FACTOR = initial_proximity_penalty_factor
+    ai_config.MAX_PROXIMITY_REWARD = initial_max_proximity_reward
+    ai_config.SHOW_OPTIMAL_POINTS_GUI = False
 
     total_episodes_count += phase1_episodes
     all_phase_data.append(

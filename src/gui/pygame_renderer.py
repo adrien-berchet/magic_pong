@@ -7,7 +7,7 @@ from typing import Any
 
 import pygame
 from magic_pong.core.entities import Ball, Bonus, BonusType, Paddle, RotatingPaddle
-from magic_pong.utils.config import game_config
+from magic_pong.utils.config import ai_config, game_config
 
 
 class PygameRenderer:
@@ -36,6 +36,8 @@ class PygameRenderer:
             "bonus": game_config.BONUS_COLORS,
             "text": (255, 255, 255),
             "line": (100, 100, 100),
+            "optimal_point_p1": (255, 100, 100),  # Rouge pour joueur 1
+            "optimal_point_p2": (100, 255, 100),  # Vert pour joueur 2
         }
 
         # Font for text rendering
@@ -66,6 +68,42 @@ class PygameRenderer:
         """Draw the game ball"""
         pos = (int(ball.position.x), int(ball.position.y))
         pygame.draw.circle(self.screen, self.colors["ball"], pos, int(ball.radius))
+
+    def draw_optimal_point(
+        self, position: tuple, player_id: int, is_approaching: bool = False
+    ) -> None:
+        """Draw an optimal interception point as a virtual ball"""
+        if not ai_config.SHOW_OPTIMAL_POINTS_GUI:
+            return
+
+        pos = (int(position[0]), int(position[1]))
+        color_key = f"optimal_point_p{player_id}"
+        color = self.colors.get(color_key, (255, 255, 255))
+
+        # Draw the optimal point as a semi-transparent circle
+        radius = 12 if is_approaching else 8
+
+        # Create a surface for alpha blending
+        point_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+
+        # Draw filled circle with transparency
+        alpha = 180 if is_approaching else 120
+        color_with_alpha = (*color, alpha)
+        pygame.draw.circle(point_surface, color_with_alpha, (radius, radius), radius)
+
+        # Draw border for better visibility
+        border_color = (*color, 255)
+        pygame.draw.circle(point_surface, border_color, (radius, radius), radius, 2)
+
+        # Add pulsing effect for approaching balls
+        if is_approaching:
+            pulse = abs(math.sin(pygame.time.get_ticks() * 0.008)) * 3
+            pygame.draw.circle(
+                point_surface, border_color, (radius, radius), int(radius + pulse), 1
+            )
+
+        # Blit to main screen
+        self.screen.blit(point_surface, (pos[0] - radius, pos[1] - radius))
 
     def draw_paddle(self, paddle: Paddle) -> None:
         """Draw a player paddle"""
@@ -429,6 +467,18 @@ class PygameRenderer:
         ball_vel = game_state["ball_velocity"]
         ball = Ball(ball_pos[0], ball_pos[1], ball_vel[0], ball_vel[1])
         self.draw_ball(ball)
+
+        # Draw optimal points (before paddles for better visual layering)
+        if additional_info and "optimal_points" in additional_info:
+            optimal_points = additional_info["optimal_points"]
+            for player_id, point_data in optimal_points.items():
+                if point_data and "position" in point_data:
+                    ball_vel_data = point_data.get("ball_velocity", (0, 0))
+                    # Check if ball is moving towards this player
+                    is_approaching = (player_id == 1 and ball_vel_data[0] < 0) or (
+                        player_id == 2 and ball_vel_data[0] > 0
+                    )
+                    self.draw_optimal_point(point_data["position"], player_id, is_approaching)
 
         # Draw paddles
         p1_pos = game_state["player1_position"]

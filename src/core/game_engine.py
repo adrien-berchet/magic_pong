@@ -313,8 +313,11 @@ class TrainingManager:
                     "player1_wins": self.training_stats["player1_wins"],
                     "player2_wins": self.training_stats["player2_wins"],
                 }
+                data = {"training_info": training_info}
+                if "optimal_points" in result["info"]:
+                    data["optimal_points"] = result["info"]["optimal_points"]
 
-                self.renderer.render_game_state(game_state, {"training_info": training_info})
+                self.renderer.render_game_state(game_state, data)
                 self.renderer.present()
 
                 # Control frame rate to make visualization watchable

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from magic_pong.core.entities import Action
 from magic_pong.core.physics import PhysicsEngine
-from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import ai_config, game_config
 
 
 class AIPlayer(ABC):
@@ -172,13 +172,14 @@ class RewardCalculator:
 
     def __init__(self) -> None:
         self.last_score = [0, 0]
-        self.last_ball_distance = 0.0
+        self.last_ball_distance: dict = {}
+        self.optimal_points: dict = {}  # Store optimal points for visualization
 
     def calculate_reward(
         self, game_state: dict[str, Any], events: dict[str, list], player_id: int
     ) -> float:
         """
-        Calculates reward for a player based on events
+        Calculates reward for a player based on events and proximity to ball
 
         Args:
             game_state: Current game state
@@ -212,12 +213,304 @@ class RewardCalculator:
             if hit["player"] == player_id:
                 reward += ai_config.WALL_HIT_REWARD * 2  # Bonus for using rotating paddle
 
+        # PROXIMITY-BASED REWARD SHAPING
+        # Reward/penalize based on distance change to the ball
+        if ai_config.USE_PROXIMITY_REWARD:
+            proximity_reward = self._calculate_proximity_reward(game_state, player_id)
+            reward += proximity_reward
+
         return reward
+
+    def _calculate_proximity_reward(self, game_state: dict[str, Any], player_id: int) -> float:
+        """
+        Calculate reward based on proximity to the optimal interception point on ball trajectory
+
+        Args:
+            game_state: Current game state containing positions
+            player_id: Player ID (1 or 2)
+
+        Returns:
+            float: Proximity reward (positive for getting closer, negative for moving away)
+        """
+        if not ai_config.USE_PROXIMITY_REWARD:
+            return 0.0
+
+        # Get positions and velocity from game state
+        ball_pos = game_state.get("ball_position", (0, 0))
+        ball_vel = game_state.get("ball_velocity", (0, 0))
+        player_pos = game_state.get(f"player{player_id}_position", (0, 0))
+        field_bounds = game_state.get("field_bounds", (0, 800, 0, 600))
+
+        # Calculate paddle center
+        paddle_center_x = player_pos[0] + game_config.PADDLE_WIDTH / 2
+        paddle_center_y = player_pos[1] + game_config.PADDLE_HEIGHT / 2
+
+        # Find optimal interception point on ball's trajectory
+        optimal_point = self._find_optimal_interception_point(
+            ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id
+        )
+
+        if optimal_point is None:
+            # Fallback to current ball position if trajectory calculation fails
+            optimal_point = (paddle_center_x, ball_pos[1])
+
+        # Store optimal point for visualization
+        self.optimal_points[player_id] = {
+            "position": optimal_point,
+            "ball_position": ball_pos,
+            "ball_velocity": ball_vel,
+            "paddle_position": (paddle_center_x, paddle_center_y),
+        }
+
+        # Debug display of optimal points
+        if ai_config.DEBUG_OPTIMAL_POINTS:
+            self._debug_optimal_point(
+                player_id, ball_pos, ball_vel, (paddle_center_x, paddle_center_y), optimal_point
+            )
+
+        # Calculate current distance to optimal interception point
+        current_distance = np.linalg.norm(
+            optimal_point - np.array((paddle_center_x, paddle_center_y))
+        )
+
+        # Get previous distance for this player
+        previous_distance = self.last_ball_distance.get(player_id, None)
+        if previous_distance is None:
+            # Update stored distance for next calculation
+            self.last_ball_distance[player_id] = current_distance
+            return 0.0
+
+        # Calculate distance change (negative means getting closer)
+        distance_change = current_distance - previous_distance
+
+        # Calculate proximity reward
+        proximity_reward = 0.0
+        if distance_change < 0:  # Getting closer to optimal interception point
+            # Reward for getting closer, scaled by how much closer
+            proximity_reward = min(
+                abs(distance_change) * ai_config.PROXIMITY_REWARD_FACTOR,
+                ai_config.MAX_PROXIMITY_REWARD,
+            )
+        elif distance_change > 0:  # Moving away from optimal interception point
+            # Small penalty for moving away
+            proximity_reward = -min(
+                distance_change * ai_config.PROXIMITY_PENALTY_FACTOR,
+                ai_config.MAX_PROXIMITY_REWARD / 2,  # Penalty is smaller than max reward
+            )
+
+        # Update stored distance for next calculation
+        self.last_ball_distance[player_id] = current_distance
+
+        return proximity_reward
+
+    def _find_optimal_interception_point(
+        self,
+        ball_pos: tuple,
+        ball_vel: tuple,
+        paddle_pos: tuple,
+        field_bounds: tuple,
+        player_id: int,
+    ) -> tuple | None:
+        """
+        Find the optimal interception point on the ball's trajectory considering wall bounces
+
+        Args:
+            ball_pos: Current ball position (x, y)
+            ball_vel: Ball velocity (vx, vy)
+            paddle_pos: Paddle center position (x, y)
+            field_bounds: Field boundaries (min_x, max_x, min_y, max_y)
+
+        Returns:
+            Optimal interception point (x, y) or None if no valid trajectory
+        """
+        # if abs(ball_vel[0]) < 0.1 and abs(ball_vel[1]) < 0.1:
+        #     # Ball is nearly stationary, return current position
+        #     return ball_pos
+
+        # For stability, we use a hybrid approach:
+        # 1. If ball is moving towards paddle side, predict interception
+        # 2. Otherwise, reward positioning towards current ball position
+
+        min_x, max_x, min_y, max_y = field_bounds
+
+        # Determine paddle side (left = player 1, right = player 2)
+        is_left_paddle = player_id == 1
+
+        # Check if ball is moving towards this paddle
+        ball_moving_towards = (is_left_paddle and ball_vel[0] < 0) or (
+            not is_left_paddle and ball_vel[0] > 0
+        )
+
+        if not ball_moving_towards:
+            # Ball moving away or sideways, reward staying near current ball Y position
+            return None
+
+        # Ball is moving towards paddle, find best interception point
+        trajectory_points = self._simulate_ball_trajectory(
+            ball_pos, ball_vel, field_bounds, max_time=10.0, dt=0.05
+        )
+
+        if not trajectory_points:
+            return ball_pos
+
+        # Find closest interception points on paddle side
+        # paddle_x_zone = paddle_pos[0]
+        # best_point = ball_pos
+        # min_distance = float('inf')
+
+        trajectory_pts = np.array([i[0] for i in trajectory_points])
+        distances = np.linalg.norm(trajectory_pts - paddle_pos, axis=1)
+        best_point = trajectory_pts[np.argmin(distances)]
+
+        # for point, time_step in trajectory_points:
+        #     # Only consider points that are reasonably close to paddle's X zone
+        #     x_distance_to_paddle_zone = abs(point[0] - paddle_x_zone)
+
+        #     if x_distance_to_paddle_zone < 250:  # Within reasonable reach
+        #         # Calculate reachability: distance vs time available
+        #         y_distance = abs(point[1] - paddle_pos[1])
+
+        #         # Estimate if paddle can reach this point in time
+        #         paddle_speed = 500  # From config
+        #         time_needed = y_distance / paddle_speed
+
+        #         if time_needed <= time_step + 0.5:  # Add some tolerance
+        #             # This point is reachable, calculate priority
+        #             priority = y_distance + x_distance_to_paddle_zone * 0.1
+
+        #             if priority < min_distance:
+        #                 min_distance = priority
+        #                 best_point = point
+
+        return best_point
+
+    def _simulate_ball_trajectory(
+        self,
+        ball_pos: tuple,
+        ball_vel: tuple,
+        field_bounds: tuple,
+        max_time: float = 10.0,
+        dt: float = 0.1,
+    ) -> list:
+        """
+        Simulate ball trajectory with wall bounces
+
+        Args:
+            ball_pos: Starting ball position (x, y)
+            ball_vel: Ball velocity (vx, vy)
+            field_bounds: Field boundaries (min_x, max_x, min_y, max_y)
+            max_time: Maximum simulation time
+            dt: Time step for simulation
+
+        Returns:
+            List of (position, time) tuples along the trajectory
+        """
+        min_x, max_x, min_y, max_y = field_bounds
+        ball_radius = game_config.BALL_RADIUS
+
+        # Current state
+        pos_x, pos_y = ball_pos
+        vel_x, vel_y = ball_vel
+
+        trajectory = [(ball_pos, 0.0)]
+        current_time = 0.0
+
+        while current_time < max_time:
+            # Predict next position
+            next_x = pos_x + vel_x * dt
+            next_y = pos_y + vel_y * dt
+
+            # Check for wall bounces (top and bottom walls only, like in the game)
+            if next_y - ball_radius <= min_y:
+                # Bottom wall bounce
+                next_y = min_y + ball_radius
+                vel_y = -vel_y
+            elif next_y + ball_radius >= max_y:
+                # Top wall bounce
+                next_y = max_y - ball_radius
+                vel_y = -vel_y
+
+            # Check for left/right boundaries (goals) - stop simulation
+            if next_x - ball_radius <= min_x or next_x + ball_radius >= max_x:
+                # Ball would reach goal area, add final point and stop
+                trajectory.append(((next_x, next_y), current_time + dt))
+                break
+
+            # Update position
+            pos_x, pos_y = next_x, next_y
+            current_time += dt
+
+            # Add point to trajectory
+            trajectory.append(((pos_x, pos_y), current_time))
+
+            # Stop if ball gets too close to goals (to avoid infinite simulation)
+            if pos_x < min_x + 100 or pos_x > max_x - 100:
+                break
+
+        return trajectory
+
+    def _debug_optimal_point(
+        self,
+        player_id: int,
+        ball_pos: tuple,
+        ball_vel: tuple,
+        paddle_pos: tuple,
+        optimal_point: tuple,
+    ) -> None:
+        """
+        Debug display of optimal interception point information
+
+        Args:
+            player_id: Player ID (1 or 2)
+            ball_pos: Current ball position
+            ball_vel: Ball velocity
+            paddle_pos: Paddle center position
+            optimal_point: Calculated optimal point
+        """
+        # Only display every few calls to avoid spam
+        if not hasattr(self, "_debug_counter"):
+            self._debug_counter = {1: 0, 2: 0}
+
+        self._debug_counter[player_id] += 1
+
+        # Display every 30 calls (roughly every 0.5 seconds at 60fps)
+        if self._debug_counter[player_id] % 30 == 0:
+            ball_speed = (ball_vel[0] ** 2 + ball_vel[1] ** 2) ** 0.5
+            distance_to_optimal = (
+                (optimal_point[0] - paddle_pos[0]) ** 2 + (optimal_point[1] - paddle_pos[1]) ** 2
+            ) ** 0.5
+
+            # Determine ball direction
+            if abs(ball_vel[0]) > abs(ball_vel[1]):
+                direction = "→ droite" if ball_vel[0] > 0 else "← gauche"
+            else:
+                direction = "↑ haut" if ball_vel[1] > 0 else "↓ bas"
+
+            # Check if ball is moving towards this player
+            is_approaching = (player_id == 1 and ball_vel[0] < 0) or (
+                player_id == 2 and ball_vel[0] > 0
+            )
+
+            print(
+                f"🎯 P{player_id}: Balle({ball_pos[0]:.0f},{ball_pos[1]:.0f}) {direction} v={ball_speed:.0f}"
+            )
+            print(
+                f"   Raquette({paddle_pos[0]:.0f},{paddle_pos[1]:.0f}) → Optimal({optimal_point[0]:.0f},{optimal_point[1]:.0f}) dist={distance_to_optimal:.0f}"
+            )
+            print(f"   {'🎯 Se rapproche!' if is_approaching else '🛡️ Défensif'}")
+
+    def get_optimal_points(self) -> dict:
+        """Get current optimal points for visualization"""
+        return self.optimal_points.copy()
 
     def reset(self) -> None:
         """Resets the calculator"""
         self.last_score = [0, 0]
-        self.last_ball_distance = 0.0
+        self.last_ball_distance = {}
+        self.optimal_points = {}
+        # Reset debug counter
+        if hasattr(self, "_debug_counter"):
+            self._debug_counter = {1: 0, 2: 0}
 
 
 class GameEnvironment:
@@ -300,6 +593,10 @@ class GameEnvironment:
             "game_state": game_state,
             "winner": self.physics_engine.get_winner() if done else 0,
             "step_count": self.step_count,
+            "optimal_points": {
+                1: self.reward_calculators[1].get_optimal_points().get(1),
+                2: self.reward_calculators[2].get_optimal_points().get(2),
+            },
         }
 
         self.step_count += 1
