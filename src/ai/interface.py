@@ -172,8 +172,8 @@ class RewardCalculator:
 
     def __init__(self) -> None:
         self.last_score = [0, 0]
-        self.last_ball_distance: dict = {}
-        self.optimal_points: dict = {}  # Store optimal points for visualization
+        self.last_ball_distance: dict[int, float] = {}
+        self.optimal_points: dict[int, dict] = {}  # Store optimal points for visualization
 
     def calculate_reward(
         self, game_state: dict[str, Any], events: dict[str, list], player_id: int
@@ -242,7 +242,9 @@ class RewardCalculator:
         field_bounds = game_state.get("field_bounds", (0, 800, 0, 600))
 
         # Calculate paddle center
-        paddle_center_x = player_pos[0] + game_config.PADDLE_WIDTH / 2
+        paddle_center_x = player_pos[0]
+        if player_id == 1:
+            paddle_center_x += game_config.PADDLE_WIDTH / 2
         paddle_center_y = player_pos[1] + game_config.PADDLE_HEIGHT / 2
 
         # Find optimal interception point on ball's trajectory
@@ -275,9 +277,11 @@ class RewardCalculator:
 
         # Get previous distance for this player
         previous_distance = self.last_ball_distance.get(player_id, None)
+
+        # Update stored distance for next calculation
+        self.last_ball_distance[player_id] = float(current_distance)
+
         if previous_distance is None:
-            # Update stored distance for next calculation
-            self.last_ball_distance[player_id] = current_distance
             return 0.0
 
         # Calculate distance change (negative means getting closer)
@@ -287,19 +291,18 @@ class RewardCalculator:
         proximity_reward = 0.0
         if distance_change < 0:  # Getting closer to optimal interception point
             # Reward for getting closer, scaled by how much closer
-            proximity_reward = min(
-                abs(distance_change) * ai_config.PROXIMITY_REWARD_FACTOR,
-                ai_config.MAX_PROXIMITY_REWARD,
-            )
-        elif distance_change > 0:  # Moving away from optimal interception point
+            proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR
+            # proximity_reward = min(
+            #     abs(distance_change) * ai_config.PROXIMITY_REWARD_FACTOR,
+            #     ai_config.MAX_PROXIMITY_REWARD,
+            # )
+        elif distance_change >= 0:  # Moving away from optimal interception point
             # Small penalty for moving away
-            proximity_reward = -min(
-                distance_change * ai_config.PROXIMITY_PENALTY_FACTOR,
-                ai_config.MAX_PROXIMITY_REWARD / 2,  # Penalty is smaller than max reward
-            )
-
-        # Update stored distance for next calculation
-        self.last_ball_distance[player_id] = current_distance
+            proximity_reward = -ai_config.PROXIMITY_PENALTY_FACTOR
+            # proximity_reward = -min(
+            #     distance_change * ai_config.PROXIMITY_PENALTY_FACTOR + ai_config.MAX_PROXIMITY_REWARD / 4,
+            #     ai_config.MAX_PROXIMITY_REWARD,
+            # )
 
         return proximity_reward
 

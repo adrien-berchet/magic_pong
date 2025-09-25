@@ -52,14 +52,14 @@ class DQNNetwork(nn.Module):
         # Initialisation Xavier pour la stabilité
         self._initialize_weights()
 
-    def _initialize_weights(self):
+    def _initialize_weights(self) -> None:
         """Initialisation Xavier des poids"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass avec normalisation et dropout"""
         x = x.to(device)
 
@@ -146,13 +146,13 @@ class PrioritizedReplayBuffer:
 
         return samples, weights, indices
 
-    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
         """Met à jour les priorités avec les nouvelles erreurs TD"""
         for idx, td_error in zip(indices, td_errors, strict=False):
             priority = (abs(td_error) + self.epsilon) ** self.alpha
             self.priorities[idx] = priority
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.buffer)
 
 
@@ -179,7 +179,7 @@ class ReplayBuffer:
         """Échantillonnage aléatoire"""
         return random.sample(self.buffer, min(batch_size, len(self.buffer)))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.buffer)
 
 
@@ -194,10 +194,10 @@ class DQNAgent(AIPlayer):
         gamma: float = 0.99,
         epsilon: float = 1.0,
         epsilon_min: float = 0.01,
-        epsilon_decay: float = 0.995,
+        epsilon_decay: float = 0.9995,
         batch_size: int = 64,
         memory_size: int = 10000,
-        use_prioritized_replay: bool = True,
+        use_prioritized_replay: bool = False,
         tau: float = 0.005,
         player_id: int = 1,
         name: str = "DQN AI",
@@ -245,6 +245,7 @@ class DQNAgent(AIPlayer):
         )
 
         # Buffer de replay
+        self.memory: ReplayBuffer | PrioritizedReplayBuffer
         if use_prioritized_replay:
             self.memory = PrioritizedReplayBuffer(memory_size)
         else:
@@ -504,7 +505,7 @@ class DQNAgent(AIPlayer):
             experiences, weights, indices = self.memory.sample(self.batch_size)
             weights = torch.FloatTensor(weights).to(device)
         else:
-            experiences = self.memory.sample(self.batch_size)
+            experiences, weights, indices = self.memory.sample(self.batch_size)
             weights = torch.ones(len(experiences)).to(device)
             indices = None
 
@@ -547,8 +548,8 @@ class DQNAgent(AIPlayer):
         # Décroissance d'epsilon avec planification adaptive
         if self.epsilon > self.epsilon_min:
             # Décroissance plus lente en début d'entraînement
-            decay_factor = max(0.999, self.epsilon_decay + 0.001 * (1 - self.epsilon))
-            self.epsilon *= decay_factor
+            decay_factor = self.epsilon_decay
+            self.epsilon = max(self.epsilon_min, self.epsilon * decay_factor)
 
         self.training_step += 1
         self.loss_history.append(loss.item())
