@@ -505,7 +505,7 @@ class DQNAgent(AIPlayer):
             experiences, weights, indices = self.memory.sample(self.batch_size)
             weights = torch.FloatTensor(weights).to(device)
         else:
-            experiences, weights, indices = self.memory.sample(self.batch_size)
+            experiences = self.memory.sample(self.batch_size)  # type: ignore[assignment]
             weights = torch.ones(len(experiences)).to(device)
             indices = None
 

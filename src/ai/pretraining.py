@@ -9,7 +9,7 @@ import random
 from typing import Any
 
 import numpy as np
-from magic_pong.ai.interface import AIPlayer, RewardCalculator
+from magic_pong.ai.interface import AIPlayer, ObservationProcessor, RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import ai_config, game_config
@@ -20,11 +20,11 @@ class OptimalPointPretrainer:
 
     def __init__(
         self,
-        field_width: float = 800.0,
-        field_height: float = 600.0,
-        paddle_width: float = 15.0,
-        paddle_height: float = 60.0,
-        ball_radius: float = 8.0,
+        field_width: float | None = None,
+        field_height: float | None = None,
+        paddle_width: float | None = None,
+        paddle_height: float | None = None,
+        ball_radius: float | None = None,
     ):
         """
         Args:
@@ -34,11 +34,16 @@ class OptimalPointPretrainer:
             paddle_height: Hauteur de la raquette
             ball_radius: Rayon de la balle
         """
-        self.field_width = field_width
-        self.field_height = field_height
-        self.paddle_width = paddle_width
-        self.paddle_height = paddle_height
-        self.ball_radius = ball_radius
+        self.field_width = field_width if field_width is not None else game_config.FIELD_WIDTH
+        self.field_height = field_height if field_height is not None else game_config.FIELD_HEIGHT
+        self.paddle_width = paddle_width if paddle_width is not None else game_config.PADDLE_WIDTH
+        self.paddle_height = (
+            paddle_height if paddle_height is not None else game_config.PADDLE_HEIGHT
+        )
+        self.ball_radius = ball_radius if ball_radius is not None else game_config.BALL_RADIUS
+
+        # Define observation processor
+        self.observation_processor = ObservationProcessor(field_width, field_height)
 
         # Marges pour éviter les bords
         self.margin = game_config.PADDLE_MARGIN
@@ -147,8 +152,8 @@ class OptimalPointPretrainer:
             f"player{3-player_id}_paddle_size": self.paddle_height,
             "active_bonuses": [],
             "rotating_paddles": [],
-            "score": [0, 0],
-            "time_elapsed": 0.0,
+            "score": [np.random.randint(0, 10), np.random.randint(0, 10)],
+            "time_elapsed": np.random.uniform(0, 300),  # Jusqu'à 5 minutes
             "field_bounds": ball_state["field_bounds"],
         }
 
@@ -371,35 +376,7 @@ class OptimalPointPretrainer:
         Convertit un état de jeu en observation pour l'agent.
         Utilise la même logique que ObservationProcessor.
         """
-        # Positions normalisées
-        ball_x = game_state["ball_position"][0] / self.field_width
-        ball_y = game_state["ball_position"][1] / self.field_height
-
-        player_pos = game_state[f"player{player_id}_position"]
-        opponent_pos = game_state[f"player{3-player_id}_position"]
-
-        player_x = player_pos[0] / self.field_width
-        player_y = player_pos[1] / self.field_height
-        opponent_x = opponent_pos[0] / self.field_width
-        opponent_y = opponent_pos[1] / self.field_height
-
-        observation = {
-            "ball_pos": [ball_x, ball_y],
-            "player_pos": [player_x, player_y],
-            "opponent_pos": [opponent_x, opponent_y],
-            "ball_vel": [
-                game_state["ball_velocity"][0] / 500.0,
-                game_state["ball_velocity"][1] / 500.0,
-            ],
-            "player_paddle_size": game_state[f"player{player_id}_paddle_size"],
-            "opponent_paddle_size": game_state[f"player{3-player_id}_paddle_size"],
-            "bonuses": [],
-            "rotating_paddles": [],
-            "score_diff": 0,
-            "time_elapsed": 0.0,
-        }
-
-        return observation
+        return self.observation_processor.process_game_state(game_state, player_id)
 
     def _index_to_action(self, action_index: int) -> Action:
         """

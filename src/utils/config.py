@@ -70,6 +70,7 @@ class GameConfig:
 
     # Ball physics
     BALL_RADIUS: float = 8.0
+    MAX_BALL_SPEED: float = 500.0  # pixels per second
     BALL_SPEED: float = 300.0  # pixels per second
     BALL_SPEED_INCREASE: float = 1.05  # Acceleration factor after each bounce
 

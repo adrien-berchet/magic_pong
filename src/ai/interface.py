@@ -97,22 +97,18 @@ class ObservationProcessor:
         """
         observation = {}
 
+        ball_x, ball_y = game_state["ball_position"]
+        player_x, player_y = game_state[f"player{player_id}_position"]
+        opponent_x, opponent_y = game_state[f"player{3-player_id}_position"]
+
         # Normalized positions
         if ai_config.NORMALIZE_POSITIONS:
-            ball_x = game_state["ball_position"][0] / self.field_width
-            ball_y = game_state["ball_position"][1] / self.field_height
-
-            player_pos = game_state[f"player{player_id}_position"]
-            opponent_pos = game_state[f"player{3-player_id}_position"]
-
-            player_x = player_pos[0] / self.field_width
-            player_y = player_pos[1] / self.field_height
-            opponent_x = opponent_pos[0] / self.field_width
-            opponent_y = opponent_pos[1] / self.field_height
-        else:
-            ball_x, ball_y = game_state["ball_position"]
-            player_x, player_y = game_state[f"player{player_id}_position"]
-            opponent_x, opponent_y = game_state[f"player{3-player_id}_position"]
+            ball_x = ball_x / self.field_width
+            ball_y = ball_y / self.field_height
+            player_x = player_x / self.field_width
+            player_y = player_y / self.field_height
+            opponent_x = opponent_x / self.field_width
+            opponent_y = opponent_y / self.field_height
 
         observation["ball_pos"] = [ball_x, ball_y]
         observation["player_pos"] = [player_x, player_y]
@@ -120,11 +116,11 @@ class ObservationProcessor:
 
         # Ball velocity
         if ai_config.INCLUDE_VELOCITY:
+            vel_x, vel_y = game_state["ball_velocity"]
             if ai_config.NORMALIZE_POSITIONS:
-                vel_x = game_state["ball_velocity"][0] / 500.0  # Normalize by approximate max speed
-                vel_y = game_state["ball_velocity"][1] / 500.0
-            else:
-                vel_x, vel_y = game_state["ball_velocity"]
+                # Normalize by approximate max speed
+                vel_x = vel_x / game_config.MAX_BALL_SPEED
+                vel_y = vel_y / game_config.MAX_BALL_SPEED
             observation["ball_vel"] = [vel_x, vel_y]
 
         # Paddle sizes
@@ -135,8 +131,8 @@ class ObservationProcessor:
         bonuses = []
         for bonus_x, bonus_y, bonus_type in game_state["active_bonuses"]:
             if ai_config.NORMALIZE_POSITIONS:
-                bonus_x /= self.field_width
-                bonus_y /= self.field_height
+                bonus_x = bonus_x / self.field_width
+                bonus_y = bonus_y / self.field_height
             bonuses.append([bonus_x, bonus_y, self._encode_bonus_type(bonus_type)])
         observation["bonuses"] = bonuses
 
@@ -144,8 +140,8 @@ class ObservationProcessor:
         rotating_paddles = []
         for rp_x, rp_y, rp_angle in game_state["rotating_paddles"]:
             if ai_config.NORMALIZE_POSITIONS:
-                rp_x /= self.field_width
-                rp_y /= self.field_height
+                rp_x = rp_x / self.field_width
+                rp_y = rp_y / self.field_height
             rotating_paddles.append([rp_x, rp_y, rp_angle])
         observation["rotating_paddles"] = rotating_paddles
 
