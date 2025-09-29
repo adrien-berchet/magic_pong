@@ -1,8 +1,8 @@
 """
-AI examples for Magic Pong
+AI models for Magic Pong
 """
 
-from magic_pong.ai.examples.simple_ai import (
+from magic_pong.ai.models.simple_ai import (
     AggressiveAI,
     DefensiveAI,
     FollowBallAI,

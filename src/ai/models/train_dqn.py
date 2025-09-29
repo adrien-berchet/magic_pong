@@ -9,8 +9,8 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-from magic_pong.ai.examples.dqn_ai import DQNAgent
-from magic_pong.ai.examples.simple_ai import create_ai
+from magic_pong.ai.models.dqn_ai import DQNAgent
+from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.utils.config import ai_config
 
@@ -44,14 +44,14 @@ class DQNTrainer:
         os.makedirs(model_dir, exist_ok=True)
 
         # Métriques d'entraînement
-        self.training_rewards = []
-        self.evaluation_scores = []
-        self.win_rates = []
+        self.training_rewards: list[float] = []
+        self.evaluation_scores: list[float] = []
+        self.win_rates: list[float] = []
 
         # Pour la reprise d'entraînement
         self.start_episode = 0
         self.best_avg_reward = float("-inf")
-        self.training_history = {
+        self.training_history: dict = {
             "episode_rewards": [],
             "win_rates": [],
             "eval_episodes": [],
@@ -346,7 +346,7 @@ class DQNTrainer:
         if len(self.training_rewards) >= window_size:
             moving_avg = np.convolve(
                 self.training_rewards, np.ones(window_size) / window_size, mode="valid"
-            )
+            ).tolist()
         else:
             moving_avg = self.training_rewards
 
@@ -420,7 +420,7 @@ Taux de victoire final: {self.win_rates[-1]:.1%}"""
         plt.show()
 
 
-def main():
+def main() -> None:
     """Fonction principale d'entraînement"""
     parser = argparse.ArgumentParser(description="Entraînement de l'IA DQN pour Magic Pong")
     parser.add_argument(

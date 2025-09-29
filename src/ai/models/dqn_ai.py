@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from magic_pong.ai.interface import AIPlayer
-from magic_pong.core.entities import Action
+from magic_pong.core.entities import Action, Ball, Paddle
 
 # Transition tuple for replay buffer
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
@@ -100,9 +100,9 @@ class PrioritizedReplayBuffer:
         self.beta = beta  # correction d'importance
         self.beta_increment = beta_increment
 
-        self.buffer = deque(maxlen=capacity)
-        self.priorities = deque(maxlen=capacity)
-        self.epsilon = 1e-6  # pour éviter les priorités nulles
+        self.buffer: deque[Transition] = deque(maxlen=capacity)
+        self.priorities: deque[float] = deque(maxlen=capacity)
+        self.epsilon: float = 1e-6  # pour éviter les priorités nulles
 
     def add(
         self,
@@ -160,7 +160,7 @@ class ReplayBuffer:
     """Buffer de replay simple pour comparaison"""
 
     def __init__(self, capacity: int):
-        self.buffer = deque(maxlen=capacity)
+        self.buffer: deque[Transition] = deque(maxlen=capacity)
 
     def add(
         self,
@@ -231,8 +231,8 @@ class DQNAgent(AIPlayer):
         self.tau = tau
 
         # État précédent pour l'apprentissage
-        self.last_state = None
-        self.last_action = None
+        self.last_state: np.ndarray | None = None
+        self.last_action: int | None = None
 
         # Réseaux de neurones (taille d'état étendue pour inclure bonus et autres infos)
         self.q_network = DQNNetwork(state_size, 256, action_size).to(device)
@@ -258,8 +258,8 @@ class DQNAgent(AIPlayer):
 
         # Statistiques d'entraînement
         self.training_step = 0
-        self.loss_history = []
-        self.reward_history = []
+        self.loss_history: list[float] = []
+        self.reward_history: list[float] = []
 
     def get_action(self, observation: dict[str, Any]) -> Action:
         """
@@ -432,7 +432,7 @@ class DQNAgent(AIPlayer):
         # Action par défaut si non trouvée
         return 0
 
-    def _get_paddle_size(self, paddle_size_data) -> float:
+    def _get_paddle_size(self, paddle_size_data: float | list | tuple) -> float:
         """
         Extrait la taille du paddle depuis différents formats possibles
 
@@ -453,18 +453,18 @@ class DQNAgent(AIPlayer):
         normalized_size = np.clip((size - 0.5) / (2.0 - 0.5), 0.0, 1.0)
         return normalized_size
 
-    def update_target_network(self):
+    def update_target_network(self) -> None:
         """Copie les poids du réseau principal vers le réseau cible"""
         self.target_network.load_state_dict(self.q_network.state_dict())
 
-    def set_training_mode(self, training: bool):
+    def set_training_mode(self, training: bool) -> None:
         """Active ou désactive le mode entraînement"""
         self.q_network.train(training)
         self.target_network.train(training)
         """Copie les poids du réseau principal vers le réseau cible"""
         self.target_network.load_state_dict(self.q_network.state_dict())
 
-    def soft_update_target_network(self):
+    def soft_update_target_network(self) -> None:
         """Soft update du target network"""
         for target_param, main_param in zip(
             self.target_network.parameters(), self.q_network.parameters(), strict=False
@@ -475,7 +475,7 @@ class DQNAgent(AIPlayer):
 
     def remember(
         self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool
-    ):
+    ) -> None:
         """Stocke une expérience dans la mémoire de replay"""
         self.memory.add(state, action, reward, next_state, done)
 
@@ -540,7 +540,7 @@ class DQNAgent(AIPlayer):
         # Mise à jour des priorités si replay prioritaire
         if self.use_prioritized_replay and indices is not None:
             td_errors_np = td_errors.detach().cpu().numpy().flatten()
-            self.memory.update_priorities(indices, td_errors_np)
+            self.memory.update_priorities(indices, td_errors_np)  # type: ignore[union-attr,arg-type]
 
         # Soft update du target network
         self.soft_update_target_network()
@@ -556,7 +556,7 @@ class DQNAgent(AIPlayer):
 
         return loss.item()
 
-    def save_model(self, filepath: str):
+    def save_model(self, filepath: str) -> None:
         """Sauvegarde le modèle"""
         torch.save(
             {
@@ -582,7 +582,7 @@ class DQNAgent(AIPlayer):
             filepath,
         )
 
-    def load_model(self, filepath: str):
+    def load_model(self, filepath: str) -> None:
         """Charge le modèle"""
         checkpoint = torch.load(filepath, map_location=device)
 
@@ -607,7 +607,7 @@ class DQNAgent(AIPlayer):
             self.tau = hyperparams["tau"]
             self.use_prioritized_replay = hyperparams["use_prioritized_replay"]
 
-    def update_learning_rate(self, reward: float):
+    def update_learning_rate(self, reward: float) -> None:
         """Met à jour le learning rate basé sur la performance"""
         self.scheduler.step(reward)
 
@@ -641,7 +641,11 @@ ACTION_MAPPING = {
 
 
 def create_state_vector(
-    ball, paddle, opponent_paddle, screen_width: int = 800, screen_height: int = 600
+    ball: Ball,
+    paddle: Paddle,
+    opponent_paddle: Paddle,
+    screen_width: int = 800,
+    screen_height: int = 600,
 ) -> np.ndarray:
     """
     Crée un vecteur d'état normalisé pour le réseau de neurones (version legacy)

@@ -9,8 +9,8 @@ import random
 from typing import Any
 
 import numpy as np
-from magic_pong.ai.examples.dqn_ai import ACTION_MAPPING
 from magic_pong.ai.interface import AIPlayer, RewardCalculator
+from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import ai_config, game_config
 

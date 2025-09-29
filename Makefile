@@ -105,7 +105,7 @@ pre-commit-update: ## Met à jour les hooks pre-commit
 
 # Commandes pour les exemples
 run-example: ## Lance un exemple d'IA vs IA
-	python -m magic_pong.ai.examples.ai_vs_ai
+	python -m magic_pong.ai.models.ai_vs_ai
 
 run-tournament: ## Lance un tournoi d'IA
 	magic-pong-tournament

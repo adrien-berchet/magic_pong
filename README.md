@@ -56,7 +56,7 @@ make dev-setup
 
 ```python
 from src.core.game_engine import TrainingManager
-from src.ai.examples.simple_ai import create_ai
+from src.ai.models.simple_ai import create_ai
 
 # Create training manager
 trainer = TrainingManager(headless=True)

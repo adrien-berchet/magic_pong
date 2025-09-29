@@ -8,9 +8,9 @@ import traceback
 from enum import Enum
 
 import pygame
-from magic_pong.ai.examples.dqn_ai import DQNAgent
-from magic_pong.ai.examples.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.ai.models.dqn_ai import DQNAgent
+from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.core.game_engine import GameEngine
 from magic_pong.gui.human_player import HumanPlayer, InputManager, create_human_players
 from magic_pong.gui.pygame_renderer import PygameRenderer
