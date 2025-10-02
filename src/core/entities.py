@@ -106,10 +106,10 @@ class Paddle:
         # Movement limits according to player
         if player_id == 1:  # Left player
             self.min_x = 0.0
-            self.max_x = game_config.FIELD_WIDTH / 2 - self.width
+            self.max_x = game_config.FIELD_WIDTH / 2 - self.width - game_config.PADDLE_MARGIN
         else:  # Right player
             self.min_x = game_config.FIELD_WIDTH / 2
-            self.max_x = game_config.FIELD_WIDTH - self.width
+            self.max_x = game_config.FIELD_WIDTH - self.width - game_config.PADDLE_MARGIN
 
         self.min_y = 0.0
         self.max_y = game_config.FIELD_HEIGHT - self.height
@@ -149,6 +149,10 @@ class Paddle:
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision rectangle (x, y, width, height)"""
         return (self.position.x, self.position.y, self.width, self.height)
+
+    def get_previous_rect(self) -> tuple[float, float, float, float]:
+        """Returns the previous collision rectangle (x, y, width, height)"""
+        return (self.prev_position.x, self.prev_position.y, self.width, self.height)
 
 
 class RotatingPaddle:

@@ -2,6 +2,7 @@
 Magic Pong game configuration
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pygame
@@ -152,3 +153,29 @@ class AIConfig:
 # Global configuration instance
 game_config = GameConfig()
 ai_config = AIConfig()
+
+
+def _change_values(obj, **kwargs):
+    old_values = {}
+    for name, new_value in kwargs.items():
+        old_values[name] = getattr(obj, name)
+        setattr(obj, name, new_value)
+    return old_values
+
+
+@contextmanager
+def game_config_tmp(**kwargs):
+    try:
+        old_values = _change_values(game_config, **kwargs)
+        yield
+    finally:
+        _change_values(game_config, **old_values)
+
+
+@contextmanager
+def ai_config_tmp(**kwargs):
+    try:
+        old_values = _change_values(ai_config, **kwargs)
+        yield
+    finally:
+        _change_values(ai_config, **old_values)

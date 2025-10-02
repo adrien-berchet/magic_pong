@@ -166,10 +166,11 @@ class ObservationProcessor:
 class RewardCalculator:
     """Reward calculator for training"""
 
-    def __init__(self) -> None:
+    def __init__(self, y_only: bool = False) -> None:
         self.last_score = [0, 0]
         self.last_ball_distance: dict[int, float] = {}
         self.optimal_points: dict[int, dict] = {}  # Store optimal points for visualization
+        self.y_only = y_only
 
     def calculate_reward(
         self, game_state: dict[str, Any], events: dict[str, list], player_id: int
@@ -245,7 +246,7 @@ class RewardCalculator:
 
         # Find optimal interception point on ball's trajectory
         optimal_point = self._find_optimal_interception_point(
-            ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id
+            ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id, self.y_only
         )
 
         if optimal_point is None:
@@ -267,9 +268,14 @@ class RewardCalculator:
             )
 
         # Calculate current distance to optimal interception point
-        current_distance = np.linalg.norm(
-            optimal_point - np.array((paddle_center_x, paddle_center_y))
-        )
+        if self.y_only:
+            current_distance = np.linalg.norm(
+                optimal_point[1] - (paddle_center_y)
+            )
+        else:
+            current_distance = np.linalg.norm(
+                optimal_point - np.array((paddle_center_x, paddle_center_y))
+            )
 
         # Get previous distance for this player
         previous_distance = self.last_ball_distance.get(player_id, None)
@@ -286,13 +292,26 @@ class RewardCalculator:
         # Calculate proximity reward
         proximity_reward = 0.0
         if distance_change < 0:  # Getting closer to optimal interception point
-            # Reward for getting closer, scaled by how much closer
-            proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR
+            dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
+            previous_x_dist = game_state.get(f"player{player_id}_prev_position", (0, 0))[0] - ball_vel[0] * dt
+            new_x_dist = ball_pos[0] - paddle_center_x
+            ball_player_direction = (player_id == 1 and ball_vel[0] < 0) or (player_id == 2 and ball_vel[0] > 0)
+            if player_id == 2:
+                previous_x_dist = -previous_x_dist  # Invert for right player
+                new_x_dist = -new_x_dist  # Invert for right player
+
+            ball_step = np.linalg.norm(ball_vel) * dt
+            if previous_distance < ball_step + game_config.PADDLE_HEIGHT / 2 and previous_x_dist < ball_step and new_x_dist < previous_x_dist and ball_player_direction:
+                # Bonus for being very close to optimal point
+                proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR / 10
+            else:
+                # Reward for getting closer, scaled by how much closer
+                proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR
             # proximity_reward = min(
             #     abs(distance_change) * ai_config.PROXIMITY_REWARD_FACTOR,
             #     ai_config.MAX_PROXIMITY_REWARD,
             # )
-        elif distance_change >= 0:  # Moving away from optimal interception point
+        else:  # Moving away from optimal interception point
             # Small penalty for moving away
             proximity_reward = -ai_config.PROXIMITY_PENALTY_FACTOR
             # proximity_reward = -min(
@@ -309,6 +328,7 @@ class RewardCalculator:
         paddle_pos: tuple,
         field_bounds: tuple,
         player_id: int,
+        y_only: bool = False
     ) -> tuple | None:
         """
         Find the optimal interception point on the ball's trajectory considering wall bounces
@@ -358,8 +378,14 @@ class RewardCalculator:
         # min_distance = float('inf')
 
         trajectory_pts = np.array([i[0] for i in trajectory_points])
-        distances = np.linalg.norm(trajectory_pts - paddle_pos, axis=1)
+        if y_only:
+            distances = np.abs(trajectory_pts[:, 0] - paddle_pos[0])
+        else:
+            distances = np.linalg.norm(trajectory_pts - paddle_pos, axis=1)
+
         best_point = trajectory_pts[np.argmin(distances)]
+        if y_only:
+            best_point = (paddle_pos[0], best_point[1])
 
         # for point, time_step in trajectory_points:
         #     # Only consider points that are reasonably close to paddle's X zone
@@ -568,7 +594,8 @@ class GameEnvironment:
             action2 = Action(move_x=0.0, move_y=0.0)
 
         # Update physics
-        dt = 1.0 / 60.0  # 60 FPS
+        # dt = 1.0 / 60.0  # 60 FPS
+        dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
         if ai_config.HEADLESS_MODE:
             dt *= ai_config.FAST_MODE_MULTIPLIER
 

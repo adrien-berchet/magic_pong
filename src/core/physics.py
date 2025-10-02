@@ -103,7 +103,7 @@ class PhysicsEngine:
     def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
         """Updates game physics"""
         # Apply speed multiplier
-        effective_dt = dt * game_config.GAME_SPEED_MULTIPLIER
+        effective_dt = dt  # / game_config.GAME_SPEED_MULTIPLIER
         self.game_time += effective_dt
 
         # Move players
@@ -220,6 +220,8 @@ class PhysicsEngine:
             "player2_position": self.player2.position.to_tuple(),
             "player1_paddle_size": self.player1.height,
             "player2_paddle_size": self.player2.height,
+            "player1_last_position": self.player1.prev_position,
+            "player2_last_position": self.player2.prev_position,
             "active_bonuses": [
                 (bonus.position.x, bonus.position.y, bonus.type.value)
                 for bonus in self.bonuses
@@ -259,6 +261,8 @@ class PhysicsEngine:
             game_config.FIELD_WIDTH - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH
         )
         self.player2.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
+        self.player1.prev_position = self.player1.position
+        self.player2.prev_position = self.player2.position
         self.player1.reset_size()
         self.player2.reset_size()
 

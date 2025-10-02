@@ -14,6 +14,7 @@ from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.ai.pretraining import create_pretrainer
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import game_config
 
 
 class DQNPretrainer:
@@ -63,6 +64,7 @@ class DQNPretrainer:
         player_id: int = 1,
         steps_per_batch: int = 1000,
         save_pretrained_model: bool = True,
+        y_only: bool = True,
     ) -> dict[str, Any]:
         """
         Exécute la phase de pré-entraînement sur la proximité au point optimal.
@@ -72,6 +74,7 @@ class DQNPretrainer:
             player_id: ID du joueur (1 pour gauche, 2 pour droite)
             steps_per_batch: Nombre d'étapes par batch
             save_pretrained_model: Sauvegarder le modèle après pré-entraînement
+            y_only: Si True, ne considère que la distance verticale pour la récompense
 
         Returns:
             Statistiques du pré-entraînement
@@ -82,11 +85,13 @@ class DQNPretrainer:
         print()
 
         # Créer le pré-entraîneur
-        pretrainer = create_pretrainer()
+        pretrainer = create_pretrainer(y_only=y_only)
 
         # Activer le mode headless pour la vitesse
         original_headless = ai_config.HEADLESS_MODE
         original_fast_mode = ai_config.FAST_MODE_MULTIPLIER
+        initial_game_speed_multiplier = game_config.GAME_SPEED_MULTIPLIER
+        initial_fps = game_config.FPS
         ai_config.USE_PROXIMITY_REWARD = True
         ai_config.PROXIMITY_REWARD_FACTOR = 1
         ai_config.PROXIMITY_PENALTY_FACTOR = 1
@@ -95,6 +100,8 @@ class DQNPretrainer:
         ai_config.FAST_MODE_MULTIPLIER = (
             1.0  # Pas besoin de vitesse élevée pour le pré-entraînement
         )
+        game_config.GAME_SPEED_MULTIPLIER = 5.0
+        game_config.FPS = 300.0
 
         start_time = time.time()
 
@@ -130,6 +137,8 @@ class DQNPretrainer:
             # Restaurer la configuration originale
             ai_config.HEADLESS_MODE = original_headless
             ai_config.FAST_MODE_MULTIPLIER = original_fast_mode
+            game_config.GAME_SPEED_MULTIPLIER = initial_game_speed_multiplier
+            game_config.FPS = initial_fps
 
     def train_with_pretraining(
         self,
@@ -169,7 +178,7 @@ class DQNPretrainer:
 
         # Phase 1: Pré-entraînement (sauf si demandé de l'ignorer)
         if not skip_pretraining:
-            pretraining_stats = self.run_pretraining_phase(dqn_agent)
+            pretraining_stats = self.run_pretraining_phase(dqn_agent, y_only=True)
 
             # Tracer les résultats du pré-entraînement
             self.plot_pretraining_results(pretraining_stats)
@@ -505,12 +514,16 @@ def main():
 
     # Arguments du réseau
     parser.add_argument("--lr", type=float, default=0.001, help="Taux d'apprentissage")
+    parser.add_argument("--tau", type=float, default=0.005, help="Coefficient pour les soft updates du target network")
     parser.add_argument("--gamma", type=float, default=0.99, help="Facteur de discount")
     parser.add_argument(
         "--epsilon", type=float, default=1.0, help="Epsilon initial pour l'exploration"
     )
     parser.add_argument(
         "--epsilon_decay", type=float, default=0.995, help="Facteur de décroissance d'epsilon"
+    )
+    parser.add_argument(
+        "--epsilon_min", type=float, default=0.01, help="Epsilon minimum pour l'exploration"
     )
     parser.add_argument("--memory_size", type=int, default=20000, help="Taille du replay buffer")
     parser.add_argument(
@@ -546,10 +559,12 @@ def main():
 
     # Configuration de l'agent
     agent_kwargs = {
+        "tau": args.tau,
         "lr": args.lr,
         "gamma": args.gamma,
         "epsilon": args.epsilon,
         "epsilon_decay": args.epsilon_decay,
+        "epsilon_min": args.epsilon_min,
         "memory_size": args.memory_size,
         "batch_size": args.batch_size,
     }

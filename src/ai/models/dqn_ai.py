@@ -24,7 +24,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class DQNNetwork(nn.Module):
     """Deep Q-Network avec améliorations pour la stabilité"""
 
-    def __init__(self, input_size: int, hidden_size: int = 256, output_size: int = 9):
+    def __init__(self, input_size: int, hidden_size: int = 512, output_size: int = 9, layer_size: int = 3, use_normalization: bool = True):
         """
         Args:
             input_size: Taille de l'état d'entrée
@@ -33,21 +33,35 @@ class DQNNetwork(nn.Module):
         """
         super().__init__()
 
+        # Architecture plus stable avec réduction progressive moins agressive
+        layer_sizes = [hidden_size // (2**i) for i in range(layer_size)]
+
         # Architecture plus profonde et stable
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc4 = nn.Linear(hidden_size // 2, output_size)
+        self.fc_layers = nn.ModuleList()
+        for i in range(layer_size):
+            in_features = input_size if i == 0 else layer_sizes[i - 1]
+            out_features = layer_sizes[i]
+            self.fc_layers.append(nn.Linear(in_features, out_features))
+
+        self.output_layer = nn.Linear(layer_sizes[-1], output_size)
 
         # Normalisation par batch pour améliorer la stabilité
-        self.bn1 = nn.BatchNorm1d(hidden_size)
-        self.bn2 = nn.BatchNorm1d(hidden_size)
-        self.bn3 = nn.BatchNorm1d(hidden_size // 2)
+        self.use_normalization = use_normalization
+        if use_normalization:
+            # self.batch_norms = nn.ModuleList()
+            self.layer_norms = nn.ModuleList()
+            for i in range(layer_size):
+                # self.batch_norms.append(nn.BatchNorm1d(layer_sizes[i]))
+                self.layer_norms.append(nn.LayerNorm(layer_sizes[i]))
+        else:
+            # self.batch_norms = nn.ModuleList([nn.Identity() for _ in range(layer_size)])
+            self.layer_norms = nn.ModuleList([nn.Identity() for _ in range(layer_size)])
 
         # Dropout pour éviter le surapprentissage
-        self.dropout1 = nn.Dropout(0.2)
-        self.dropout2 = nn.Dropout(0.2)
-        self.dropout3 = nn.Dropout(0.1)
+        self.dropouts = nn.ModuleList()
+        for i in range(layer_size):
+            dropout_rate = 0.2 if i < layer_size - 1 else 0.1
+            self.dropouts.append(nn.Dropout(dropout_rate))
 
         # Initialisation Xavier pour la stabilité
         self._initialize_weights()
@@ -56,36 +70,23 @@ class DQNNetwork(nn.Module):
         """Initialisation Xavier des poids"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0)
+                # nn.init.xavier_uniform_(m.weight)
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass avec normalisation et dropout"""
         x = x.to(device)
 
-        # Première couche
-        x = self.fc1(x)
-        if x.size(0) > 1:  # BatchNorm nécessite plus d'un échantillon
-            x = self.bn1(x)
-        x = F.relu(x)
-        x = self.dropout1(x)
-
-        # Deuxième couche
-        x = self.fc2(x)
-        if x.size(0) > 1:
-            x = self.bn2(x)
-        x = F.relu(x)
-        x = self.dropout2(x)
-
-        # Troisième couche
-        x = self.fc3(x)
-        if x.size(0) > 1:
-            x = self.bn3(x)
-        x = F.relu(x)
-        x = self.dropout3(x)
+        for fc, ln, dropout in zip(self.fc_layers, self.layer_norms, self.dropouts):
+            x = fc(x)
+            if self.use_normalization and x.size(0) > 1:  # LayerNorm nécessite plus d'un échantillon
+                x = ln(x)
+            x = F.relu(x)
+            x = dropout(x)
 
         # Couche de sortie
-        x = self.fc4(x)
+        x = self.output_layer(x)
         return x
 
 
@@ -235,13 +236,13 @@ class DQNAgent(AIPlayer):
         self.last_action: int | None = None
 
         # Réseaux de neurones (taille d'état étendue pour inclure bonus et autres infos)
-        self.q_network = DQNNetwork(state_size, 256, action_size).to(device)
-        self.target_network = DQNNetwork(state_size, 256, action_size).to(device)
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr, weight_decay=1e-4)
+        self.q_network = DQNNetwork(state_size, 512, action_size).to(device)
+        self.target_network = DQNNetwork(state_size, 512, action_size).to(device)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr, weight_decay=1e-3, eps=1e-4)
 
         # Scheduler pour réduire le learning rate
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="max", factor=0.8, patience=100
+            self.optimizer, mode="min", factor=0.5, patience=100
         )
 
         # Buffer de replay
@@ -534,7 +535,13 @@ class DQNAgent(AIPlayer):
         # Optimisation avec gradient clipping
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=0.5)
+
+        # Arrêter l'optimisation si gradients trop grands
+        # if grad_norm > 10.0:
+        #     print(f"⚠️ Gradient explosion détecté: {grad_norm:.2f}")
+        #     return loss.item()  # Ne pas faire l'étape d'optimisation
+
         self.optimizer.step()
 
         # Mise à jour des priorités si replay prioritaire

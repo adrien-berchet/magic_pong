@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 from magic_pong.ai.interface import AIPlayer, ObservationProcessor, RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
-from magic_pong.core.entities import Action
-from magic_pong.utils.config import ai_config, game_config
+from magic_pong.core.entities import Action, Paddle
+from magic_pong.utils.config import ai_config, game_config, game_config_tmp
 
 
 class OptimalPointPretrainer:
@@ -25,6 +25,7 @@ class OptimalPointPretrainer:
         paddle_width: float | None = None,
         paddle_height: float | None = None,
         ball_radius: float | None = None,
+        y_only: bool = False,
     ):
         """
         Args:
@@ -33,6 +34,7 @@ class OptimalPointPretrainer:
             paddle_width: Largeur de la raquette
             paddle_height: Hauteur de la raquette
             ball_radius: Rayon de la balle
+            y_only: Si True, ne considère que la distance verticale pour la récompense
         """
         self.field_width = field_width if field_width is not None else game_config.FIELD_WIDTH
         self.field_height = field_height if field_height is not None else game_config.FIELD_HEIGHT
@@ -49,7 +51,7 @@ class OptimalPointPretrainer:
         self.margin = game_config.PADDLE_MARGIN
 
         # Calculateur de récompenses pour utiliser les fonctions existantes
-        self.reward_calculator = RewardCalculator()
+        self.reward_calculator = RewardCalculator(y_only=y_only)
 
         self.player_config: dict[int, dict[str, int | dict[str, float]]] = {
             1: {
@@ -61,7 +63,7 @@ class OptimalPointPretrainer:
                 },
                 "paddle_zone": {
                     "x_min": self.margin,
-                    "x_max": self.field_width * 0.5 - self.paddle_width,
+                    "x_max": self.field_width * 0.5 - self.paddle_width - self.margin,
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin - self.paddle_height,
                 },
@@ -75,7 +77,7 @@ class OptimalPointPretrainer:
                     "y_max": self.field_height - self.margin,
                 },
                 "paddle_zone": {
-                    "x_min": self.field_width * 0.5 + self.paddle_width,
+                    "x_min": self.field_width * 0.5 + self.paddle_width + self.margin,
                     "x_max": self.field_width - self.margin - self.paddle_width,
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin - self.paddle_height,
@@ -131,10 +133,6 @@ class OptimalPointPretrainer:
         Returns:
             État de jeu complet compatible avec l'interface IA
         """
-        ball_pos = ball_state["ball_position"]
-        ball_vel = ball_state["ball_velocity"]
-        paddle_pos = ball_state["paddle_position"]
-
         # Position de l'adversaire (fixe, au centre de son côté)
         if player_id == 1:
             opponent_x = self.field_width - self.margin - self.paddle_width
@@ -144,9 +142,9 @@ class OptimalPointPretrainer:
         opponent_y = (self.field_height - self.paddle_height) / 2
 
         game_state = {
-            "ball_position": ball_pos,
-            "ball_velocity": ball_vel,
-            f"player{player_id}_position": paddle_pos,
+            "ball_position": ball_state["ball_position"],
+            "ball_velocity": ball_state["ball_velocity"],
+            f"player{player_id}_position": ball_state["paddle_position"],
             f"player{3-player_id}_position": (opponent_x, opponent_y),
             f"player{player_id}_paddle_size": self.paddle_height,
             f"player{3-player_id}_paddle_size": self.paddle_height,
@@ -177,7 +175,7 @@ class OptimalPointPretrainer:
         # Calculate paddle center
         paddle_center_x = player_pos[0]
         if player_id == 1:
-            paddle_center_x += game_config.PADDLE_WIDTH / 2
+            paddle_center_x += game_config.PADDLE_WIDTH
         paddle_center_y = player_pos[1] + game_config.PADDLE_HEIGHT / 2
 
         # Find optimal interception point on ball's trajectory
@@ -248,17 +246,28 @@ class OptimalPointPretrainer:
         Returns:
             Nouvelle position de la raquette (x, y)
         """
-        paddle_x, paddle_y = current_paddle_pos
+        with game_config_tmp(
+            FIELD_WIDTH=self.field_width,
+            FIELD_HEIGHT=self.field_height,
+            PADDLE_WIDTH=self.paddle_width,
+            PADDLE_HEIGHT=self.paddle_height,
+            PADDLE_MARGIN=self.margin,
+        ):
+            paddle_tmp = Paddle(*current_paddle_pos, player_id=1)
+            paddle_tmp.move(action.move_x, action.move_y, dt)
+            return paddle_tmp.position.x, paddle_tmp.position.y
 
-        # Appliquer le mouvement
-        new_x = paddle_x + action.move_x * paddle_speed * dt
-        new_y = paddle_y + action.move_y * paddle_speed * dt
+        # paddle_x, paddle_y = current_paddle_pos
 
-        # Contraindre la position dans les limites du terrain
-        new_x = max(self.margin, min(new_x, self.field_width - self.margin - self.paddle_width))
-        new_y = max(0, min(new_y, self.field_height - self.paddle_height))
+        # # Appliquer le mouvement
+        # new_x = paddle_x + action.move_x * paddle_speed * dt
+        # new_y = paddle_y + action.move_y * paddle_speed * dt
 
-        return new_x, new_y
+        # # Contraindre la position dans les limites du terrain
+        # new_x = max(self.margin, min(new_x, self.field_width - self.margin - self.paddle_width))
+        # new_y = max(0, min(new_y, self.field_height - self.paddle_height))
+
+        # return new_x, new_y
 
     def pretraining_step(
         self, agent: AIPlayer, player_id: int = 1, num_steps: int = 1000
@@ -280,7 +289,7 @@ class OptimalPointPretrainer:
         rewards_history = []
 
         agent.set_training_mode(True)
-        dt = 1.0 / game_config.FPS
+        dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
 
         for _ in range(num_steps):
             # Générer un état aléatoire de balle

@@ -78,7 +78,15 @@ def get_ball_config_from_args(args):
         "cone_left": (-1, math.pi / 4, -math.pi / 4),  # 135° to 225°
     }
 
-    if args.ball_direction in direction_configs:
+    if isinstance(args.ball_direction, (list, tuple)):
+        if len(args.ball_direction) == 2:
+            direction, angle_rad = args.ball_direction
+        elif len(args.ball_direction) == 3:
+            angle_rad = np.random.uniform(args.ball_direction[0], args.ball_direction[1])
+            direction = args.ball_direction[2]
+        else:
+            raise ValueError("ball_direction as tuple/list must have exactly 2 or 3 elements")
+    elif args.ball_direction in direction_configs:
         direction, angle_rad = direction_configs[args.ball_direction]
     elif args.ball_direction in cone_direction_configs:
         direction, angle_min, angle_max = cone_direction_configs[args.ball_direction]
@@ -448,13 +456,13 @@ def train_progressive_curriculum(agent, args):
     game_config.BONUSES_ENABLED = False
 
     # Get ball configuration
-    training_manager = TrainingManager(headless=args.headless)
+    training_manager = TrainingManager(headless=args.headless, fast_gui=args.fast_gui)
 
     all_phase_data = []
     total_episodes_count = 0
 
     initial_ball_direction = args.ball_direction
-    args.ball_direction = "cone_left"
+    args.ball_direction = [-math.pi / 12, math.pi / 12, -1]  # Cone towards left side
 
     # Phase 1: Learn to hit the ball - vs dummy or training_dummy
     print("\n🎯 PHASE 1: Learning to Hit the Ball")
@@ -473,6 +481,8 @@ def train_progressive_curriculum(agent, args):
     initial_proximity_reward_factor = ai_config.PROXIMITY_REWARD_FACTOR
     initial_proximity_penalty_factor = ai_config.PROXIMITY_PENALTY_FACTOR
     initial_max_proximity_reward = ai_config.MAX_PROXIMITY_REWARD
+    initial_game_speed_multiplier = game_config.GAME_SPEED_MULTIPLIER
+    initial_fps = game_config.FPS
     ai_config.SCORE_REWARD = 0
     ai_config.LOSE_PENALTY = 0
     ai_config.WALL_HIT_REWARD = 1
@@ -481,6 +491,8 @@ def train_progressive_curriculum(agent, args):
     ai_config.PROXIMITY_PENALTY_FACTOR = 0.1
     ai_config.MAX_PROXIMITY_REWARD = 0.5
     ai_config.SHOW_OPTIMAL_POINTS_GUI = True
+    # game_config.GAME_SPEED_MULTIPLIER = 5.0
+    game_config.FPS = 300.0
 
     phase1_opponent = get_opponent(args.phase1_training_opponent)
     phase1_rewards, phase1_wins, phase1_episodes = train_phase(
@@ -502,6 +514,8 @@ def train_progressive_curriculum(agent, args):
     ai_config.PROXIMITY_PENALTY_FACTOR = initial_proximity_penalty_factor
     ai_config.MAX_PROXIMITY_REWARD = initial_max_proximity_reward
     ai_config.SHOW_OPTIMAL_POINTS_GUI = False
+    game_config.GAME_SPEED_MULTIPLIER = initial_game_speed_multiplier
+    game_config.FPS = initial_fps
 
     total_episodes_count += phase1_episodes
     all_phase_data.append(
@@ -573,7 +587,7 @@ def train_progressive_curriculum(agent, args):
     # Phase 3: Play against intelligent opponent - vs predictive (no bonuses)
     print("\n🧠 PHASE 3: Playing vs Intelligent AI")
     print("Objective: Compete against smart opponent")
-    print("Opponent: Aggressive AI (anticipates ball trajectory)")
+    print("Opponent: Defensive AI (anticipates ball trajectory)")
     print("Bonuses: DISABLED for focused strategic learning")
 
     args.ball_direction = initial_ball_direction
@@ -583,11 +597,11 @@ def train_progressive_curriculum(agent, args):
         agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
-    phase3_opponent = get_opponent("aggressive")
+    phase3_opponent = get_opponent("defensive")
     phase3_rewards, phase3_wins, phase3_episodes = train_phase(
         agent,
         phase3_opponent,
-        "Strategic play vs Aggressive AI (no bonuses)",
+        "Strategic play vs Defensive AI (no bonuses)",
         args.progressive_episodes_per_phase,
         training_manager,
         args,
@@ -1485,6 +1499,18 @@ def parse_arguments():
         dest="headless",
         action="store_false",
         help="Enable GUI display during training/evaluation",
+    )
+    parser.add_argument(
+        "--fast_gui",
+        action="store_true",
+        default=True,
+        help="Run in fast GUI mode (high FPS). Use --no-fast_gui for normal speed",
+    )
+    parser.add_argument(
+        "--no-fast_gui",
+        dest="fast_gui",
+        action="store_false",
+        help="Run in normal speed GUI mode (lower FPS for better visualization)",
     )
 
     return parser.parse_args()

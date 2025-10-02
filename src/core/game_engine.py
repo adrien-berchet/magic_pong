@@ -229,10 +229,12 @@ class TrainingManager:
         headless: bool = True,
         initial_ball_direction: int = 0,
         initial_ball_angle: float | None = None,
+        fast_gui: bool = False,
     ):
         self.game_engine = GameEngine(headless=headless)
         self.headless = headless
         self.renderer = None
+        self.fast_gui = fast_gui
         self.initial_ball_direction = initial_ball_direction
         self.initial_ball_angle = initial_ball_angle
 
@@ -242,7 +244,7 @@ class TrainingManager:
                 from magic_pong.gui.pygame_renderer import PygameRenderer
 
                 self.renderer = PygameRenderer()
-                print("🎮 GUI renderer initialized for training visualization")
+                print("🎮 GUI renderer initialized for training visualization " + "(fast mode enabled)" if fast_gui else "(normal speed)")
             except ImportError:
                 print("⚠️  Warning: Could not import PygameRenderer, falling back to headless mode")
                 self.headless = True
@@ -321,7 +323,9 @@ class TrainingManager:
                 self.renderer.present()
 
                 # Control frame rate to make visualization watchable
-                self.renderer.update()
+                self.renderer.update(1000 if self.fast_gui else game_config.FPS)
+                # self.renderer.update(600)
+                # print(f"+++++ fast_gui in train_episode: {self.fast_gui} ; actual fps: {self.renderer.clock.get_fps()}")  # Debug line
 
             episode_stats["steps"] += 1
             episode_stats["total_reward_p1"] += result["rewards"]["player1"]
@@ -334,6 +338,8 @@ class TrainingManager:
 
         # Update training statistics
         self._update_training_stats(episode_stats)
+
+        print("++++++++++++++++++++ fast_gui: ", self.fast_gui)  # Debug line
 
         return episode_stats
 
