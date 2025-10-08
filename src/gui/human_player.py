@@ -5,24 +5,22 @@ Human player implementation for Magic Pong
 from typing import Any
 
 import pygame
-from magic_pong.ai.interface import AIPlayer
-from magic_pong.core.entities import Action
+from magic_pong.core.entities import Action, Player
 from magic_pong.utils.config import game_config
 
 
-class HumanPlayer(AIPlayer):
+class HumanPlayer(Player):
     """Human player that gets input from keyboard"""
 
-    def __init__(self, player_id: int, name: str = "Human", control_scheme: str = "arrows"):
+    def __init__(self, name: str = "Human", control_scheme: str = "arrows", **kwargs: Any):
         """
         Initialize human player
 
         Args:
-            player_id: Player ID (1 or 2)
             name: Player name
             control_scheme: "arrows" for arrow keys or "wasd" for WASD keys
         """
-        super().__init__(player_id, name)
+        super().__init__(name=name, **kwargs)
         self.control_scheme = control_scheme
         self.current_action = Action(0.0, 0.0)
 
@@ -57,24 +55,9 @@ class HumanPlayer(AIPlayer):
         # Update current action
         self.current_action = Action(move_x, move_y)
 
-    def get_action(self, observation: dict[str, Any]) -> Action:
-        """Get the current action (required by AIPlayer interface)"""
+    def get_action(self, observation: dict[str, Any] | None) -> Action:
+        """Get the current action (required by Player interface)"""
         return self.current_action
-
-    def get_human_action(self) -> Action:
-        """Get human action (alternative interface)"""
-        return self.current_action
-
-    def on_step(
-        self,
-        observation: dict[str, Any],
-        action: Action,
-        reward: float,
-        done: bool,
-        info: dict[str, Any],
-    ) -> None:
-        """Called after each step (required by AIPlayer interface)"""
-        self.current_episode_reward += reward
 
     def get_control_info(self) -> dict[str, str]:
         """Get information about controls for this player"""
@@ -90,9 +73,9 @@ class InputManager:
         # Keep persistent state of special keys (arrows)
         self.special_keys_state: dict[int, bool] = {}
 
-    def add_player(self, player: HumanPlayer) -> None:
+    def add_player(self, player: HumanPlayer, player_id: int) -> None:
         """Add a human player to manage"""
-        self.players[player.player_id] = player
+        self.players[player_id] = player
 
     def remove_player(self, player_id: int) -> None:
         """Remove a player"""
@@ -173,12 +156,12 @@ def create_human_players(mode: str) -> dict[int, HumanPlayer | None]:
 
     if mode == "1v1":
         # Two human players
-        players[1] = HumanPlayer(1, "Player 1", "wasd")
-        players[2] = HumanPlayer(2, "Player 2", "arrows")
+        players[1] = HumanPlayer("Player 1", "wasd")
+        players[2] = HumanPlayer("Player 2", "arrows")
 
     elif mode in ["1vAI", "load_model"]:
         # One human player vs AI
-        players[1] = HumanPlayer(1, "Player", "wasd")
+        players[1] = HumanPlayer("Player", "wasd")
         # players[2] will be set to an AI player elsewhere
 
     elif mode == "demo":

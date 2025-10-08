@@ -7,31 +7,21 @@ from typing import Any
 
 import numpy as np
 from magic_pong.core.entities import Action
+from magic_pong.core.entities import Player
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import ai_config, game_config
 
 
-class AIPlayer(ABC):
-    """Base interface for all AI players"""
 
-    def __init__(self, player_id: int, name: str = "AI"):
-        self.player_id = player_id
-        self.name = name
+class AIPlayer(Player):
+    """
+    A generic AI player that can be extended for specific AI behaviors.
+    """
+
+    def __init__(self, name: str = "AIPlayer"):
+        super().__init__(name)
         self.episode_rewards: list[float] = []
         self.current_episode_reward = 0.0
-
-    @abstractmethod
-    def get_action(self, observation: dict[str, Any]) -> Action:
-        """
-        Returns the action to perform based on the observation
-
-        Args:
-            observation: Normalized game state
-
-        Returns:
-            Action: Action to perform
-        """
-        pass
 
     @abstractmethod
     def on_step(
@@ -58,7 +48,7 @@ class AIPlayer(ABC):
         """Called at the start of each episode"""
         self.current_episode_reward = 0.0
 
-    def on_episode_end(self, final_reward: float) -> None:
+    def on_episode_end(self) -> None:
         """Called at the end of each episode"""
         self.episode_rewards.append(self.current_episode_reward)
 

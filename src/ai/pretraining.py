@@ -9,9 +9,9 @@ import random
 from typing import Any
 
 import numpy as np
-from magic_pong.ai.interface import AIPlayer, ObservationProcessor, RewardCalculator
+from magic_pong.ai.interface import ObservationProcessor, RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
-from magic_pong.core.entities import Action, Paddle
+from magic_pong.core.entities import Action, Paddle, Player
 from magic_pong.utils.config import ai_config, game_config, game_config_tmp
 
 
@@ -270,7 +270,7 @@ class OptimalPointPretrainer:
         # return new_x, new_y
 
     def pretraining_step(
-        self, agent: AIPlayer, player_id: int = 1, num_steps: int = 1000
+        self, agent: Player, player_id: int = 1, num_steps: int = 1000
     ) -> dict[str, Any]:
         """
         Effectue une étape de pré-entraînement sur la proximité au point optimal.
@@ -403,7 +403,7 @@ class OptimalPointPretrainer:
 
     def run_pretraining_phase(
         self,
-        agent: AIPlayer,
+        agent: Player,
         total_steps: int = 10000,
         steps_per_batch: int = 1000,
         player_id: int = 1,

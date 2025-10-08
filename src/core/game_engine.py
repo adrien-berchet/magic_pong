@@ -6,9 +6,11 @@ import time
 from typing import Any
 
 import pygame
-from magic_pong.ai.interface import AIPlayer, GameEnvironment
-from magic_pong.core.entities import Action
+from magic_pong.ai.interface import GameEnvironment
+from magic_pong.core.entities import Action, Player
 from magic_pong.core.physics import PhysicsEngine
+from magic_pong.gui.human_player import HumanPlayer
+from magic_pong.gui.pygame_renderer import PygameRenderer
 from magic_pong.utils.config import game_config
 
 
@@ -28,8 +30,8 @@ class GameEngine:
         self.last_update_time = 0.0
 
         # Players (can be human or AI)
-        self.player1: AIPlayer | None = None
-        self.player2: AIPlayer | None = None
+        self.player1: Player | None = None
+        self.player2: Player | None = None
 
         # Statistics
         self.total_games = 0
@@ -40,7 +42,7 @@ class GameEngine:
             "average_game_length": 0.0,
         }
 
-    def set_players(self, player1: AIPlayer | None, player2: AIPlayer | None) -> None:
+    def set_players(self, player1: Player | None, player2: Player | None) -> None:
         """Sets the players (human or AI)"""
         self.player1 = player1
         self.player2 = player2
@@ -67,9 +69,9 @@ class GameEngine:
 
         # Notify AI players of episode end
         if self.player1 and hasattr(self.player1, "on_episode_end"):
-            self.player1.on_episode_end(0.0)
+            self.player1.on_episode_end()
         if self.player2 and hasattr(self.player2, "on_episode_end"):
-            self.player2.on_episode_end(0.0)
+            self.player2.on_episode_end()
 
     def pause_game(self) -> None:
         """Pauses / resumes the game"""
@@ -92,29 +94,20 @@ class GameEngine:
 
         # Calculate delta time
         if dt is None:
-            current_time = time.time()
-            dt = current_time - self.last_update_time
-            self.last_update_time = current_time
-
-        # Limit delta time to avoid large jumps
-        dt = min(dt, 1.0 / 30.0)  # Max 30 FPS minimum
+            self.last_update_time = time.time()
 
         # Get player actions
-        action1 = self._get_player_action(self.player1, 1)
-        action2 = self._get_player_action(self.player2, 2)
+        action1 = self._get_player_action(self.player1, 1) or Action(move_x=0.0, move_y=0.0)
+        action2 = self._get_player_action(self.player2, 2) or Action(move_x=0.0, move_y=0.0)
 
         # Update physics via AI environment
         obs1, obs2, reward1, reward2, done, info = self.ai_environment.step(action1, action2)
 
         # Notify AI players
         if self.player1 and hasattr(self.player1, "on_step"):
-            # Create default action if None
-            safe_action1 = action1 if action1 is not None else Action(move_x=0.0, move_y=0.0)
-            self.player1.on_step(obs1, safe_action1, reward1, done, info)
+            self.player1.on_step(obs1, action1, reward1, done, info)
         if self.player2 and hasattr(self.player2, "on_step"):
-            # Create default action if None
-            safe_action2 = action2 if action2 is not None else Action(move_x=0.0, move_y=0.0)
-            self.player2.on_step(obs2, safe_action2, reward2, done, info)
+            self.player2.on_step(obs2, action2, reward2, done, info)
 
         # Check for game end
         if done:
@@ -129,14 +122,14 @@ class GameEngine:
             "info": info,
         }
 
-    def _get_player_action(self, player: AIPlayer | None, player_id: int) -> Action | None:
+    def _get_player_action(self, player: Player | None, player_id: int) -> Action | None:
         """Gets a player's action"""
         if player is None:
             return None
 
-        if hasattr(player, "get_human_action"):
+        if isinstance(player, HumanPlayer):
             # Human player (check this first!)
-            human_action: Action | None = player.get_human_action()
+            human_action: Action | None = player.get_action(None)
             return human_action
         elif hasattr(player, "get_action"):
             # AI player
@@ -165,13 +158,11 @@ class GameEngine:
 
         # Notify AI players
         if self.player1 and hasattr(self.player1, "on_episode_end"):
-            final_reward = 1.0 if winner == 1 else -1.0 if winner == 2 else 0.0
-            self.player1.on_episode_end(final_reward)
+            self.player1.on_episode_end()
         if self.player2 and hasattr(self.player2, "on_episode_end"):
-            final_reward = 1.0 if winner == 2 else -1.0 if winner == 1 else 0.0
-            self.player2.on_episode_end(final_reward)
+            self.player2.on_episode_end()
 
-        # Stop the game
+        # Stop the game²
         self.running = False
 
     def get_game_state(self) -> dict[str, Any]:
@@ -240,14 +231,8 @@ class TrainingManager:
 
         # Initialize renderer if not headless
         if not headless:
-            try:
-                from magic_pong.gui.pygame_renderer import PygameRenderer
-
-                self.renderer = PygameRenderer()
-                print("🎮 GUI renderer initialized for training visualization " + "(fast mode enabled)" if fast_gui else "(normal speed)")
-            except ImportError:
-                print("⚠️  Warning: Could not import PygameRenderer, falling back to headless mode")
-                self.headless = True
+            self.renderer = PygameRenderer()
+            print("🎮 GUI renderer initialized for training visualization " + "(fast mode enabled)" if fast_gui else "(normal speed)")
 
         self.training_stats: dict[str, Any] = {
             "episodes": 0,
@@ -259,7 +244,7 @@ class TrainingManager:
         }
 
     def train_episode(
-        self, player1: AIPlayer, player2: AIPlayer, max_steps: int = 10000
+        self, player1: Player, player2: Player, max_steps: int = 10000
     ) -> dict[str, Any]:
         """
         Trains a complete episode
@@ -323,9 +308,8 @@ class TrainingManager:
                 self.renderer.present()
 
                 # Control frame rate to make visualization watchable
-                self.renderer.update(1000 if self.fast_gui else game_config.FPS)
-                # self.renderer.update(600)
-                # print(f"+++++ fast_gui in train_episode: {self.fast_gui} ; actual fps: {self.renderer.clock.get_fps()}")  # Debug line
+                if not self.fast_gui:
+                    self.renderer.update(game_config.FPS)
 
             episode_stats["steps"] += 1
             episode_stats["total_reward_p1"] += result["rewards"]["player1"]
@@ -339,8 +323,6 @@ class TrainingManager:
         # Update training statistics
         self._update_training_stats(episode_stats)
 
-        print("++++++++++++++++++++ fast_gui: ", self.fast_gui)  # Debug line
-
         return episode_stats
 
     def _update_training_stats(self, episode_stats: dict[str, Any]) -> None:
@@ -353,7 +335,7 @@ class TrainingManager:
         elif episode_stats["winner"] == 2:
             self.training_stats["player2_wins"] += 1
 
-        # Moving average of rewards
+        # Moving average of rewards (exponential smoothing)
         alpha = 0.01  # Smoothing factor
         self.training_stats["average_rewards"]["player1"] = (1 - alpha) * self.training_stats[
             "average_rewards"

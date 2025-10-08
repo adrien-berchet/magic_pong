@@ -79,12 +79,13 @@ class GameConfig:
     PADDLE_WIDTH: float = 15.0
     PADDLE_HEIGHT: float = 80.0
     PADDLE_SPEED: float = 500.0  # pixels per second
-    PADDLE_MARGIN: float = 50.0  # Distance from field edge
+    PADDLE_MARGIN: float = 20.0  # Distance from field edge
 
     # Bonuses
     BONUSES_ENABLED: bool = True  # Master switch for all bonus features
     BONUS_SIZE: float = 20.0
     BONUS_SPAWN_INTERVAL: float = 15.0  # seconds
+    BONUS_LIFETIME: float = 20.0  # seconds
     BONUS_DURATION: float = 10.0  # seconds
     PADDLE_SIZE_MULTIPLIER: float = 1.5  # Enlargement factor
     PADDLE_SIZE_REDUCER: float = 0.6  # Shrinking factor

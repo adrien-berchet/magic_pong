@@ -4,17 +4,18 @@ Simple AI examples for Magic Pong
 
 import math
 import random
+import time
 from typing import Any
 
-from magic_pong.ai.interface import AIPlayer
 from magic_pong.core.entities import Action
+from magic_pong.ai.interface import AIPlayer
 
 
 class RandomAI(AIPlayer):
     """AI that plays completely randomly"""
 
-    def __init__(self, player_id: int, name: str = "RandomAI"):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "RandomAI", **kwargs: Any):
+        super().__init__(name=name, **kwargs)
 
     def get_action(self, observation: dict[str, Any]) -> Action:
         """Returns a random action"""
@@ -35,8 +36,8 @@ class RandomAI(AIPlayer):
 class DummyAI(AIPlayer):
     """AI that never moves - perfect for Phase 1 training (learning to hit the ball)"""
 
-    def __init__(self, player_id: int, name: str = "DummyAI"):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "DummyAI", **kwargs: Any):
+        super().__init__(name=name, **kwargs)
 
     def get_action(self, observation: dict[str, Any]) -> Action:
         """Never moves - stays completely still"""
@@ -61,25 +62,21 @@ class TrainingDummyAI(AIPlayer):
     """
 
     def __init__(
-        self, player_id: int, name: str = "TrainingDummyAI", movement_factor: float = 0.02
+        self, name: str = "TrainingDummyAI", movement_factor: float = 0.02, **kwargs: Any
     ):
-        super().__init__(player_id, name)
+        super().__init__(name=name, **kwargs)
         self.movement_factor = movement_factor  # Very small movement to add minimal variation
         self.center_x = 0.0  # Will be set based on player side
 
     def get_action(self, observation: dict[str, Any]) -> Action:
         """Very minimal movement around center position"""
-        import math
-        import time
-
         # Get player info to determine which side we're on
         field_width = observation.get("field_width", 800)
-        if self.player_id == 2:  # Right side
+        player_pos = observation["player_pos"]
+        if player_pos[0] > field_width / 2:  # Right side
             self.center_x = field_width * 0.75
         else:  # Left side
             self.center_x = field_width * 0.25
-
-        player_pos = observation["player_pos"]
 
         # Very slow, predictable movement around center position
         time_factor = time.time() * 0.5  # Slow oscillation
@@ -113,8 +110,8 @@ class TrainingDummyAI(AIPlayer):
 class FollowBallAI(AIPlayer):
     """Simple AI that follows the ball"""
 
-    def __init__(self, player_id: int, name: str = "FollowBallAI", aggressiveness: float = 0.8):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "FollowBallAI", aggressiveness: float = 0.8, **kwargs: Any):
+        super().__init__(name=name, **kwargs)
         self.aggressiveness = aggressiveness
 
     def get_action(self, observation: dict[str, Any]) -> Action:
@@ -152,8 +149,8 @@ class FollowBallAI(AIPlayer):
 class DefensiveAI(AIPlayer):
     """Defensive AI that stays near its goal"""
 
-    def __init__(self, player_id: int, name: str = "DefensiveAI"):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "DefensiveAI", **kwargs: Any):
+        super().__init__(name=name, **kwargs)
 
     def get_action(self, observation: dict[str, Any]) -> Action:
         """Defensive strategy"""
@@ -162,7 +159,9 @@ class DefensiveAI(AIPlayer):
         player_pos = observation["player_pos"]
 
         # Defensive position (near goal)
-        if self.player_id == 1:  # Left player
+        field_width = observation.get("field_width", 800)
+        player_pos = observation["player_pos"]
+        if player_pos[0] < field_width / 2:  # Left side
             target_x = 0.1  # Near left edge
         else:  # Right player
             target_x = 0.9  # Near right edge
@@ -201,8 +200,8 @@ class DefensiveAI(AIPlayer):
 class AggressiveAI(AIPlayer):
     """Aggressive AI that seeks bonuses and attacks"""
 
-    def __init__(self, player_id: int, name: str = "AggressiveAI"):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "AggressiveAI", **kwargs: Any):
+        super().__init__(name=name, **kwargs)
         self.target_bonus = None
 
     def get_action(self, observation: dict[str, Any]) -> Action:
@@ -259,8 +258,8 @@ class AggressiveAI(AIPlayer):
 class PredictiveAI(AIPlayer):
     """AI that tries to predict the ball's trajectory"""
 
-    def __init__(self, player_id: int, name: str = "PredictiveAI", prediction_time: float = 1.0):
-        super().__init__(player_id, name)
+    def __init__(self, name: str = "PredictiveAI", prediction_time: float = 1.0, **kwargs: Any):
+        super().__init__(name=name, **kwargs)
         self.prediction_time = prediction_time
 
     def get_action(self, observation: dict[str, Any]) -> Action:
@@ -313,8 +312,7 @@ class PredictiveAI(AIPlayer):
 class HumanPlayer:
     """Class to represent a human player (for graphical interface)"""
 
-    def __init__(self, player_id: int, name: str = "Human"):
-        self.player_id = player_id
+    def __init__(self, name: str = "Human"):
         self.name = name
         self.current_action = Action(0.0, 0.0)
 
@@ -332,13 +330,12 @@ class HumanPlayer:
 
 
 # Factory to easily create AIs
-def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
+def create_ai(ai_type: str, **kwargs: Any) -> AIPlayer:
     """
     Factory to create AIs
 
     Args:
         ai_type: AI type ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive', 'dummy', 'training_dummy')
-        player_id: Player ID (1 or 2)
         **kwargs: Additional arguments for the AI
 
     Returns:
@@ -358,4 +355,4 @@ def create_ai(ai_type: str, player_id: int, **kwargs: Any) -> AIPlayer:
         raise ValueError(f"Unknown AI type: {ai_type}. Available types: {list(ai_classes.keys())}")
 
     ai_class = ai_classes[ai_type]
-    return ai_class(player_id, **kwargs)
+    return ai_class(**kwargs)

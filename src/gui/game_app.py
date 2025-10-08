@@ -8,9 +8,9 @@ import traceback
 from enum import Enum
 
 import pygame
-from magic_pong.ai.interface import AIPlayer
 from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
+from magic_pong.core.entities import Player
 from magic_pong.core.game_engine import GameEngine
 from magic_pong.gui.human_player import HumanPlayer, InputManager, create_human_players
 from magic_pong.gui.pygame_renderer import PygameRenderer
@@ -92,17 +92,17 @@ class MagicPongApp:
 
         # Clear input manager and add human players
         self.input_manager = InputManager()
-        for player in self.human_players.values():
+        for player_id, player in self.human_players.items():
             if player is not None:
-                self.input_manager.add_player(player)
+                self.input_manager.add_player(player, player_id)
 
         # Create AI players as needed
 
-        ai_players: dict[int, AIPlayer | None] = {1: None, 2: None}
+        ai_players: dict[int, Player | None] = {1: None, 2: None}
 
         if mode == GameMode.ONE_VS_AI:
             # Human vs AI
-            ai_players[2] = SimpleAI(2, "Simple AI")
+            ai_players[2] = SimpleAI("Simple AI")
 
         elif mode == GameMode.LOAD_MODEL:
             # Human vs Trained AI
@@ -116,12 +116,12 @@ class MagicPongApp:
             )
             if ai_players[2] is None:
                 print("Failed to load trained model, falling back to Simple AI")
-                ai_players[2] = SimpleAI(2, "Simple AI (fallback)")
+                ai_players[2] = SimpleAI("Simple AI (fallback)")
 
         elif mode == GameMode.AI_DEMO:
             # AI vs AI
-            ai_players[1] = SimpleAI(1, "AI 1")
-            ai_players[2] = SimpleAI(2, "AI 2")
+            ai_players[1] = SimpleAI("AI 1")
+            ai_players[2] = SimpleAI("AI 2")
 
         # Set players in game engine
         player1 = self.human_players[1] or ai_players[1]
@@ -231,7 +231,7 @@ class MagicPongApp:
 
             return {"path": model_path, "valid": False, "error": error_msg}
 
-    def _create_trained_ai(self, model_path: str) -> AIPlayer | None:
+    def _create_trained_ai(self, model_path: str) -> Player | None:
         """Create a DQN AI player from a trained model"""
         try:
             # First validate the model

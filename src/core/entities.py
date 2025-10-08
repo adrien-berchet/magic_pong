@@ -3,8 +3,11 @@ Magic Pong game entities: ball, paddles, bonuses
 """
 
 import math
+import numpy as np
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 import numpy as np
 from magic_pong.utils.config import game_config
@@ -35,7 +38,7 @@ class Vector2D:
         return Vector2D(self.x * scalar, self.y * scalar)
 
     def magnitude(self) -> float:
-        return math.sqrt(self.x**2 + self.y**2)
+        return float(np.linalg.norm([self.x, self.y]))
 
     def normalize(self) -> "Vector2D":
         mag = self.magnitude()
@@ -45,6 +48,9 @@ class Vector2D:
 
     def to_tuple(self) -> tuple[float, float]:
         return (self.x, self.y)
+
+    def copy(self) -> "Vector2D":
+        return Vector2D(self.x, self.y)
 
 
 class Ball:
@@ -59,7 +65,7 @@ class Ball:
 
     def update(self, dt: float) -> None:
         """Updates the ball position"""
-        self.prev_position = Vector2D(self.position.x, self.position.y)
+        self.prev_position = self.position.copy()
         self.position = self.position + self.velocity * dt
 
     def reset_to_center(self, direction: int = 1, angle: float | None = None) -> None:
@@ -90,29 +96,34 @@ class Ball:
         # speed_increase = game_config.BALL_SPEED_INCREASE
         # self.velocity = self.velocity * speed_increase
 
+    def get_rect(self) -> tuple[float, float, float, float]:
+        """Returns the collision circle properties (x, y, width, height)"""
+        return (self.position.x - self.radius, self.position.y - self.radius, self.radius * 2, self.radius * 2)
+
 
 class Paddle:
     """Player paddle"""
 
-    def __init__(self, x: float, y: float, player_id: int):
+    def __init__(self, x: float, y: float, player_id: int, width: float | None = None, height: float | None = None):
         self.position = Vector2D(x, y)
         self.prev_position = Vector2D(x, y)
+        self.speed = game_config.PADDLE_SPEED
         self.player_id = player_id
-        self.width = game_config.PADDLE_WIDTH
-        self.height = game_config.PADDLE_HEIGHT
-        self.original_height = game_config.PADDLE_HEIGHT
+        self.width = width if width is not None else game_config.PADDLE_WIDTH
+        self.height = height if height is not None else game_config.PADDLE_HEIGHT
+        self.original_height = self.height
         self.size_effect_timer = 0.0
 
         # Movement limits according to player
         if player_id == 1:  # Left player
-            self.min_x = 0.0
+            self.min_x = game_config.PADDLE_MARGIN
             self.max_x = game_config.FIELD_WIDTH / 2 - self.width - game_config.PADDLE_MARGIN
         else:  # Right player
             self.min_x = game_config.FIELD_WIDTH / 2
             self.max_x = game_config.FIELD_WIDTH - self.width - game_config.PADDLE_MARGIN
 
         self.min_y = 0.0
-        self.max_y = game_config.FIELD_HEIGHT - self.height
+        self.max_y = game_config.FIELD_HEIGHT - self.original_height
 
     def update(self, dt: float) -> None:
         """Updates the paddle (temporary effects)"""
@@ -121,25 +132,31 @@ class Paddle:
             if self.size_effect_timer <= 0:
                 self.reset_size()
 
-    def move(self, dx: float, dy: float, dt: float) -> None:
+    def constrain_position(self) -> None:
+        """Ensures the paddle stays within its movement bounds"""
+        self.position.x = max(self.min_x, min(self.max_x, self.position.x))
+        self.position.y = max(self.min_y, min(self.max_y, self.position.y))
+
+    def move(self, vx: float, vy: float, dt: float) -> None:
         """Moves the paddle with constraints"""
-        self.prev_position = Vector2D(self.position.x, self.position.y)
-        speed = game_config.PADDLE_SPEED * dt
-        new_x = self.position.x + dx * speed
-        new_y = self.position.y + dy * speed
+        self.prev_position = self.position.copy()
+        speed = self.speed * dt
+        self.position.x = self.position.x + vx * speed
+        self.position.y = self.position.y + vy * speed
 
         # Movement constraints
-        self.position.x = max(self.min_x, min(self.max_x, new_x))
-        self.position.y = max(self.min_y, min(self.max_y, new_y))
+        self.constrain_position()
 
     def apply_size_effect(self, multiplier: float, duration: float) -> None:
         """Applies a temporary size effect"""
-        self.height = self.original_height * multiplier
+        self.height = max(min(self.height * multiplier, self.original_height * 4, game_config.FIELD_HEIGHT * 0.95), self.original_height * 0.25)  # Limit min and max size
         self.size_effect_timer = duration
+
         # Readjust Y limits
         self.max_y = game_config.FIELD_HEIGHT - self.height
-        if self.position.y > self.max_y:
-            self.position.y = self.max_y
+
+        # Ensure constraints
+        self.constrain_position()
 
     def reset_size(self) -> None:
         """Resets to normal size"""
@@ -147,12 +164,45 @@ class Paddle:
         self.max_y = game_config.FIELD_HEIGHT - self.height
 
     def get_rect(self) -> tuple[float, float, float, float]:
-        """Returns the collision rectangle (x, y, width, height)"""
+        """Returns the collision rectangle properties (x, y, width, height)"""
         return (self.position.x, self.position.y, self.width, self.height)
 
     def get_previous_rect(self) -> tuple[float, float, float, float]:
-        """Returns the previous collision rectangle (x, y, width, height)"""
+        """Returns the previous collision rectangle properties (x, y, width, height)"""
         return (self.prev_position.x, self.prev_position.y, self.width, self.height)
+
+
+@dataclass
+class Action:
+    """Player action"""
+
+    move_x: int  # -1.0 or 1.0
+    move_y: int  # -1.0 or 1.0
+
+    def __post_init__(self) -> None:
+        # Clamp values between -1 and 1
+        self.move_x = max(-1, min(1, self.move_x))
+        self.move_y = max(-1, min(1, self.move_y))
+
+
+class Player(ABC):
+    """Base interface for all players"""
+
+    def __init__(self, name: str = "Player"):
+        self.name = name
+
+    @abstractmethod
+    def get_action(self, observation: dict[str, Any] | None) -> Action:
+        """
+        Returns the action to perform based on the observation
+
+        Args:
+            observation: Normalized game state
+
+        Returns:
+            Action: Action to perform
+        """
+        pass
 
 
 class RotatingPaddle:
@@ -202,7 +252,7 @@ class Bonus:
         self.type = bonus_type
         self.size = game_config.BONUS_SIZE
         self.collected = False
-        self.lifetime = 30.0  # Disappears after 30 seconds if not collected
+        self.lifetime = game_config.BONUS_LIFETIME
 
     def update(self, dt: float) -> bool:
         """Updates the bonus, returns False if expired"""
@@ -216,8 +266,7 @@ class Bonus:
 
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision rectangle"""
-        half_size = self.size / 2
-        return (self.position.x - half_size, self.position.y - half_size, self.size, self.size)
+        return (self.position.x, self.position.y, self.size, self.size)
 
 
 @dataclass
@@ -234,17 +283,4 @@ class GameState:
     rotating_paddles: list[tuple[float, float, float]]  # center + angle
     score: tuple[int, int]
     time_elapsed: float
-    field_bounds: tuple[float, float, float, float] = (0, 800, 0, 600)
-
-
-@dataclass
-class Action:
-    """Player action"""
-
-    move_x: float  # -1.0 to 1.0
-    move_y: float  # -1.0 to 1.0
-
-    def __post_init__(self) -> None:
-        # Clamp values between -1 and 1
-        self.move_x = max(-1.0, min(1.0, self.move_x))
-        self.move_y = max(-1.0, min(1.0, self.move_y))
+    field_bounds: tuple[float, float, float, float]

@@ -40,6 +40,10 @@ AI_TYPES = [
 
 def create_agent_from_args(args):
     """Create a DQN agent with parameters from command line arguments"""
+    # Determine training mode and dual-scale configuration
+    training_mode = getattr(args, 'training_mode', 'step_by_step')
+    enable_dual_scale = getattr(args, 'enable_dual_scale_training', False)
+
     return DQNAgent(
         state_size=args.state_size,
         action_size=args.action_size,
@@ -52,6 +56,16 @@ def create_agent_from_args(args):
         use_prioritized_replay=args.use_prioritized_replay,
         tau=args.tau,
         memory_size=args.memory_size,
+
+        # Advanced training configuration
+        training_mode=training_mode,
+        enable_dual_scale_training=enable_dual_scale,
+        tactical_train_frequency=getattr(args, 'tactical_train_frequency', 10),
+        tactical_learning_rate=getattr(args, 'tactical_learning_rate', None),
+        strategic_learning_rate=getattr(args, 'strategic_learning_rate', None),
+        train_frequency=getattr(args, 'train_frequency', 10),
+        min_replay_size=getattr(args, 'min_replay_size', 1000),
+        reward_normalization=getattr(args, 'reward_normalization', True),
     )
 
 
@@ -199,6 +213,7 @@ def train_phase(
     try:
         rewards = []
         wins = 0
+        wins_history = []  # Track wins per episode for recent win rate calculation
         best_avg_reward = float("-inf")
         episodes_since_improvement = 0
 
@@ -215,6 +230,8 @@ def train_phase(
             rewards.append(episode_reward)
 
             winner = episode_stats.get("winner", 0)
+            episode_won = 1 if winner == 1 else 0
+            wins_history.append(episode_won)
             if winner == 1:
                 wins += 1
 
@@ -225,15 +242,44 @@ def train_phase(
                 )
 
             # Progress reporting
-            if episode % args.log_interval == 0 and episode > start_episode:
+            if (episode + 1) % args.log_interval == 0 and episode > start_episode:
                 recent_rewards = rewards[-args.log_interval :]
                 avg_reward = np.mean(recent_rewards)
-                win_rate = wins / (episode - start_episode + 1) * 100
 
-                print(
+                # Calculate recent win rate (same window as recent rewards)
+                recent_wins = wins_history[-args.log_interval :]
+                recent_win_rate = np.mean(recent_wins) * 100  # Convert to percentage
+
+                # Global win rate for comparison
+                global_win_rate = wins / (episode - start_episode + 1) * 100
+
+                # Get detailed training statistics
+                training_stats = agent.get_training_stats()
+
+                base_info = (
                     f"  Episode {episode}: avg reward = {avg_reward:.2f}, "
-                    f"win rate = {win_rate:.1f}%, epsilon = {agent.epsilon:.3f}"
+                    f"win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
                 )
+
+                # Add dual-scale specific information if enabled
+                if training_stats.get("dual_scale_training", False):
+                    dual_scale_info = (
+                        f", tactical steps = {training_stats['tactical_step_count']}, "
+                        f"memory = {training_stats['memory_size']}"
+                    )
+                    print(base_info + dual_scale_info)
+
+                    # Verbose dual-scale statistics
+                    if args.verbose:
+                        print(f"    🎯 Tactical LR: {training_stats['tactical_optimizer_lr']:.6f}")
+                        print(f"    🧠 Strategic LR: {training_stats['strategic_optimizer_lr']:.6f}")
+                        print(f"    📚 Training mode: {training_stats['training_mode']}")
+                        print(f"    📊 Episode buffer: {training_stats['episode_buffer_size']} experiences")
+                else:
+                    print(base_info)
+                    if args.verbose:
+                        print(f"    📚 Training mode: {training_stats['training_mode']}")
+                        print(f"    📊 Memory: {training_stats['memory_size']} experiences")
 
                 # Check for improvement
                 if avg_reward > best_avg_reward:
@@ -288,11 +334,11 @@ def train_phase(
 
 
 def create_optimized_agent():
-    """Create a DQN agent with optimized hyperparameters for convergence"""
+    """Create a DQN agent with optimized hyperparameters and advanced dual-scale training"""
     return DQNAgent(
         state_size=28,
         action_size=9,
-        lr=0.0003,  # Reduced learning rate for stability
+        lr=0.001,  # Base learning rate
         gamma=0.99,
         epsilon=1.0,
         epsilon_decay=0.998,  # Slower decay for more exploration
@@ -301,6 +347,16 @@ def create_optimized_agent():
         use_prioritized_replay=True,
         tau=0.003,  # Slower soft update
         memory_size=20000,  # Larger buffer
+
+        # Advanced dual-scale training configuration
+        training_mode="step_by_step",
+        enable_dual_scale_training=True,
+        tactical_train_frequency=10,  # Tactical training every 10 steps
+        tactical_learning_rate=0.0003,  # Conservative for tactical stability
+        strategic_learning_rate=0.0015,  # More aggressive for strategic adaptation
+        train_frequency=1,  # Allow frequent updates due to dual-scale optimization
+        min_replay_size=1000,  # Start training after sufficient experience
+        reward_normalization=True,
     )
 
 
@@ -721,6 +777,204 @@ def train_progressive_curriculum(agent, args):
         "final_model_path": str(final_model_path),
         "all_phase_data": all_phase_data,
     }
+
+
+def train_dual_scale(agent, args):
+    """
+    Advanced dual-scale training: tactical + strategic learning optimized for Pong.
+
+    Features:
+    - Tactical learning: Frequent updates with conservative LR for immediate feedback
+    - Strategic learning: Episode-end updates with aggressive LR for long-term planning
+    - Hybrid reward calculation for both time scales
+    - Enhanced performance monitoring
+    """
+    print("=== ADVANCED DUAL-SCALE TRAINING ===")
+    print("🎯 Tactical Learning: Immediate feedback, ball tracking, positioning")
+    print("🧠 Strategic Learning: Long-term planning, match outcomes, sequences")
+
+    # Get ball configuration
+    ball_direction, ball_angle = get_ball_config_from_args(args)
+    training_manager = TrainingManager(
+        headless=args.headless,
+        fast_gui=args.fast_gui,
+        initial_ball_direction=ball_direction,
+        initial_ball_angle=ball_angle
+    )
+
+    # Create opponent based on args
+    opponent = get_opponent(args.opponent if hasattr(args, 'opponent') else 'follow_ball')
+    print(f"Training opponent: {opponent.name}")
+
+    # Ensure dual-scale training is enabled
+    if not agent.enable_dual_scale_training:
+        print("⚠️  Warning: Agent was not configured for dual-scale training!")
+        print("    Enabling dual-scale training now...")
+        agent.enable_dual_scale_training = True
+        # Initialize dual-scale components if needed
+        agent._initialize_dual_scale_training()
+
+    # Display training configuration
+    stats = agent.get_training_stats()
+    print(f"\n📊 Training Configuration:")
+    print(f"   Dual-scale training: {stats['dual_scale_training']}")
+    print(f"   Tactical frequency: every {stats['tactical_train_frequency']} steps")
+    print(f"   Tactical LR: {stats['tactical_optimizer_lr']:.6f}")
+    print(f"   Strategic LR: {stats['strategic_optimizer_lr']:.6f}")
+    print(f"   Training mode: {stats['training_mode']}")
+    print(f"   Memory size: {stats['memory_size']}")
+    print(f"   Min replay size: {stats['min_replay_size']}")
+
+    # Training phase
+    episodes = args.total_episodes if hasattr(args, 'total_episodes') else 1000
+    rewards, wins, final_episodes = train_phase(
+        agent,
+        opponent,
+        f"Dual-scale training vs {opponent.name}",
+        episodes,
+        training_manager,
+        args,
+        phase_num=1,
+        total_phases=1,
+    )
+
+    # Save final model
+    final_model_path = Path(args.output_dir) / f"{args.model_prefix}_dual_scale_final.pth"
+    agent.save_model(str(final_model_path))
+    print(f"Final dual-scale model saved: {final_model_path}")
+
+    # Create specialized dual-scale plots
+    if args.save_plots:
+        create_dual_scale_plots(rewards, wins / final_episodes * 100 if final_episodes > 0 else 0, agent, args)
+
+    # Cleanup training manager
+    training_manager.cleanup()
+
+    # Final statistics
+    final_stats = agent.get_training_stats()
+    print(f"\n✨ DUAL-SCALE TRAINING COMPLETED ✨")
+    print(f"📈 Final Performance:")
+    print(f"   Episodes: {final_episodes}")
+    print(f"   Average reward: {np.mean(rewards[-100:]) if len(rewards) >= 100 else np.mean(rewards) if rewards else 0:.2f}")
+    print(f"   Win rate: {wins / final_episodes * 100 if final_episodes > 0 else 0:.1f}%")
+    print(f"   Tactical steps: {final_stats['tactical_step_count']}")
+    print(f"   Memory utilization: {final_stats['memory_size']}")
+
+    return agent, {
+        "avg_reward": np.mean(rewards[-100:]) if len(rewards) >= 100 else np.mean(rewards) if rewards else 0,
+        "win_rate": wins / final_episodes * 100 if final_episodes > 0 else 0,
+        "total_episodes": final_episodes,
+        "final_model_path": str(final_model_path),
+        "tactical_steps": final_stats['tactical_step_count'],
+        "dual_scale_stats": final_stats,
+    }
+
+
+def create_dual_scale_plots(rewards, win_rate, agent, args):
+    """Create specialized plots for dual-scale training analysis"""
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+
+    # Plot 1: Reward progression with tactical annotations
+    episodes = range(len(rewards))
+    ax1.plot(episodes, rewards, 'b-', alpha=0.3, linewidth=0.8, label="Episode rewards")
+
+    # Moving average
+    window = min(50, len(rewards) // 4) if rewards else 1
+    if len(rewards) >= window and window > 1:
+        rolling = np.convolve(rewards, np.ones(window) / window, mode="valid")
+        ax1.plot(
+            range(window - 1, len(rewards)),
+            rolling,
+            'b-',
+            linewidth=2,
+            label=f"Moving avg ({window})"
+        )
+
+    # Add tactical training frequency markers
+    stats = agent.get_training_stats()
+    tactical_freq = stats.get('tactical_train_frequency', 10)
+
+    # Mark every tactical training point
+    tactical_episodes = [i for i in range(0, len(rewards), tactical_freq)]
+    if tactical_episodes:
+        tactical_rewards = [rewards[i] for i in tactical_episodes if i < len(rewards)]
+        ax1.scatter(tactical_episodes[:len(tactical_rewards)], tactical_rewards,
+                   color='red', alpha=0.6, s=10, label=f"Tactical updates (every {tactical_freq})")
+
+    ax1.set_title("Dual-Scale Training: Reward Progression")
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Reward")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Plot 2: Training mode comparison
+    if rewards:
+        recent_performance = np.mean(rewards[-50:]) if len(rewards) >= 50 else np.mean(rewards)
+        early_performance = np.mean(rewards[:50]) if len(rewards) >= 50 else np.mean(rewards)
+
+        performance_data = {
+            'Early Training\n(First 50 ep)': early_performance,
+            'Recent Training\n(Last 50 ep)': recent_performance,
+            'Overall Average': np.mean(rewards)
+        }
+
+        bars = ax2.bar(performance_data.keys(), performance_data.values(),
+                      color=['lightblue', 'lightgreen', 'orange'], alpha=0.7)
+        ax2.set_title("Performance Evolution")
+        ax2.set_ylabel("Average Reward")
+
+        # Add values on bars
+        for bar, value in zip(bars, performance_data.values(), strict=False):
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                    f'{value:.2f}', ha='center', va='bottom')
+        ax2.grid(True, alpha=0.3)
+
+    # Plot 3: Dual-scale statistics
+    dual_stats = {
+        'Tactical Steps': stats.get('tactical_step_count', 0),
+        'Total Episodes': len(rewards),
+        'Memory Size': stats.get('memory_size', 0),
+        'Episode Buffer': stats.get('episode_buffer_size', 0)
+    }
+
+    colors = ['skyblue', 'lightcoral', 'lightgreen', 'wheat']
+    bars = ax3.bar(dual_stats.keys(), dual_stats.values(), color=colors, alpha=0.7)
+    ax3.set_title("Dual-Scale Training Statistics")
+    ax3.set_ylabel("Count")
+    ax3.tick_params(axis='x', rotation=45)
+
+    for bar, value in zip(bars, dual_stats.values(), strict=False):
+        height = bar.get_height()
+        ax3.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'{int(value)}', ha='center', va='bottom')
+    ax3.grid(True, alpha=0.3)
+
+    # Plot 4: Learning rate comparison
+    lr_data = {
+        'Tactical LR': stats.get('tactical_optimizer_lr', 0),
+        'Strategic LR': stats.get('strategic_optimizer_lr', 0),
+        'Base LR': stats.get('current_lr', 0)
+    }
+
+    bars = ax4.bar(lr_data.keys(), lr_data.values(),
+                  color=['red', 'blue', 'green'], alpha=0.7)
+    ax4.set_title("Learning Rate Configuration")
+    ax4.set_ylabel("Learning Rate")
+    ax4.set_yscale('log')  # Log scale for better visualization
+
+    for bar, value in zip(bars, lr_data.values(), strict=False):
+        height = bar.get_height()
+        ax4.text(bar.get_x() + bar.get_width()/2., height * 1.1,
+                f'{value:.6f}', ha='center', va='bottom', rotation=45)
+    ax4.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    plots_path = Path(args.output_dir) / f"{args.model_prefix}_dual_scale_training.png"
+    plt.savefig(plots_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"📊 Dual-scale training plots saved: {plots_path}")
 
 
 def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2_winrate, args):
@@ -1283,9 +1537,9 @@ def parse_arguments():
     # Training mode
     parser.add_argument(
         "--mode",
-        choices=["curriculum", "single", "continue", "progressive"],
+        choices=["curriculum", "single", "continue", "progressive", "dual_scale"],
         default="curriculum",
-        help="Training mode: curriculum learning (2 phases), single phase, continue from checkpoint, or progressive (4 phases)",
+        help="Training mode: curriculum learning (2 phases), single phase, continue from checkpoint, progressive (4 phases), or dual_scale (advanced tactical+strategic learning)",
     )
 
     # Model and checkpoint management
@@ -1487,6 +1741,62 @@ def parse_arguments():
         help="Specific ball angle in degrees (0-360). Overrides --ball_direction if specified",
     )
 
+    # Advanced dual-scale training settings
+    parser.add_argument(
+        "--training_mode",
+        type=str,
+        choices=["episode_end", "step_by_step"],
+        default="step_by_step",
+        help="Training mode: 'episode_end' for traditional RL, 'step_by_step' for immediate feedback",
+    )
+    parser.add_argument(
+        "--enable_dual_scale_training",
+        action="store_true",
+        help="Enable advanced dual-scale training (tactical + strategic learning)",
+    )
+    parser.add_argument(
+        "--tactical_train_frequency",
+        type=int,
+        default=10,
+        help="Frequency of tactical training updates (every N steps)",
+    )
+    parser.add_argument(
+        "--tactical_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for tactical training (default: 0.3 * main LR)",
+    )
+    parser.add_argument(
+        "--strategic_learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for strategic training (default: 1.5 * main LR)",
+    )
+    parser.add_argument(
+        "--train_frequency",
+        type=int,
+        default=10,
+        help="Base training frequency (steps between training updates)",
+    )
+    parser.add_argument(
+        "--min_replay_size",
+        type=int,
+        default=1000,
+        help="Minimum replay buffer size before training starts",
+    )
+    parser.add_argument(
+        "--reward_normalization",
+        action="store_true",
+        default=True,
+        help="Enable reward normalization for stable training",
+    )
+    parser.add_argument(
+        "--no_reward_normalization",
+        dest="reward_normalization",
+        action="store_false",
+        help="Disable reward normalization",
+    )
+
     # Display settings
     parser.add_argument(
         "--headless",
@@ -1522,12 +1832,30 @@ def main():
     print("🚀 ADVANCED DQN TRAINING STARTED")
     print(f"Mode: {args.mode}")
     print(f"Display: {'Headless (no GUI)' if args.headless else 'GUI enabled'}")
+
+    # Training configuration info
     if args.mode == "progressive":
         print(f"Configuration: {args.progressive_episodes_per_phase} episodes per phase (4 phases)")
     else:
         print(
             f"Configuration: {args.episodes_per_phase if args.mode == 'curriculum' else args.total_episodes} episodes"
         )
+
+    # Advanced training features info
+    print(f"Training Mode: {args.training_mode}")
+    if args.enable_dual_scale_training:
+        print("🎯 DUAL-SCALE TRAINING ENABLED")
+        print(f"   Tactical frequency: every {args.tactical_train_frequency} steps")
+        print(f"   Tactical LR: {args.tactical_learning_rate or f'{args.learning_rate * 0.3:.6f}'}")
+        print(f"   Strategic LR: {args.strategic_learning_rate or f'{args.learning_rate * 1.5:.6f}'}")
+        print(f"   Base LR: {args.learning_rate}")
+    else:
+        print(f"Standard training (LR: {args.learning_rate})")
+
+    if args.reward_normalization:
+        print("📊 Reward normalization: ENABLED")
+    else:
+        print("📊 Reward normalization: DISABLED")
 
     # Create output directories
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -1562,6 +1890,8 @@ def main():
         agent, training_results = train_single_phase(agent, args)
     elif args.mode == "progressive":
         agent, training_results = train_progressive_curriculum(agent, args)
+    elif args.mode == "dual_scale":
+        agent, training_results = train_dual_scale(agent, args)
     else:  # continue mode
         if not (args.load_model or args.load_checkpoint):
             print("Error: Continue mode requires --load_model or --load_checkpoint")
@@ -1609,6 +1939,14 @@ def main():
             print(f"✅ Total improvement: +{total_improvement:.2f} reward points across all phases")
         else:
             print(f"❌ Total change: {total_improvement:.2f} reward points")
+    elif args.mode == "dual_scale":
+        print(f"Average reward: {training_results['avg_reward']:.2f}")
+        print(f"Win rate: {training_results['win_rate']:.1f}%")
+        print(f"Tactical training steps: {training_results['tactical_steps']}")
+        print("🎯 Dual-scale training features:")
+        print(f"   ✓ Tactical learning: {training_results['dual_scale_stats']['tactical_optimizer_lr']:.6f} LR")
+        print(f"   ✓ Strategic learning: {training_results['dual_scale_stats']['strategic_optimizer_lr']:.6f} LR")
+        print(f"   ✓ Training mode: {training_results['dual_scale_stats']['training_mode']}")
     else:
         print(f"Average reward: {training_results['avg_reward']:.2f}")
         print(f"Win rate: {training_results['win_rate']:.1f}%")

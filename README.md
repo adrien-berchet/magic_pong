@@ -102,7 +102,7 @@ magic_pong/
 - **PhysicsEngine**: Manages game physics, collisions, bonuses
 - **GameEngine**: Orchestrates the game and manages players
 - **TrainingManager**: Optimized for AI training
-- **AIPlayer**: Abstract interface for AIs
+- **Player**: Abstract interface for players
 - **GameEnvironment**: Environment compatible with RL frameworks
 
 ## Configuration
@@ -125,10 +125,10 @@ ai_config.FAST_MODE_MULTIPLIER = 10.0
 ## Create a Custom AI
 
 ```python
-from src.ai.interface import AIPlayer
+from src.ai.interface import Player
 from src.core.entities import Action
 
-class MyAI(AIPlayer):
+class MyAI(Player):
     def get_action(self, observation):
         # Your logic here
         ball_pos = observation['ball_pos']
@@ -150,9 +150,9 @@ class MyAI(AIPlayer):
 ```python
 import torch
 import torch.nn as nn
-from src.ai.interface import AIPlayer
+from src.ai.interface import Player
 
-class PyTorchAI(AIPlayer):
+class PyTorchAI(Player):
     def __init__(self, player_id, model):
         super().__init__(player_id)
         self.model = model
