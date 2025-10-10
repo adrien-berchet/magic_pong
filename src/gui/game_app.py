@@ -9,6 +9,7 @@ from enum import Enum
 
 import pygame
 from magic_pong.ai.models.dqn_ai import DQNAgent
+from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.core.entities import Player
 from magic_pong.core.game_engine import GameEngine
@@ -121,7 +122,7 @@ class MagicPongApp:
         elif mode == GameMode.AI_DEMO:
             # AI vs AI
             ai_players[1] = SimpleAI("AI 1")
-            ai_players[2] = SimpleAI("AI 2")
+            ai_players[2] = DefensiveAI("AI 2")
 
         # Set players in game engine
         player1 = self.human_players[1] or ai_players[1]

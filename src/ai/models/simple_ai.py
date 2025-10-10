@@ -7,8 +7,9 @@ import random
 import time
 from typing import Any
 
-from magic_pong.core.entities import Action
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.core.entities import Action
+from magic_pong.utils.config import game_config
 
 
 class RandomAI(AIPlayer):
@@ -61,9 +62,7 @@ class TrainingDummyAI(AIPlayer):
     to ensure the learning agent can focus purely on ball contact
     """
 
-    def __init__(
-        self, name: str = "TrainingDummyAI", movement_factor: float = 0.02, **kwargs: Any
-    ):
+    def __init__(self, name: str = "TrainingDummyAI", movement_factor: float = 0.02, **kwargs: Any):
         super().__init__(name=name, **kwargs)
         self.movement_factor = movement_factor  # Very small movement to add minimal variation
         self.center_x = 0.0  # Will be set based on player side
@@ -71,7 +70,7 @@ class TrainingDummyAI(AIPlayer):
     def get_action(self, observation: dict[str, Any]) -> Action:
         """Very minimal movement around center position"""
         # Get player info to determine which side we're on
-        field_width = observation.get("field_width", 800)
+        field_width = observation.get("field_width", game_config.FIELD_WIDTH)
         player_pos = observation["player_pos"]
         if player_pos[0] > field_width / 2:  # Right side
             self.center_x = field_width * 0.75
@@ -159,8 +158,9 @@ class DefensiveAI(AIPlayer):
         player_pos = observation["player_pos"]
 
         # Defensive position (near goal)
-        field_width = observation.get("field_width", 800)
+        field_width = observation.get("field_width", game_config.FIELD_WIDTH)
         player_pos = observation["player_pos"]
+
         if player_pos[0] < field_width / 2:  # Left side
             target_x = 0.1  # Near left edge
         else:  # Right player

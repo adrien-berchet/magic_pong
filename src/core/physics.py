@@ -69,17 +69,7 @@ class PhysicsEngine:
         self.bonus_spawner = BonusSpawner(field_width, field_height)
 
         # Game state
-        self.ball = Ball(field_width / 2, field_height / 2, game_config.BALL_SPEED, 0)
-
-        self.player1 = Paddle(
-            game_config.PADDLE_MARGIN, field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
-        )
-
-        self.player2 = Paddle(
-            field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
-            field_height / 2 - game_config.PADDLE_HEIGHT / 2,
-            2,
-        )
+        self.reset_paddles()
 
         self.bonuses: list[Bonus] = []
         self.rotating_paddles: list[RotatingPaddle] = []
@@ -89,11 +79,24 @@ class PhysicsEngine:
         # Initialize ball with random direction
         self.reset_ball()
 
+    def reset_paddles(self) -> None:
+        """Resets paddles to their initial position and size"""
+        self.player1 = Paddle(
+            game_config.PADDLE_MARGIN, self.field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
+        )
+
+        self.player2 = Paddle(
+            self.field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
+            self.field_height / 2 - game_config.PADDLE_HEIGHT / 2,
+            2,
+        )
+
     def reset_ball(self, direction: int = 0, angle: float | None = None) -> None:
         """Resets the ball to center with optional specific angle"""
         if direction == 0:
             direction = random.choice([-1, 1])
-        self.ball.reset_to_center(direction, angle)
+        self.ball = Ball(self.field_width / 2, self.field_height / 2, game_config.BALL_SPEED, 0)
+        # self.ball.reset_to_center(direction, angle)
 
     def set_ball_initial_direction(self, direction: int = 1, angle_degrees: float = 0.0) -> None:
         """Sets a specific initial direction for the ball (useful for training)"""
@@ -153,10 +156,12 @@ class PhysicsEngine:
         elif wall_collision == "left_goal":
             self.score[1] += 1  # Point for player 2
             events["goals"].append({"player": 2, "score": self.score.copy()})
+            self.reset_paddles()
             self.reset_ball(1)  # Restart towards the right
         elif wall_collision == "right_goal":
             self.score[0] += 1  # Point for player 1
             events["goals"].append({"player": 1, "score": self.score.copy()})
+            self.reset_paddles()
             self.reset_ball(-1)  # Restart towards the left
 
         # Paddle collisions with continuous detection
@@ -255,16 +260,7 @@ class PhysicsEngine:
         self.rotating_paddles.clear()
 
         # Reset paddles to their initial position
-        self.player1.position.x = game_config.PADDLE_MARGIN
-        self.player1.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
-        self.player2.position.x = (
-            game_config.FIELD_WIDTH - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH
-        )
-        self.player2.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
-        self.player1.prev_position = self.player1.position
-        self.player2.prev_position = self.player2.position
-        self.player1.reset_size()
-        self.player2.reset_size()
+        self.reset_paddles()
 
         # Reset ball to center
         self.reset_ball()

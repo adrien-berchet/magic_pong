@@ -3,7 +3,6 @@ Magic Pong game entities: ball, paddles, bonuses
 """
 
 import math
-import numpy as np
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -31,11 +30,37 @@ class Vector2D:
     def __add__(self, other: "Vector2D") -> "Vector2D":
         return Vector2D(self.x + other.x, self.y + other.y)
 
+    def __iadd__(self, other: "Vector2D") -> "Vector2D":
+        self.x += other.x
+        self.y += other.y
+        return self
+
     def __sub__(self, other: "Vector2D") -> "Vector2D":
         return Vector2D(self.x - other.x, self.y - other.y)
 
+    def __isub__(self, other: "Vector2D") -> "Vector2D":
+        self.x -= other.x
+        self.y -= other.y
+        return self
+
     def __mul__(self, scalar: float) -> "Vector2D":
         return Vector2D(self.x * scalar, self.y * scalar)
+
+    def __imul__(self, scalar: float) -> "Vector2D":
+        self.x *= scalar
+        self.y *= scalar
+        return self
+
+    def __truediv__(self, scalar: float) -> "Vector2D":
+        return Vector2D(self.x / scalar, self.y / scalar)
+
+    def __itruediv__(self, scalar: float) -> "Vector2D":
+        self.x /= scalar
+        self.y /= scalar
+        return self
+
+    def __neg__(self) -> "Vector2D":
+        return Vector2D(-self.x, -self.y)
 
     def magnitude(self) -> float:
         return float(np.linalg.norm([self.x, self.y]))
@@ -98,13 +123,25 @@ class Ball:
 
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision circle properties (x, y, width, height)"""
-        return (self.position.x - self.radius, self.position.y - self.radius, self.radius * 2, self.radius * 2)
+        return (
+            self.position.x - self.radius,
+            self.position.y - self.radius,
+            self.radius * 2,
+            self.radius * 2,
+        )
 
 
 class Paddle:
     """Player paddle"""
 
-    def __init__(self, x: float, y: float, player_id: int, width: float | None = None, height: float | None = None):
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        player_id: int,
+        width: float | None = None,
+        height: float | None = None,
+    ):
         self.position = Vector2D(x, y)
         self.prev_position = Vector2D(x, y)
         self.speed = game_config.PADDLE_SPEED
@@ -119,7 +156,7 @@ class Paddle:
             self.min_x = game_config.PADDLE_MARGIN
             self.max_x = game_config.FIELD_WIDTH / 2 - self.width - game_config.PADDLE_MARGIN
         else:  # Right player
-            self.min_x = game_config.FIELD_WIDTH / 2
+            self.min_x = game_config.FIELD_WIDTH / 2 + game_config.PADDLE_MARGIN
             self.max_x = game_config.FIELD_WIDTH - self.width - game_config.PADDLE_MARGIN
 
         self.min_y = 0.0
@@ -149,11 +186,22 @@ class Paddle:
 
     def apply_size_effect(self, multiplier: float, duration: float) -> None:
         """Applies a temporary size effect"""
-        self.height = max(min(self.height * multiplier, self.original_height * 4, game_config.FIELD_HEIGHT * 0.95), self.original_height * 0.25)  # Limit min and max size
+        new_size = max(
+            min(
+                self.height * multiplier, self.original_height * 4, game_config.FIELD_HEIGHT * 0.95
+            ),
+            self.original_height * 0.25,
+        )  # Limit min and max size
         self.size_effect_timer = duration
+
+        # Center the paddle vertically after size change
+        diff_size = new_size - self.height
+        self.position.y -= diff_size / 2  # Center the paddle
 
         # Readjust Y limits
         self.max_y = game_config.FIELD_HEIGHT - self.height
+
+        self.height = new_size
 
         # Ensure constraints
         self.constrain_position()
