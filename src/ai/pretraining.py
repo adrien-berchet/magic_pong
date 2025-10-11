@@ -146,6 +146,7 @@ class OptimalPointPretrainer:
             "ball_velocity": ball_state["ball_velocity"],
             f"player{player_id}_position": ball_state["paddle_position"],
             f"player{3-player_id}_position": (opponent_x, opponent_y),
+            f"player{3-player_id}_last_position": (opponent_x, opponent_y),
             f"player{player_id}_paddle_size": self.paddle_height,
             f"player{3-player_id}_paddle_size": self.paddle_height,
             "active_bonuses": [],

@@ -13,8 +13,7 @@ from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.ai.pretraining import create_pretrainer
 from magic_pong.core.game_engine import TrainingManager
-from magic_pong.utils.config import ai_config
-from magic_pong.utils.config import game_config
+from magic_pong.utils.config import ai_config, game_config
 
 
 class DQNPretrainer:
@@ -171,10 +170,10 @@ class DQNPretrainer:
 
         # Ajouter la taille d'état correcte si non spécifiée
         if "state_size" not in agent_kwargs:
-            agent_kwargs["state_size"] = 28  # Taille correcte pour l'état étendu
+            agent_kwargs["state_size"] = 32  # Taille correcte pour l'état étendu
 
         # Créer l'agent DQN
-        dqn_agent = DQNAgent(player_id=1, name="DQN_Pretrained", **agent_kwargs)
+        dqn_agent = DQNAgent(name="DQN_Pretrained", **agent_kwargs)
 
         # Phase 1: Pré-entraînement (sauf si demandé de l'ignorer)
         if not skip_pretraining:
@@ -514,7 +513,12 @@ def main():
 
     # Arguments du réseau
     parser.add_argument("--lr", type=float, default=0.001, help="Taux d'apprentissage")
-    parser.add_argument("--tau", type=float, default=0.005, help="Coefficient pour les soft updates du target network")
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.005,
+        help="Coefficient pour les soft updates du target network",
+    )
     parser.add_argument("--gamma", type=float, default=0.99, help="Facteur de discount")
     parser.add_argument(
         "--epsilon", type=float, default=1.0, help="Epsilon initial pour l'exploration"

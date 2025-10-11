@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from magic_pong.core.entities import Action, Ball, Paddle
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.core.entities import Action
 
 # Transition tuple for replay buffer
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
@@ -39,8 +39,9 @@ class HybridRewardCalculator:
         """
         self.gamma = gamma
 
-    def calculate_tactical_reward(self, observation: dict[str, Any],
-                                action: Action, base_reward: float) -> float:
+    def calculate_tactical_reward(
+        self, observation: dict[str, Any], action: Action, base_reward: float
+    ) -> float:
         """
         Calculate immediate tactical rewards for step-by-step learning.
 
@@ -108,9 +109,12 @@ class HybridRewardCalculator:
 
         return tactical_reward
 
-    def calculate_strategic_reward(self, episode_rewards: list[float],
-                                 episode_observations: list[dict[str, Any]],
-                                 episode_actions: list[Action]) -> list[float]:
+    def calculate_strategic_reward(
+        self,
+        episode_rewards: list[float],
+        episode_observations: list[dict[str, Any]],
+        episode_actions: list[Action],
+    ) -> list[float]:
         """
         Calculate strategic rewards for episode-end learning.
 
@@ -136,9 +140,7 @@ class HybridRewardCalculator:
 
         # Calculate strategic bonuses for each step
         strategic_rewards = []
-        for i, (base_reward, obs, action) in enumerate(zip(
-            discounted_rewards, episode_observations, episode_actions, strict=False
-        )):
+        for i, base_reward in enumerate(discounted_rewards):
             strategic_reward = base_reward
 
             # 1. Rally contribution bonus - actions that led to successful ball returns
@@ -167,8 +169,9 @@ class HybridRewardCalculator:
 
         return strategic_rewards
 
-    def _calculate_rally_contribution_bonus(self, step: int,
-                                          observations: list[dict[str, Any]]) -> float:
+    def _calculate_rally_contribution_bonus(
+        self, step: int, observations: list[dict[str, Any]]
+    ) -> float:
         """Calculate bonus for actions that contributed to successful rallies."""
         # Look ahead to find ball contact events
         rally_bonus = 0.0
@@ -182,8 +185,10 @@ class HybridRewardCalculator:
             events = obs.get("events", [])
 
             # Check for successful ball contact
-            if any("ball_hit" in str(event).lower() or "contact" in str(event).lower()
-                   for event in events):
+            if any(
+                "ball_hit" in str(event).lower() or "contact" in str(event).lower()
+                for event in events
+            ):
                 # Earlier actions in the sequence get progressively more credit
                 time_to_contact = future_step - step
                 if time_to_contact <= 15:  # Within reasonable sequence length
@@ -193,15 +198,14 @@ class HybridRewardCalculator:
 
         return rally_bonus
 
-    def _calculate_match_outcome_bonus(self, step: int,
-                                     observations: list[dict[str, Any]],
-                                     rewards: list[float]) -> float:
+    def _calculate_match_outcome_bonus(
+        self, step: int, observations: list[dict[str, Any]], rewards: list[float]
+    ) -> float:
         """Calculate bonus based on contribution to match outcome."""
         if len(observations) < 20:  # Too short to evaluate match outcome
             return 0.0
 
         # Analyze final observations for match outcome
-        final_obs = observations[-5:]  # Look at last few observations
         total_final_reward = sum(rewards[-10:])  # Sum of final rewards
 
         # Determine if match was won or lost based on reward patterns
@@ -221,22 +225,21 @@ class HybridRewardCalculator:
 
         return 0.0
 
-    def _calculate_defensive_strategy_bonus(self, step: int,
-                                          observations: list[dict[str, Any]],
-                                          actions: list[Action]) -> float:
+    def _calculate_defensive_strategy_bonus(
+        self, step: int, observations: list[dict[str, Any]], actions: list[Action]
+    ) -> float:
         """Reward maintaining good defensive positioning over time."""
         if step < 8:  # Need sufficient history
             return 0.0
 
         # Analyze positioning strategy over recent history
         analysis_window = min(8, step + 1)
-        recent_obs = observations[step - analysis_window + 1:step + 1]
-        recent_actions = actions[step - analysis_window + 1:step + 1]
+        recent_obs = observations[step - analysis_window + 1 : step + 1]
 
         good_defensive_positions = 0
         total_defensive_situations = 0
 
-        for i, obs in enumerate(recent_obs):
+        for obs in recent_obs:
             ball_pos = obs.get("ball_pos", [0.5, 0.5])
             player_pos = obs.get("player_pos", [0.0, 0.5])
             ball_vel = obs.get("ball_vel", [0.0, 0.0])
@@ -257,17 +260,16 @@ class HybridRewardCalculator:
 
         return 0.0
 
-    def _calculate_sequence_coherence_bonus(self, step: int,
-                                          actions: list[Action],
-                                          observations: list[dict[str, Any]]) -> float:
+    def _calculate_sequence_coherence_bonus(
+        self, step: int, actions: list[Action], observations: list[dict[str, Any]]
+    ) -> float:
         """Reward coherent tactical sequences (avoid erratic movement patterns)."""
         if step < 6:  # Need sufficient sequence length
             return 0.0
 
         # Analyze recent movement patterns
         sequence_length = min(6, step + 1)
-        recent_actions = actions[step - sequence_length + 1:step + 1]
-        recent_obs = observations[step - sequence_length + 1:step + 1]
+        recent_actions = actions[step - sequence_length + 1 : step + 1]
 
         # Calculate movement consistency
         y_movements = [action.move_y for action in recent_actions]
@@ -276,7 +278,9 @@ class HybridRewardCalculator:
         oscillation_penalty = 0.0
         direction_changes = 0
         for i in range(1, len(y_movements)):
-            if len(y_movements) > i and y_movements[i] * y_movements[i-1] < -0.1:  # Direction change
+            if (
+                len(y_movements) > i and y_movements[i] * y_movements[i - 1] < -0.1
+            ):  # Direction change
                 direction_changes += 1
 
         if direction_changes > 2:  # Too many direction changes
@@ -312,7 +316,14 @@ class HybridRewardCalculator:
 class DQNNetwork(nn.Module):
     """Deep Q-Network avec améliorations pour la stabilité"""
 
-    def __init__(self, input_size: int, hidden_size: int = 512, output_size: int = 9, layer_size: int = 3, use_normalization: bool = True):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int = 512,
+        output_size: int = 9,
+        layer_size: int = 3,
+        use_normalization: bool = True,
+    ):
         """
         Args:
             input_size: Taille de l'état d'entrée
@@ -359,7 +370,7 @@ class DQNNetwork(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 # nn.init.xavier_uniform_(m.weight)
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
                 nn.init.constant_(m.bias, 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -368,7 +379,9 @@ class DQNNetwork(nn.Module):
 
         for fc, ln, dropout in zip(self.fc_layers, self.layer_norms, self.dropouts):
             x = fc(x)
-            if self.use_normalization and x.size(0) > 1:  # LayerNorm nécessite plus d'un échantillon
+            if (
+                self.use_normalization and x.size(0) > 1
+            ):  # LayerNorm nécessite plus d'un échantillon
                 x = ln(x)
             x = F.relu(x)
             x = dropout(x)
@@ -477,7 +490,7 @@ class DQNAgent(AIPlayer):
 
     def __init__(
         self,
-        state_size: int = 28,
+        state_size: int = 32,
         action_size: int = 9,
         lr: float = 0.001,
         gamma: float = 0.99,
@@ -497,7 +510,6 @@ class DQNAgent(AIPlayer):
         tactical_train_frequency: int = 10,
         tactical_learning_rate: float | None = None,
         strategic_learning_rate: float | None = None,
-        player_id: int = 1,
         name: str = "DQN AI",
     ):
         """
@@ -523,10 +535,9 @@ class DQNAgent(AIPlayer):
             tactical_train_frequency: How often to perform tactical training (default: every 10 steps)
             tactical_learning_rate: Learning rate for tactical training (default: lr * 0.3)
             strategic_learning_rate: Learning rate for strategic training (default: lr * 1.5)
-            player_id: Player ID
             name: Agent name
         """
-        super().__init__(player_id, name)
+        super().__init__(name)
 
         self.state_size = state_size
         self.action_size = action_size
@@ -547,8 +558,12 @@ class DQNAgent(AIPlayer):
         # Dual-scale training configuration
         self.enable_dual_scale_training = enable_dual_scale_training
         self.tactical_train_frequency = tactical_train_frequency
-        self.tactical_learning_rate = tactical_learning_rate if tactical_learning_rate is not None else lr * 0.3
-        self.strategic_learning_rate = strategic_learning_rate if strategic_learning_rate is not None else lr * 1.5
+        self.tactical_learning_rate = (
+            tactical_learning_rate if tactical_learning_rate is not None else lr * 0.3
+        )
+        self.strategic_learning_rate = (
+            strategic_learning_rate if strategic_learning_rate is not None else lr * 1.5
+        )
 
         # Episode buffer for episode-end and strategic training
         self.episode_buffer: list[dict[str, Any]] = []
@@ -573,13 +588,13 @@ class DQNAgent(AIPlayer):
                 self.q_network.parameters(),
                 lr=self.tactical_learning_rate,
                 weight_decay=1e-4,
-                eps=1e-4
+                eps=1e-4,
             )
             self.strategic_optimizer = optim.Adam(
                 self.q_network.parameters(),
                 lr=self.strategic_learning_rate,
                 weight_decay=1e-3,
-                eps=1e-4
+                eps=1e-4,
             )
             # Keep original optimizer for compatibility
             self.optimizer = self.strategic_optimizer
@@ -592,7 +607,9 @@ class DQNAgent(AIPlayer):
             self.strategic_loss_history: list[float] = []
         else:
             # Standard single optimizer
-            self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr, weight_decay=1e-3, eps=1e-4)
+            self.optimizer = optim.Adam(
+                self.q_network.parameters(), lr=lr, weight_decay=1e-3, eps=1e-4
+            )
 
         # Learning rate scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -687,7 +704,7 @@ class DQNAgent(AIPlayer):
         reward: float,
         done: bool,
         info: dict[str, Any],
-        observation: dict[str, Any]
+        observation: dict[str, Any],
     ) -> None:
         """
         Handle dual-scale training: simultaneous tactical and strategic learning.
@@ -706,7 +723,7 @@ class DQNAgent(AIPlayer):
                 "reward": reward,
                 "next_state": current_state.copy(),
                 "done": done,
-                "observation": observation.copy()
+                "observation": observation.copy(),
             }
             self.episode_buffer.append(strategic_experience)
             self.episode_rewards.append(reward)
@@ -717,20 +734,15 @@ class DQNAgent(AIPlayer):
             )
 
             # Store tactical experience in main replay buffer
-            self.memory.add(
-                self.last_state,
-                self.last_action,
-                tactical_reward,
-                current_state,
-                done
-            )
+            self.memory.add(self.last_state, self.last_action, tactical_reward, current_state, done)
 
             self.tactical_step_count += 1
 
             # Tactical training (frequent, conservative learning rate)
-            if (len(self.memory) >= self.min_replay_size and
-                self.tactical_step_count % self.tactical_train_frequency == 0):
-
+            if (
+                len(self.memory) >= self.min_replay_size
+                and self.tactical_step_count % self.tactical_train_frequency == 0
+            ):
                 tactical_loss = self._train_tactical()
                 if tactical_loss is not None:
                     self.tactical_loss_history.append(tactical_loss)
@@ -812,7 +824,7 @@ class DQNAgent(AIPlayer):
                 experience["action"],
                 strategic_rewards[i],  # Enhanced reward with credit assignment
                 experience["next_state"],
-                experience["done"]
+                experience["done"],
             )
             strategic_experiences.append(strategic_exp)
 
@@ -852,7 +864,9 @@ class DQNAgent(AIPlayer):
 
         return None
 
-    def _compute_dqn_loss(self, experiences: list[Transition], weights: torch.Tensor) -> torch.Tensor:
+    def _compute_dqn_loss(
+        self, experiences: list[Transition], weights: torch.Tensor
+    ) -> torch.Tensor:
         """
         Compute Double DQN loss for given experiences with importance sampling weights.
 
@@ -950,8 +964,10 @@ class DQNAgent(AIPlayer):
             self.step_count += 1
 
             # Train according to frequency
-            if (len(self.memory) >= self.min_replay_size and
-                self.step_count % self.train_frequency == 0):
+            if (
+                len(self.memory) >= self.min_replay_size
+                and self.step_count % self.train_frequency == 0
+            ):
                 loss = self.replay()
                 if loss is not None:
                     self.update_learning_rate(reward)
@@ -971,12 +987,16 @@ class DQNAgent(AIPlayer):
         base_state = [
             observation["ball_pos"][0],  # Position X de la balle
             observation["ball_pos"][1],  # Position Y de la balle
-            observation["ball_vel"][0] if "ball_vel" in observation else 0.0,  # Vitesse X balle
-            observation["ball_vel"][1] if "ball_vel" in observation else 0.0,  # Vitesse Y balle
+            observation["ball_vel"][0],  # Vitesse X balle
+            observation["ball_vel"][1],  # Vitesse Y balle
             observation["player_pos"][0],  # Position X du joueur
             observation["player_pos"][1],  # Position Y du joueur
             observation["opponent_pos"][0],  # Position X de l'adversaire
             observation["opponent_pos"][1],  # Position Y de l'adversaire
+            observation["opponent_previous_pos"][0],  # Previous position X de l'adversaire
+            observation["opponent_previous_pos"][1],  # Previous position Y de l'adversaire
+            observation["field_width"],  # Field width
+            observation["field_height"],  # Field height
         ]
 
         # Informations supplémentaires importantes (5 dimensions)
@@ -1040,7 +1060,7 @@ class DQNAgent(AIPlayer):
                 rotating_paddle_state.extend([0.0, 0.0, 0.0])
 
         # Combiner tous les états
-        # Total: 8 (base) + 5 (extra) + 9 (bonus) + 6 (rotating) = 28 dimensions
+        # Total: 12 (base) + 5 (extra) + 9 (bonus) + 6 (rotating) = 32 dimensions
         full_state = base_state + extra_state + bonus_state + rotating_paddle_state
 
         return np.array(full_state, dtype=np.float32)
@@ -1153,7 +1173,9 @@ class DQNAgent(AIPlayer):
                   "step_by_step" for immediate feedback on individual actions
         """
         if mode not in ["episode_end", "step_by_step"]:
-            raise ValueError(f"Invalid training mode: {mode}. Must be 'episode_end' or 'step_by_step'")
+            raise ValueError(
+                f"Invalid training mode: {mode}. Must be 'episode_end' or 'step_by_step'"
+            )
 
         old_mode = self.training_mode
         self.training_mode = mode
@@ -1165,7 +1187,9 @@ class DQNAgent(AIPlayer):
 
         print(f"🔄 Training mode switched: {old_mode} → {mode}")
         if mode == "episode_end":
-            print("   💡 Better credit assignment for sequential actions (paddle positioning, ball returns)")
+            print(
+                "   💡 Better credit assignment for sequential actions (paddle positioning, ball returns)"
+            )
         else:
             print("   ⚡ Immediate training for quick iteration and debugging")
 
@@ -1191,7 +1215,7 @@ class DQNAgent(AIPlayer):
                 experience["action"],
                 discounted_rewards[i],
                 experience["next_state"],
-                experience["done"]
+                experience["done"],
             )
 
         # Perform multiple training iterations on the episode
@@ -1288,7 +1312,7 @@ class DQNAgent(AIPlayer):
         # Optimisation avec gradient clipping
         self.optimizer.zero_grad()
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=0.5)
+        # grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=0.5)
 
         # Arrêter l'optimisation si gradients trop grands
         # if grad_norm > 10.0:
@@ -1373,8 +1397,12 @@ class DQNAgent(AIPlayer):
             self.tau = hyperparams["tau"]
             self.train_frequency = hyperparams.get("train_frequency", 10)  # Default value
             self.min_replay_size = hyperparams.get("min_replay_size", 1000)  # Default value
-            self.training_mode = hyperparams.get("training_mode", "episode_end")  # Default to episode_end
-            self.reward_normalization = hyperparams.get("reward_normalization", True)  # Default enabled
+            self.training_mode = hyperparams.get(
+                "training_mode", "episode_end"
+            )  # Default to episode_end
+            self.reward_normalization = hyperparams.get(
+                "reward_normalization", True
+            )  # Default enabled
             self.use_prioritized_replay = hyperparams["use_prioritized_replay"]
 
         # Reset episode buffer when loading (don't carry over partial episodes)
@@ -1401,21 +1429,25 @@ class DQNAgent(AIPlayer):
             "episode_buffer_size": len(self.episode_buffer),
             "epsilon": self.epsilon,
             "avg_loss": float(np.mean(self.loss_history[-100:])) if self.loss_history else 0.0,
-            "avg_reward": float(np.mean(self.reward_history[-100:])) if self.reward_history else 0.0,
+            "avg_reward": float(np.mean(self.reward_history[-100:]))
+            if self.reward_history
+            else 0.0,
             "current_lr": self.optimizer.param_groups[0]["lr"],
         }
 
         # Add dual-scale training statistics
         if self.enable_dual_scale_training:
-            stats.update({
-                "dual_scale_training": True,
-                "tactical_step_count": self.tactical_step_count,
-                "tactical_train_frequency": self.tactical_train_frequency,
-                "tactical_lr": self.tactical_learning_rate,
-                "strategic_lr": self.strategic_learning_rate,
-                "tactical_optimizer_lr": self.tactical_optimizer.param_groups[0]["lr"],
-                "strategic_optimizer_lr": self.strategic_optimizer.param_groups[0]["lr"],
-            })
+            stats.update(
+                {
+                    "dual_scale_training": True,
+                    "tactical_step_count": self.tactical_step_count,
+                    "tactical_train_frequency": self.tactical_train_frequency,
+                    "tactical_lr": self.tactical_learning_rate,
+                    "strategic_lr": self.strategic_learning_rate,
+                    "tactical_optimizer_lr": self.tactical_optimizer.param_groups[0]["lr"],
+                    "strategic_optimizer_lr": self.strategic_optimizer.param_groups[0]["lr"],
+                }
+            )
         else:
             stats["dual_scale_training"] = False
 
@@ -1434,45 +1466,3 @@ ACTION_MAPPING = {
     7: Action(-1.0, 1.0),  # Bas-gauche
     8: Action(1.0, 1.0),  # Bas-droite
 }
-
-
-def create_state_vector(
-    ball: Ball,
-    paddle: Paddle,
-    opponent_paddle: Paddle,
-    screen_width: int = 800,
-    screen_height: int = 600,
-) -> np.ndarray:
-    """
-    Crée un vecteur d'état normalisé pour le réseau de neurones (version legacy)
-
-    ATTENTION: Cette fonction est maintenant obsolète pour l'usage avec DQNAgent.
-    DQNAgent utilise maintenant _observation_to_state() qui inclut les bonus et autres informations.
-    Cette fonction est conservée pour compatibilité avec d'anciens scripts.
-
-    Args:
-        ball: Objet Ball du jeu
-        paddle: Paddle du joueur IA
-        opponent_paddle: Paddle de l'adversaire
-        screen_width: Largeur de l'écran
-        screen_height: Hauteur de l'écran
-
-    Returns:
-        Vecteur d'état normalisé de dimension 8 (version simple, sans bonus)
-    """
-    state = np.array(
-        [
-            ball.x / screen_width,  # Position X de la balle (normalisée)
-            ball.y / screen_height,  # Position Y de la balle (normalisée)
-            ball.velocity_x / 10.0,  # Vitesse X de la balle (normalisée)
-            ball.velocity_y / 10.0,  # Vitesse Y de la balle (normalisée)
-            paddle.y / screen_height,  # Position Y du paddle IA (normalisée)
-            (paddle.y + paddle.height / 2) / screen_height,  # Centre du paddle IA
-            opponent_paddle.y / screen_height,  # Position Y du paddle adversaire (normalisée)
-            (opponent_paddle.y + opponent_paddle.height / 2)
-            / screen_height,  # Centre du paddle adversaire
-        ],
-        dtype=np.float32,
-    )
-
-    return state

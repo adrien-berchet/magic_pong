@@ -2,15 +2,13 @@
 Agnostic AI interface for Magic Pong
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any
 
 import numpy as np
-from magic_pong.core.entities import Action
-from magic_pong.core.entities import Player
+from magic_pong.core.entities import Action, Player
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import ai_config, game_config
-
 
 
 class AIPlayer(Player):
@@ -90,6 +88,7 @@ class ObservationProcessor:
         ball_x, ball_y = game_state["ball_position"]
         player_x, player_y = game_state[f"player{player_id}_position"]
         opponent_x, opponent_y = game_state[f"player{3-player_id}_position"]
+        opponent_previous_x, opponent_previous_y = game_state[f"player{3-player_id}_last_position"]
 
         # Normalized positions
         if ai_config.NORMALIZE_POSITIONS:
@@ -99,19 +98,23 @@ class ObservationProcessor:
             player_y = player_y / self.field_height
             opponent_x = opponent_x / self.field_width
             opponent_y = opponent_y / self.field_height
+            opponent_previous_x = opponent_previous_x / self.field_width
+            opponent_previous_y = opponent_previous_y / self.field_height
 
         observation["ball_pos"] = [ball_x, ball_y]
         observation["player_pos"] = [player_x, player_y]
         observation["opponent_pos"] = [opponent_x, opponent_y]
+        observation["opponent_previous_pos"] = [opponent_previous_x, opponent_previous_y]
+        observation["field_width"] = self.field_width
+        observation["field_height"] = self.field_height
 
         # Ball velocity
-        if ai_config.INCLUDE_VELOCITY:
-            vel_x, vel_y = game_state["ball_velocity"]
-            if ai_config.NORMALIZE_POSITIONS:
-                # Normalize by approximate max speed
-                vel_x = vel_x / game_config.MAX_BALL_SPEED
-                vel_y = vel_y / game_config.MAX_BALL_SPEED
-            observation["ball_vel"] = [vel_x, vel_y]
+        vel_x, vel_y = game_state["ball_velocity"]
+        if ai_config.NORMALIZE_POSITIONS:
+            # Normalize by approximate max speed
+            vel_x = vel_x / game_config.MAX_BALL_SPEED
+            vel_y = vel_y / game_config.MAX_BALL_SPEED
+        observation["ball_vel"] = [vel_x, vel_y]
 
         # Paddle sizes
         observation["player_paddle_size"] = game_state[f"player{player_id}_paddle_size"]
@@ -236,7 +239,12 @@ class RewardCalculator:
 
         # Find optimal interception point on ball's trajectory
         optimal_point = self._find_optimal_interception_point(
-            ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id, self.y_only
+            ball_pos,
+            ball_vel,
+            (paddle_center_x, paddle_center_y),
+            field_bounds,
+            player_id,
+            self.y_only,
         )
 
         if optimal_point is None:
@@ -259,9 +267,7 @@ class RewardCalculator:
 
         # Calculate current distance to optimal interception point
         if self.y_only:
-            current_distance = np.linalg.norm(
-                optimal_point[1] - (paddle_center_y)
-            )
+            current_distance = np.linalg.norm(optimal_point[1] - (paddle_center_y))
         else:
             current_distance = np.linalg.norm(
                 optimal_point - np.array((paddle_center_x, paddle_center_y))
@@ -283,15 +289,24 @@ class RewardCalculator:
         proximity_reward = 0.0
         if distance_change < 0:  # Getting closer to optimal interception point
             dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
-            previous_x_dist = game_state.get(f"player{player_id}_prev_position", (0, 0))[0] - ball_vel[0] * dt
+            previous_x_dist = (
+                game_state.get(f"player{player_id}_prev_position", (0, 0))[0] - ball_vel[0] * dt
+            )
             new_x_dist = ball_pos[0] - paddle_center_x
-            ball_player_direction = (player_id == 1 and ball_vel[0] < 0) or (player_id == 2 and ball_vel[0] > 0)
+            ball_player_direction = (player_id == 1 and ball_vel[0] < 0) or (
+                player_id == 2 and ball_vel[0] > 0
+            )
             if player_id == 2:
                 previous_x_dist = -previous_x_dist  # Invert for right player
                 new_x_dist = -new_x_dist  # Invert for right player
 
             ball_step = np.linalg.norm(ball_vel) * dt
-            if previous_distance < ball_step + game_config.PADDLE_HEIGHT / 2 and previous_x_dist < ball_step and new_x_dist < previous_x_dist and ball_player_direction:
+            if (
+                previous_distance < ball_step + game_config.PADDLE_HEIGHT / 2
+                and previous_x_dist < ball_step
+                and new_x_dist < previous_x_dist
+                and ball_player_direction
+            ):
                 # Bonus for being very close to optimal point
                 proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR / 10
             else:
@@ -318,7 +333,7 @@ class RewardCalculator:
         paddle_pos: tuple,
         field_bounds: tuple,
         player_id: int,
-        y_only: bool = False
+        y_only: bool = False,
     ) -> tuple | None:
         """
         Find the optimal interception point on the ball's trajectory considering wall bounces

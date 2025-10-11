@@ -128,8 +128,7 @@ class AIConfig:
     """Configuration for AI interface"""
 
     # Observation space
-    NORMALIZE_POSITIONS: bool = True  # Normalize positions between -1 and 1
-    INCLUDE_VELOCITY: bool = True  # Include ball velocity
+    NORMALIZE_POSITIONS: bool = False  # Normalize positions between -1 and 1
     INCLUDE_HISTORY: bool = False  # Include position history
     HISTORY_LENGTH: int = 3  # Number of history frames
 

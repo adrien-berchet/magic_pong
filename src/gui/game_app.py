@@ -192,7 +192,7 @@ class MagicPongApp:
 
             # Get hyperparameters for compatibility check
             hyperparams = checkpoint.get("hyperparameters", {})
-            expected_state_size = 28
+            expected_state_size = 32
             expected_action_size = 9
 
             actual_state_size = hyperparams.get("state_size", expected_state_size)
@@ -243,7 +243,7 @@ class MagicPongApp:
 
             # Get hyperparameters from model if available
             hyperparams = model_info.get("hyperparameters", {})
-            state_size = hyperparams.get("state_size", 28)
+            state_size = hyperparams.get("state_size", 32)
             action_size = hyperparams.get("action_size", 9)
 
             # Create DQN agent with correct parameters
