@@ -39,22 +39,30 @@ class BonusSpawner:
         return new_bonuses
 
     def _spawn_symmetric_bonuses(self) -> list[Bonus]:
-        """Spawns bonuses symmetrically"""
+        """Spawns bonuses symmetrically in reachable positions"""
         bonuses = []
 
         # Choose a random bonus type
         bonus_type = random.choice(list(BonusType))
 
-        # Random position in the left half
-        left_x = random.uniform(50, self.field_width / 2 - 50)
-        y = random.uniform(50, self.field_height - 50)
+        # Calculate safe spawn margins based on configuration
+        # Ensure bonuses spawn away from walls and paddles
+        margin = game_config.PADDLE_MARGIN + game_config.PADDLE_WIDTH + game_config.BONUS_SIZE
+        vertical_margin = game_config.BONUS_SIZE
+
+        # Random position in the left half (avoiding paddle area)
+        left_x = random.uniform(margin, self.field_width / 2 - margin)
+        y = random.uniform(vertical_margin, self.field_height - vertical_margin)
 
         # Symmetric position in the right half
         right_x = self.field_width - left_x
 
-        # Create symmetric bonuses
-        bonuses.append(Bonus(left_x, y, bonus_type))
-        bonuses.append(Bonus(right_x, y, bonus_type))
+        # Validate that positions are within field bounds
+        if (margin <= left_x <= self.field_width - margin and
+            vertical_margin <= y <= self.field_height - vertical_margin):
+            # Create symmetric bonuses
+            bonuses.append(Bonus(left_x, y, bonus_type))
+            bonuses.append(Bonus(right_x, y, bonus_type))
 
         return bonuses
 
@@ -69,17 +77,7 @@ class PhysicsEngine:
         self.bonus_spawner = BonusSpawner(field_width, field_height)
 
         # Game state
-        self.ball = Ball(field_width / 2, field_height / 2, game_config.BALL_SPEED, 0)
-
-        self.player1 = Paddle(
-            game_config.PADDLE_MARGIN, field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
-        )
-
-        self.player2 = Paddle(
-            field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
-            field_height / 2 - game_config.PADDLE_HEIGHT / 2,
-            2,
-        )
+        self.reset_paddles()
 
         self.bonuses: list[Bonus] = []
         self.rotating_paddles: list[RotatingPaddle] = []
@@ -89,11 +87,24 @@ class PhysicsEngine:
         # Initialize ball with random direction
         self.reset_ball()
 
+    def reset_paddles(self) -> None:
+        """Resets paddles to their initial position and size"""
+        self.player1 = Paddle(
+            game_config.PADDLE_MARGIN, self.field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
+        )
+
+        self.player2 = Paddle(
+            self.field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
+            self.field_height / 2 - game_config.PADDLE_HEIGHT / 2,
+            2,
+        )
+
     def reset_ball(self, direction: int = 0, angle: float | None = None) -> None:
         """Resets the ball to center with optional specific angle"""
         if direction == 0:
             direction = random.choice([-1, 1])
-        self.ball.reset_to_center(direction, angle)
+        self.ball = Ball(self.field_width / 2, self.field_height / 2, game_config.BALL_SPEED, 0)
+        # self.ball.reset_to_center(direction, angle)
 
     def set_ball_initial_direction(self, direction: int = 1, angle_degrees: float = 0.0) -> None:
         """Sets a specific initial direction for the ball (useful for training)"""
@@ -103,7 +114,7 @@ class PhysicsEngine:
     def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
         """Updates game physics"""
         # Apply speed multiplier
-        effective_dt = dt * game_config.GAME_SPEED_MULTIPLIER
+        effective_dt = dt  # / game_config.GAME_SPEED_MULTIPLIER
         self.game_time += effective_dt
 
         # Move players
@@ -149,15 +160,19 @@ class PhysicsEngine:
 
         if wall_collision == "top" or wall_collision == "bottom":
             self.ball.bounce_vertical()
+            # Reset last paddle hit so ball can bounce off either paddle again
+            self.ball.last_paddle_hit = None
             events["wall_bounces"].append(wall_collision)
         elif wall_collision == "left_goal":
             self.score[1] += 1  # Point for player 2
             events["goals"].append({"player": 2, "score": self.score.copy()})
-            self.reset_ball(1)  # Restart towards the right
+            self.reset_paddles()
+            self.reset_ball(1)  # Restart towards the right (already resets last_paddle_hit in Ball.__init__)
         elif wall_collision == "right_goal":
             self.score[0] += 1  # Point for player 1
             events["goals"].append({"player": 1, "score": self.score.copy()})
-            self.reset_ball(-1)  # Restart towards the left
+            self.reset_paddles()
+            self.reset_ball(-1)  # Restart towards the left (already resets last_paddle_hit in Ball.__init__)
 
         # Paddle collisions with continuous detection
         if self.collision_detector.check_ball_paddle(self.ball, self.player1, effective_dt):
@@ -220,6 +235,8 @@ class PhysicsEngine:
             "player2_position": self.player2.position.to_tuple(),
             "player1_paddle_size": self.player1.height,
             "player2_paddle_size": self.player2.height,
+            "player1_last_position": self.player1.prev_position,
+            "player2_last_position": self.player2.prev_position,
             "active_bonuses": [
                 (bonus.position.x, bonus.position.y, bonus.type.value)
                 for bonus in self.bonuses
@@ -253,14 +270,7 @@ class PhysicsEngine:
         self.rotating_paddles.clear()
 
         # Reset paddles to their initial position
-        self.player1.position.x = game_config.PADDLE_MARGIN
-        self.player1.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
-        self.player2.position.x = (
-            game_config.FIELD_WIDTH - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH
-        )
-        self.player2.position.y = self.field_height / 2 - game_config.PADDLE_HEIGHT / 2
-        self.player1.reset_size()
-        self.player2.reset_size()
+        self.reset_paddles()
 
         # Reset ball to center
         self.reset_ball()

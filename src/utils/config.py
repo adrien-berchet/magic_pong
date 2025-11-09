@@ -2,6 +2,7 @@
 Magic Pong game configuration
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pygame
@@ -70,6 +71,7 @@ class GameConfig:
 
     # Ball physics
     BALL_RADIUS: float = 8.0
+    MAX_BALL_SPEED: float = 500.0  # pixels per second
     BALL_SPEED: float = 300.0  # pixels per second
     BALL_SPEED_INCREASE: float = 1.05  # Acceleration factor after each bounce
 
@@ -77,12 +79,13 @@ class GameConfig:
     PADDLE_WIDTH: float = 15.0
     PADDLE_HEIGHT: float = 80.0
     PADDLE_SPEED: float = 500.0  # pixels per second
-    PADDLE_MARGIN: float = 50.0  # Distance from field edge
+    PADDLE_MARGIN: float = 20.0  # Distance from field edge
 
     # Bonuses
     BONUSES_ENABLED: bool = True  # Master switch for all bonus features
     BONUS_SIZE: float = 20.0
     BONUS_SPAWN_INTERVAL: float = 15.0  # seconds
+    BONUS_LIFETIME: float = 20.0  # seconds
     BONUS_DURATION: float = 10.0  # seconds
     PADDLE_SIZE_MULTIPLIER: float = 1.5  # Enlargement factor
     PADDLE_SIZE_REDUCER: float = 0.6  # Shrinking factor
@@ -137,8 +140,8 @@ class AIConfig:
     WALL_HIT_REWARD: float = 0.1  # Small bonus for hitting the ball
     USE_PROXIMITY_REWARD: bool = False  # Enable proximity reward
     PROXIMITY_REWARD_FACTOR: float = 0.001  # Reward factor for getting closer to the ball
-    PROXIMITY_PENALTY_FACTOR: float = 0.005  # Penalty factor for moving away from the ball
-    MAX_PROXIMITY_REWARD: float = 0.05  # Cap for proximity reward per step
+    PROXIMITY_PENALTY_FACTOR: float = 0.001  # Penalty factor for moving away from the ball
+    MAX_PROXIMITY_REWARD: float = 0.01  # Cap for proximity reward per step
     DEBUG_OPTIMAL_POINTS: bool = False  # Display optimal interception points for debugging
     SHOW_OPTIMAL_POINTS_GUI: bool = False  # Show optimal points in graphical interface
 
@@ -151,3 +154,126 @@ class AIConfig:
 # Global configuration instance
 game_config = GameConfig()
 ai_config = AIConfig()
+
+
+def _change_values(obj, **kwargs):
+    old_values = {}
+    for name, new_value in kwargs.items():
+        old_values[name] = getattr(obj, name)
+        setattr(obj, name, new_value)
+    return old_values
+
+
+@contextmanager
+def game_config_tmp(**kwargs):
+    try:
+        old_values = _change_values(game_config, **kwargs)
+        yield
+    finally:
+        _change_values(game_config, **old_values)
+
+
+@contextmanager
+def ai_config_tmp(**kwargs):
+    try:
+        old_values = _change_values(ai_config, **kwargs)
+        yield
+    finally:
+        _change_values(ai_config, **old_values)
+
+
+def validate_game_config(config: GameConfig) -> list[str]:
+    """
+    Validates game configuration values and returns a list of warning messages.
+
+    Returns:
+        List of validation warning messages (empty if all valid)
+    """
+    warnings = []
+
+    # Field dimensions
+    if config.FIELD_WIDTH <= 0 or config.FIELD_HEIGHT <= 0:
+        warnings.append("Field dimensions must be positive")
+    if config.FIELD_WIDTH < 400 or config.FIELD_HEIGHT < 300:
+        warnings.append(f"Field dimensions ({config.FIELD_WIDTH}x{config.FIELD_HEIGHT}) may be too small")
+
+    # Ball physics
+    if config.BALL_RADIUS <= 0:
+        warnings.append("Ball radius must be positive")
+    if config.BALL_SPEED <= 0 or config.MAX_BALL_SPEED <= 0:
+        warnings.append("Ball speeds must be positive")
+    if config.BALL_SPEED > config.MAX_BALL_SPEED:
+        warnings.append(f"BALL_SPEED ({config.BALL_SPEED}) should not exceed MAX_BALL_SPEED ({config.MAX_BALL_SPEED})")
+    if config.BALL_SPEED_INCREASE <= 0:
+        warnings.append("Ball speed increase must be positive")
+
+    # Paddle configuration
+    if config.PADDLE_WIDTH <= 0 or config.PADDLE_HEIGHT <= 0:
+        warnings.append("Paddle dimensions must be positive")
+    if config.PADDLE_SPEED <= 0:
+        warnings.append("Paddle speed must be positive")
+    if config.PADDLE_MARGIN < 0:
+        warnings.append("Paddle margin cannot be negative")
+    if config.PADDLE_MARGIN * 2 + config.PADDLE_WIDTH * 2 > config.FIELD_WIDTH:
+        warnings.append("Paddle configuration doesn't fit in field width")
+
+    # Bonus configuration
+    if config.BONUSES_ENABLED:
+        if config.BONUS_SIZE <= 0:
+            warnings.append("Bonus size must be positive")
+        if config.BONUS_SPAWN_INTERVAL <= 0:
+            warnings.append("Bonus spawn interval must be positive")
+        if config.BONUS_DURATION <= 0 or config.BONUS_LIFETIME <= 0:
+            warnings.append("Bonus duration and lifetime must be positive")
+        if config.PADDLE_SIZE_MULTIPLIER <= 0 or config.PADDLE_SIZE_REDUCER <= 0:
+            warnings.append("Paddle size modifiers must be positive")
+
+    # Game settings
+    if config.MAX_SCORE <= 0:
+        warnings.append("Max score must be positive")
+    if config.GAME_SPEED_MULTIPLIER <= 0:
+        warnings.append("Game speed multiplier must be positive")
+    if config.FPS <= 0:
+        warnings.append("FPS must be positive")
+    if config.FPS < 30:
+        warnings.append(f"FPS ({config.FPS}) is very low, may cause physics issues")
+
+    return warnings
+
+
+def validate_ai_config(config: AIConfig) -> list[str]:
+    """
+    Validates AI configuration values and returns a list of warning messages.
+
+    Returns:
+        List of validation warning messages (empty if all valid)
+    """
+    warnings = []
+
+    # Reward system
+    if config.PROXIMITY_REWARD_FACTOR < 0 or config.PROXIMITY_PENALTY_FACTOR < 0:
+        warnings.append("Proximity reward factors should be non-negative")
+    if config.MAX_PROXIMITY_REWARD < 0:
+        warnings.append("Max proximity reward should be non-negative")
+
+    # Training configuration
+    if config.MAX_EPISODE_STEPS <= 0:
+        warnings.append("Max episode steps must be positive")
+    if config.FAST_MODE_MULTIPLIER <= 0:
+        warnings.append("Fast mode multiplier must be positive")
+    if config.FAST_MODE_MULTIPLIER > 100:
+        warnings.append(f"Fast mode multiplier ({config.FAST_MODE_MULTIPLIER}) is very high, may cause instability")
+
+    return warnings
+
+
+# Validate configurations on module load
+_game_warnings = validate_game_config(game_config)
+_ai_warnings = validate_ai_config(ai_config)
+
+if _game_warnings or _ai_warnings:
+    import warnings as python_warnings
+    if _game_warnings:
+        python_warnings.warn(f"Game configuration issues: {'; '.join(_game_warnings)}")
+    if _ai_warnings:
+        python_warnings.warn(f"AI configuration issues: {'; '.join(_ai_warnings)}")
