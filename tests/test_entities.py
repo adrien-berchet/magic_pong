@@ -131,11 +131,13 @@ class TestPaddle:
 
     def test_creation_left_player(self) -> None:
         """Test creating a paddle for the left player"""
+        from magic_pong.utils.config import game_config
+
         paddle = Paddle(50.0, 100.0, 1)
         assert paddle.position.x == 50.0
         assert paddle.position.y == 100.0
         assert paddle.player_id == 1
-        assert paddle.min_x == 0
+        assert paddle.min_x == game_config.PADDLE_MARGIN
 
     def test_creation_right_player(self) -> None:
         """Test creating a paddle for the right player"""
