@@ -232,7 +232,11 @@ class TrainingManager:
         # Initialize renderer if not headless
         if not headless:
             self.renderer = PygameRenderer()
-            print("🎮 GUI renderer initialized for training visualization " + "(fast mode enabled)" if fast_gui else "(normal speed)")
+            print(
+                "🎮 GUI renderer initialized for training visualization " + "(fast mode enabled)"
+                if fast_gui
+                else "(normal speed)"
+            )
 
         self.training_stats: dict[str, Any] = {
             "episodes": 0,

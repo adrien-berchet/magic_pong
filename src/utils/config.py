@@ -2,11 +2,13 @@
 Magic Pong game configuration with Pydantic validation
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import pygame
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 @dataclass
@@ -113,17 +115,17 @@ class GameConfig(BaseModel):
     PADDLE_COLOR: tuple[int, int, int] = Field(default=(255, 255, 255), description="RGB color")
     BONUS_COLORS: dict | None = Field(default=None, description="Bonus colors mapping")
 
-    @field_validator("BALL_SPEED")
+    @field_validator("BALL_SPEED")  # type: ignore[misc]
     @classmethod
-    def validate_ball_speed(cls, v: float, info) -> float:
+    def validate_ball_speed(cls, v: float, info: ValidationInfo) -> float:
         """Validate that ball speed doesn't exceed max speed"""
         # info.data contains already validated fields
-        max_speed = info.data.get("MAX_BALL_SPEED", 500.0)
+        max_speed = info.data.get("MAX_BALL_SPEED", 500.0) if info.data else 500.0
         if v > max_speed:
             raise ValueError(f"BALL_SPEED ({v}) must not exceed MAX_BALL_SPEED ({max_speed})")
         return v
 
-    @field_validator("KEYBOARD_LAYOUT")
+    @field_validator("KEYBOARD_LAYOUT")  # type: ignore[misc]
     @classmethod
     def validate_keyboard_layout(cls, v: str) -> str:
         """Validate keyboard layout exists"""
@@ -133,7 +135,7 @@ class GameConfig(BaseModel):
             )
         return v
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # type: ignore[misc]
     def validate_field_dimensions(self) -> "GameConfig":
         """Validate field is large enough for game elements"""
         min_width = 2 * (self.PADDLE_MARGIN + self.PADDLE_WIDTH) + 100
@@ -146,7 +148,7 @@ class GameConfig(BaseModel):
 
         return self
 
-    def model_post_init(self, __context) -> None:
+    def model_post_init(self, __context: Any) -> None:
         """Initialize bonus colors if not set"""
         if self.BONUS_COLORS is None:
             object.__setattr__(
@@ -193,14 +195,12 @@ class AIConfig(BaseModel):
         default=10.0, gt=0, description="Speed multiplier for fast mode"
     )
 
-    @field_validator("FAST_MODE_MULTIPLIER")
+    @field_validator("FAST_MODE_MULTIPLIER")  # type: ignore[misc]
     @classmethod
     def validate_fast_mode(cls, v: float) -> float:
         """Warn if fast mode multiplier is unreasonably high"""
         if v > 100:
-            raise ValueError(
-                f"FAST_MODE_MULTIPLIER ({v}) seems too high. Consider values <= 100."
-            )
+            raise ValueError(f"FAST_MODE_MULTIPLIER ({v}) seems too high. Consider values <= 100.")
         return v
 
 
@@ -209,9 +209,9 @@ game_config = GameConfig()
 ai_config = AIConfig()
 
 
-def _change_values(obj: BaseModel, **kwargs) -> dict:
+def _change_values(obj: BaseModel, **kwargs: Any) -> dict[str, Any]:
     """Helper to change config values temporarily"""
-    old_values = {}
+    old_values: dict[str, Any] = {}
     for name, new_value in kwargs.items():
         old_values[name] = getattr(obj, name)
         setattr(obj, name, new_value)
@@ -219,7 +219,7 @@ def _change_values(obj: BaseModel, **kwargs) -> dict:
 
 
 @contextmanager
-def game_config_tmp(**kwargs):
+def game_config_tmp(**kwargs: Any) -> Iterator[None]:
     """Temporarily modify game config (with validation)"""
     try:
         old_values = _change_values(game_config, **kwargs)
@@ -229,7 +229,7 @@ def game_config_tmp(**kwargs):
 
 
 @contextmanager
-def ai_config_tmp(**kwargs):
+def ai_config_tmp(**kwargs: Any) -> Iterator[None]:
     """Temporarily modify AI config (with validation)"""
     try:
         old_values = _change_values(ai_config, **kwargs)

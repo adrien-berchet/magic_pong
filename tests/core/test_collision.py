@@ -7,18 +7,15 @@ Tests the critical collision detection fixes including:
 - Ball tunneling prevention at high speeds
 """
 
-import math
 import pytest
-import numpy as np
-from magic_pong.core.entities import Ball, Paddle, Vector2D
 from magic_pong.core.collision import (
-    continuous_circle_paddle_collision,
-    get_paddle_collision_normal,
+    CollisionDetector,
     apply_paddle_bounce,
     circle_rect_collision_at_position,
-    CollisionDetector,
+    continuous_circle_paddle_collision,
+    get_paddle_collision_normal,
 )
-from magic_pong.utils.config import game_config
+from magic_pong.core.entities import Ball, Paddle, Vector2D
 
 
 class TestContinuousCollisionDetection:
@@ -225,7 +222,9 @@ class TestCollisionDetector:
 
         collision_type = detector.check_ball_walls(ball, 800, 600)
 
-        assert collision_type == "bottom", f"Should detect bottom wall collision, got {collision_type}"
+        assert (
+            collision_type == "bottom"
+        ), f"Should detect bottom wall collision, got {collision_type}"
 
     def test_goal_left(self):
         """Test ball going into left goal"""

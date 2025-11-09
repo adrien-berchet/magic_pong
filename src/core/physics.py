@@ -57,8 +57,10 @@ class BonusSpawner:
         right_x = self.field_width - left_x
 
         # Validate that positions are within field bounds
-        if (margin <= left_x <= self.field_width - margin and
-            vertical_margin <= y <= self.field_height - vertical_margin):
+        if (
+            margin <= left_x <= self.field_width - margin
+            and vertical_margin <= y <= self.field_height - vertical_margin
+        ):
             bonuses.append(Bonus(left_x, y, bonus_type))
             bonuses.append(Bonus(right_x, y, bonus_type))
 
@@ -250,7 +252,7 @@ class PhysicsEngine:
 
     def is_game_over(self) -> bool:
         """Checks if the game is over"""
-        return max(self.score) >= game_config.MAX_SCORE
+        return max(self.score) >= game_config.MAX_SCORE  # type: ignore[no-any-return]
 
     def get_winner(self) -> int:
         """Returns the winner (1 or 2), or 0 if no winner"""

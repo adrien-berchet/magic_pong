@@ -12,7 +12,7 @@ from magic_pong.utils.config import game_config
 def point_in_rect(point: Vector2D, rect: tuple[float, float, float, float]) -> bool:
     """Checks if a point is inside a rectangle"""
     x, y, width, height = rect
-    return x <= point.x <= x + width and y <= point.y <= y + height
+    return x <= point.x <= x + width and y <= point.y <= y + height  # type: ignore[no-any-return]
 
 
 def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -> bool:
@@ -26,7 +26,7 @@ def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -
     # Distance between ball center and closest point
     distance = math.sqrt((ball.position.x - closest_x) ** 2 + (ball.position.y - closest_y) ** 2)
 
-    return distance <= ball.radius
+    return distance <= ball.radius  # type: ignore[no-any-return]
 
 
 def continuous_circle_paddle_collision(ball: Ball, paddle: Paddle, dt: float) -> tuple[bool, float]:
@@ -47,7 +47,9 @@ def continuous_circle_paddle_collision(ball: Ball, paddle: Paddle, dt: float) ->
 
     # Case 1: Ball was outside and is now inside -> entering collision
     if not prev_in_collision and curr_in_collision:
-        return True, find_entry_collision_time(prev_pos, current_pos, ball.radius, prev_rect, current_rect)
+        return True, find_entry_collision_time(
+            prev_pos, current_pos, ball.radius, prev_rect, current_rect
+        )
 
     # Case 2: Ball was inside and is now outside -> exiting (no new collision)
     if prev_in_collision and not curr_in_collision:
@@ -55,7 +57,9 @@ def continuous_circle_paddle_collision(ball: Ball, paddle: Paddle, dt: float) ->
 
     # Case 3: Ball was outside and is still outside -> check if it passed through (tunneling)
     if not prev_in_collision and not curr_in_collision:
-        tunneled, time = check_trajectory_intersection(prev_pos, current_pos, ball.radius, prev_rect, current_rect)
+        tunneled, time = check_trajectory_intersection(
+            prev_pos, current_pos, ball.radius, prev_rect, current_rect
+        )
         if tunneled:
             return True, time
 
@@ -175,7 +179,7 @@ def circle_rect_collision_at_position(
     # Distance between ball center and closest point
     distance = math.sqrt((position.x - closest_x) ** 2 + (position.y - closest_y) ** 2)
 
-    return distance <= radius
+    return distance <= radius  # type: ignore[no-any-return]
 
 
 def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) -> bool:
@@ -207,7 +211,7 @@ def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) 
     # Distance from ball center to closest point
     distance = (ball.position - closest_point).magnitude()
 
-    return distance <= ball.radius
+    return distance <= ball.radius  # type: ignore[no-any-return]
 
 
 def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Vector2D | None:

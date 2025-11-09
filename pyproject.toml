@@ -139,6 +139,7 @@ strict_equality = true
 module = [
     "pygame.*",
     "numpy.*",
+    "pydantic.*",
 ]
 ignore_missing_imports = true
 
