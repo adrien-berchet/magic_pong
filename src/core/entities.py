@@ -34,6 +34,9 @@ class Vector2D:
     def __mul__(self, scalar: float) -> "Vector2D":
         return Vector2D(self.x * scalar, self.y * scalar)
 
+    def __truediv__(self, scalar: float) -> "Vector2D":
+        return Vector2D(self.x / scalar, self.y / scalar)
+
     def magnitude(self) -> float:
         return math.sqrt(self.x**2 + self.y**2)
 
@@ -149,6 +152,10 @@ class Paddle:
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision rectangle (x, y, width, height)"""
         return (self.position.x, self.position.y, self.width, self.height)
+
+    def get_previous_rect(self) -> tuple[float, float, float, float]:
+        """Returns the previous collision rectangle (x, y, width, height)"""
+        return (self.prev_position.x, self.prev_position.y, self.width, self.height)
 
 
 class RotatingPaddle:
