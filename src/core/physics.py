@@ -45,16 +45,22 @@ class BonusSpawner:
         # Choose a random bonus type
         bonus_type = random.choice(list(BonusType))
 
+        # Calculate safe spawn margins based on configuration
+        margin = game_config.PADDLE_MARGIN + game_config.PADDLE_WIDTH + game_config.BONUS_SIZE
+        vertical_margin = game_config.BONUS_SIZE
+
         # Random position in the left half
-        left_x = random.uniform(50, self.field_width / 2 - 50)
-        y = random.uniform(50, self.field_height - 50)
+        left_x = random.uniform(margin, self.field_width / 2 - margin)
+        y = random.uniform(vertical_margin, self.field_height - vertical_margin)
 
         # Symmetric position in the right half
         right_x = self.field_width - left_x
 
-        # Create symmetric bonuses
-        bonuses.append(Bonus(left_x, y, bonus_type))
-        bonuses.append(Bonus(right_x, y, bonus_type))
+        # Validate that positions are within field bounds
+        if (margin <= left_x <= self.field_width - margin and
+            vertical_margin <= y <= self.field_height - vertical_margin):
+            bonuses.append(Bonus(left_x, y, bonus_type))
+            bonuses.append(Bonus(right_x, y, bonus_type))
 
         return bonuses
 
@@ -152,6 +158,8 @@ class PhysicsEngine:
 
         if wall_collision == "top" or wall_collision == "bottom":
             self.ball.bounce_vertical()
+            # Reset last paddle hit so ball can bounce off either paddle again
+            self.ball.last_paddle_hit = None
             events["wall_bounces"].append(wall_collision)
         elif wall_collision == "left_goal":
             self.score[1] += 1  # Point for player 2

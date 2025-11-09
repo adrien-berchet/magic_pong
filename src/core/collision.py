@@ -6,6 +6,7 @@ import math
 
 import numpy as np
 from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle, Vector2D
+from magic_pong.utils.config import game_config
 
 
 def point_in_rect(point: Vector2D, rect: tuple[float, float, float, float]) -> bool:
@@ -34,15 +35,31 @@ def continuous_circle_paddle_collision(ball: Ball, paddle: Paddle, dt: float) ->
     Uses the ball's previous position to determine if it's entering or exiting the paddle.
     Returns (collision_occurred, collision_time) where collision_time is between 0 and 1.
     """
-    # Use the ball's stored previous position instead of calculating it
+    # Use the ball's and paddle's stored previous positions
+    prev_pos = ball.prev_position
     current_pos = ball.position
+    prev_rect = paddle.get_previous_rect()
     current_rect = paddle.get_rect()
 
     # Check collision state at start and end
+    prev_in_collision = circle_rect_collision_at_position(prev_pos, ball.radius, prev_rect)
     curr_in_collision = circle_rect_collision_at_position(current_pos, ball.radius, current_rect)
 
-    if curr_in_collision:
-        return True, 1.0
+    # Case 1: Ball was outside and is now inside -> entering collision
+    if not prev_in_collision and curr_in_collision:
+        return True, find_entry_collision_time(prev_pos, current_pos, ball.radius, prev_rect, current_rect)
+
+    # Case 2: Ball was inside and is now outside -> exiting (no new collision)
+    if prev_in_collision and not curr_in_collision:
+        return False, 0.0
+
+    # Case 3: Ball was outside and is still outside -> check if it passed through (tunneling)
+    if not prev_in_collision and not curr_in_collision:
+        tunneled, time = check_trajectory_intersection(prev_pos, current_pos, ball.radius, prev_rect, current_rect)
+        if tunneled:
+            return True, time
+
+    # Case 4: Ball was inside and is still inside -> already in collision (no new collision)
     return False, 0.0
 
 
@@ -194,43 +211,43 @@ def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) 
 
 
 def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Vector2D | None:
-    """Calculates the collision normal with a paddle"""
+    """
+    Calculates the collision normal for a circular ball hitting a paddle.
+    The normal is based on the closest point on the paddle to the ball center,
+    with added vertical spin effect based on where the ball hits the paddle.
+    """
     paddle_rect = paddle.get_rect()
     paddle_x, paddle_y, paddle_width, paddle_height = paddle_rect
-    paddle_half_width = paddle_width / 2
-    paddle_half_height = paddle_height / 2
 
-    ball_rect = ball.get_rect()
-    ball_x, ball_y, ball_width, ball_height = ball_rect
-    ball_half_width = ball_width / 2
-    ball_half_height = ball_height / 2
-
-    # Determine which side of the paddle the ball hits
     ball_center_x = ball.position.x
     ball_center_y = ball.position.y
 
-    # Rectangle center
-    paddle_center_x = paddle_x + paddle_width / 2
+    # Find the closest point on the paddle rectangle to the ball center
+    closest_x = max(paddle_x, min(ball_center_x, paddle_x + paddle_width))
+    closest_y = max(paddle_y, min(ball_center_y, paddle_y + paddle_height))
+
+    # Calculate normal from closest point to ball center
+    normal = Vector2D(ball_center_x - closest_x, ball_center_y - closest_y)
+
+    # Normalize the direction
+    normal_magnitude = normal.magnitude()
+    if normal_magnitude < 0.0001:  # Ball center is inside paddle (shouldn't happen)
+        # Default to horizontal bounce
+        return Vector2D(-1.0 if ball_center_x < paddle_x + paddle_width / 2 else 1.0, 0.0)
+
+    normal = normal / normal_magnitude
+
+    # Add spin effect based on where the ball hits vertically on the paddle
     paddle_center_y = paddle_y + paddle_height / 2
+    relative_hit_y = (ball_center_y - paddle_center_y) / (paddle_height / 2)
+    relative_hit_y = max(-1.0, min(1.0, relative_hit_y))
 
-    # Relative position of the ball on the paddle (for spin effect)
-    relative_hit_pos_x = (ball_center_x + ball_half_width - paddle_center_x) / paddle_half_width
-    relative_hit_pos_x = max(-1.0, min(1.0, relative_hit_pos_x))  # Clamp between -1 and 1
-    relative_hit_pos_y = (ball_center_y + ball_half_height - paddle_center_y) / paddle_half_height
-    relative_hit_pos_y = max(-1.0, min(1.0, relative_hit_pos_y))  # Clamp between -1 and 1
+    # Add vertical spin component
+    spin_factor = 0.3
+    normal.y += relative_hit_y * spin_factor
 
-    if abs(relative_hit_pos_x) >= abs(relative_hit_pos_y):
-        # Horizontal collision
-        normal = Vector2D(1.0, relative_hit_pos_y).normalize()
-        if ball_center_x < paddle_center_x:
-            normal.x *= -1.0
-    else:
-        # Vertical collision
-        normal = Vector2D(relative_hit_pos_x, 1.0).normalize()
-        if ball_center_y < paddle_center_y:
-            normal.y *= -1.0
-
-    return normal
+    # Renormalize after adding spin
+    return normal.normalize()
 
 
 def apply_paddle_bounce(ball: Ball, paddle: Paddle, normal: Vector2D | None = None) -> None:
@@ -240,11 +257,20 @@ def apply_paddle_bounce(ball: Ball, paddle: Paddle, normal: Vector2D | None = No
     if not normal:
         return
 
-    # Current speed
-    speed = ball.velocity.magnitude()
+    # Reflect velocity off the paddle using the normal
+    # Formula: v' = v - 2(v·n)n
+    velocity_tuple = ball.velocity.to_tuple()
+    normal_tuple = normal.to_tuple()
+    dot_product = velocity_tuple[0] * normal_tuple[0] + velocity_tuple[1] * normal_tuple[1]
 
-    # Normalize and restore proper speed
-    ball.velocity = normal * speed
+    ball.velocity.x = ball.velocity.x - 2 * dot_product * normal.x
+    ball.velocity.y = ball.velocity.y - 2 * dot_product * normal.y
+
+    # Optional: limit max speed to prevent runaway velocity
+    speed = ball.velocity.magnitude()
+    max_speed = game_config.MAX_BALL_SPEED
+    if speed > max_speed:
+        ball.velocity = ball.velocity.normalize() * max_speed
 
 
 class CollisionDetector:
@@ -273,27 +299,31 @@ class CollisionDetector:
 
     def check_ball_paddle(self, ball: Ball, paddle: Paddle, dt: float) -> bool:
         """Checks and handles ball-paddle collision with continuous detection"""
+        # Prevent multiple bounces on same paddle
+        if ball.last_paddle_hit == paddle.player_id:
+            return False
+
         # Use continuous collision detection
         collision_occurred, collision_time = continuous_circle_paddle_collision(ball, paddle, dt)
 
         if collision_occurred:
-            paddle_direction = paddle.position - paddle.prev_position
-            if paddle_direction.x <= 0.1:
-                paddle_direction = -ball.velocity
-            else:
-                paddle_direction = paddle_direction.normalize()
+            # Get collision normal
+            normal = get_paddle_collision_normal(ball, paddle)
+            if not normal:
+                return False
 
-            can_bounce = np.dot(paddle_direction.to_tuple(), ball.velocity.to_tuple())
+            # Check if ball is approaching the paddle (not moving away from it)
+            ball_approach = np.dot(ball.velocity.to_tuple(), normal.to_tuple())
 
-            if can_bounce < 0:
+            if ball_approach < 0:  # Ball is moving toward the paddle surface
                 # Apply bounce
-                apply_paddle_bounce(ball, paddle)
+                apply_paddle_bounce(ball, paddle, normal)
                 ball.last_paddle_hit = paddle.player_id
 
-            # Move ball out of collision after bounce to prevent overlap
-            self.separate_ball_from_paddle(ball, paddle)
+                # Move ball out of collision after bounce to prevent overlap
+                self.separate_ball_from_paddle(ball, paddle)
 
-            return True
+                return True
 
         return False
 
