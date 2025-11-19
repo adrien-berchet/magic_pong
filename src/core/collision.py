@@ -4,7 +4,6 @@ Collision detection system for Magic Pong
 
 import math
 
-import numpy as np
 from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle, Vector2D
 from magic_pong.utils.config import game_config
 
@@ -255,13 +254,21 @@ def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Vector2D | None:
 
 
 def apply_paddle_bounce(ball: Ball, paddle: Paddle, normal: Vector2D | None = None) -> None:
-    """Applies the bounce effect on a paddle with spin"""
+    """
+    Applies the bounce effect on a paddle with spin and paddle velocity transfer.
+
+    Important: This adds paddle velocity to prevent the paddle from pushing through
+    the ball when moving faster than the ball.
+    """
     if normal is None:
         normal = get_paddle_collision_normal(ball, paddle)
     if not normal:
         return
 
-    # Reflect velocity off the paddle using the normal
+    # Calculate paddle velocity (for velocity transfer)
+    paddle_velocity = paddle.position - paddle.prev_position
+
+    # Reflect ball velocity off the paddle using the normal
     # Formula: v' = v - 2(v·n)n
     velocity_tuple = ball.velocity.to_tuple()
     normal_tuple = normal.to_tuple()
@@ -270,7 +277,21 @@ def apply_paddle_bounce(ball: Ball, paddle: Paddle, normal: Vector2D | None = No
     ball.velocity.x = ball.velocity.x - 2 * dot_product * normal.x
     ball.velocity.y = ball.velocity.y - 2 * dot_product * normal.y
 
-    # Optional: limit max speed to prevent runaway velocity
+    # Add paddle velocity component in the collision direction
+    # This prevents paddle from pushing through ball when moving fast
+    paddle_vel_tuple = paddle_velocity.to_tuple()
+    paddle_normal_component = (
+        paddle_vel_tuple[0] * normal_tuple[0] + paddle_vel_tuple[1] * normal_tuple[1]
+    )
+
+    # If paddle is moving toward ball (positive component), transfer that velocity
+    if paddle_normal_component > 0:
+        # Add paddle velocity to ball (scaled by collision coefficient)
+        paddle_transfer_factor = 1.5  # How much paddle velocity transfers to ball
+        ball.velocity.x += normal.x * paddle_normal_component * paddle_transfer_factor
+        ball.velocity.y += normal.y * paddle_normal_component * paddle_transfer_factor
+
+    # Limit max speed to prevent runaway velocity
     speed = ball.velocity.magnitude()
     max_speed = game_config.MAX_BALL_SPEED
     if speed > max_speed:
@@ -302,7 +323,13 @@ class CollisionDetector:
         return "none"
 
     def check_ball_paddle(self, ball: Ball, paddle: Paddle, dt: float) -> bool:
-        """Checks and handles ball-paddle collision with continuous detection"""
+        """
+        Checks and handles ball-paddle collision with continuous detection.
+
+        Handles both cases:
+        1. Ball moving toward paddle (normal collision)
+        2. Paddle catching ball from behind (paddle faster than ball)
+        """
         # Prevent multiple bounces on same paddle
         if ball.last_paddle_hit == paddle.player_id:
             return False
@@ -316,23 +343,49 @@ class CollisionDetector:
             if not normal:
                 return False
 
-            # Check if ball is approaching the paddle (not moving away from it)
-            ball_approach = np.dot(ball.velocity.to_tuple(), normal.to_tuple())
+            # Calculate relative velocities
+            ball_velocity = ball.velocity.to_tuple()
+            paddle_velocity = (paddle.position - paddle.prev_position).to_tuple()
+            normal_tuple = normal.to_tuple()
 
-            if ball_approach < 0:  # Ball is moving toward the paddle surface
-                # Apply bounce
+            # Velocity of ball relative to paddle in collision normal direction
+            ball_approach = ball_velocity[0] * normal_tuple[0] + ball_velocity[1] * normal_tuple[1]
+            paddle_approach = (
+                paddle_velocity[0] * normal_tuple[0] + paddle_velocity[1] * normal_tuple[1]
+            )
+
+            # Collision should occur if:
+            # 1. Ball is moving toward paddle (ball_approach < 0), OR
+            # 2. Paddle is catching up to ball from behind (paddle_approach > 0 and paddle faster)
+            should_bounce = ball_approach < 0 or (
+                paddle_approach > 0 and paddle_approach > abs(ball_approach)
+            )
+
+            if should_bounce:
+                # Apply bounce with paddle velocity transfer
                 apply_paddle_bounce(ball, paddle, normal)
                 ball.last_paddle_hit = paddle.player_id
 
                 # Move ball out of collision after bounce to prevent overlap
-                self.separate_ball_from_paddle(ball, paddle)
+                # Use extra separation if paddle is moving fast
+                separation_multiplier = 1.0 + abs(paddle_approach) / 100.0
+                self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
 
                 return True
 
         return False
 
-    def separate_ball_from_paddle(self, ball: Ball, paddle: Paddle) -> None:
-        """Ensures the ball is positioned outside the paddle after collision"""
+    def separate_ball_from_paddle(
+        self, ball: Ball, paddle: Paddle, separation_multiplier: float = 1.0
+    ) -> None:
+        """
+        Ensures the ball is positioned outside the paddle after collision.
+
+        Args:
+            ball: The ball to separate
+            paddle: The paddle to separate from
+            separation_multiplier: Extra separation factor for fast-moving paddles
+        """
         rect = paddle.get_rect()
         x, y, width, height = rect
 
@@ -349,8 +402,9 @@ class CollisionDetector:
         # Find the closest edge
         min_dist = min(dist_to_left, dist_to_right, dist_to_top, dist_to_bottom)
 
-        # Push ball away from the closest edge
-        safety_margin = 1.0
+        # Push ball away from the closest edge with safety margin
+        # Increase separation for fast-moving paddles to prevent re-collision
+        safety_margin = 2.0 * separation_multiplier
         required_distance = ball.radius + safety_margin
 
         if min_dist == dist_to_left:
