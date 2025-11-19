@@ -353,27 +353,29 @@ class CollisionDetector:
             # Check if paddle is catching ball from behind
             paddle_catching_ball = paddle_approach > 0 and paddle_approach > abs(ball_approach)
 
-            # Prevent rapid double-bounces on same paddle, UNLESS paddle is catching ball
-            if ball.last_paddle_hit == paddle.player_id and not paddle_catching_ball:
-                return False
-
             # Collision should occur if:
             # 1. Ball is moving toward paddle (ball_approach < 0), OR
             # 2. Paddle is catching up to ball from behind
             should_bounce = ball_approach < 0 or paddle_catching_ball
+
+            # Prevent rapid double-bounces on same paddle, UNLESS paddle is catching ball
+            if ball.last_paddle_hit == paddle.player_id and not paddle_catching_ball:
+                # Still separate ball from paddle to prevent overlap/tunneling
+                separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
+                self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
+                return False
 
             if should_bounce:
                 # Apply bounce with paddle velocity transfer
                 apply_paddle_bounce(ball, paddle, normal)
                 ball.last_paddle_hit = paddle.player_id
 
-                # Move ball out of collision after bounce to prevent overlap
-                # Use extra separation if paddle is moving fast
-                # More aggressive separation when paddle is catching ball
-                separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
-                self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
+            # ALWAYS separate ball from paddle when there's a collision
+            # This prevents tunneling even when ball is moving away
+            separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
+            self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
 
-                return True
+            return should_bounce
 
         return False
 
