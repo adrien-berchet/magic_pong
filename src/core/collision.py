@@ -330,10 +330,6 @@ class CollisionDetector:
         1. Ball moving toward paddle (normal collision)
         2. Paddle catching ball from behind (paddle faster than ball)
         """
-        # Prevent multiple bounces on same paddle
-        if ball.last_paddle_hit == paddle.player_id:
-            return False
-
         # Use continuous collision detection
         collision_occurred, collision_time = continuous_circle_paddle_collision(ball, paddle, dt)
 
@@ -354,12 +350,17 @@ class CollisionDetector:
                 paddle_velocity[0] * normal_tuple[0] + paddle_velocity[1] * normal_tuple[1]
             )
 
+            # Check if paddle is catching ball from behind
+            paddle_catching_ball = paddle_approach > 0 and paddle_approach > abs(ball_approach)
+
+            # Prevent rapid double-bounces on same paddle, UNLESS paddle is catching ball
+            if ball.last_paddle_hit == paddle.player_id and not paddle_catching_ball:
+                return False
+
             # Collision should occur if:
             # 1. Ball is moving toward paddle (ball_approach < 0), OR
-            # 2. Paddle is catching up to ball from behind (paddle_approach > 0 and paddle faster)
-            should_bounce = ball_approach < 0 or (
-                paddle_approach > 0 and paddle_approach > abs(ball_approach)
-            )
+            # 2. Paddle is catching up to ball from behind
+            should_bounce = ball_approach < 0 or paddle_catching_ball
 
             if should_bounce:
                 # Apply bounce with paddle velocity transfer
@@ -368,7 +369,8 @@ class CollisionDetector:
 
                 # Move ball out of collision after bounce to prevent overlap
                 # Use extra separation if paddle is moving fast
-                separation_multiplier = 1.0 + abs(paddle_approach) / 100.0
+                # More aggressive separation when paddle is catching ball
+                separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
                 self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
 
                 return True
@@ -404,7 +406,7 @@ class CollisionDetector:
 
         # Push ball away from the closest edge with safety margin
         # Increase separation for fast-moving paddles to prevent re-collision
-        safety_margin = 2.0 * separation_multiplier
+        safety_margin = 3.0 * separation_multiplier  # Increased from 2.0 to 3.0
         required_distance = ball.radius + safety_margin
 
         if min_dist == dist_to_left:
