@@ -360,9 +360,10 @@ class CollisionDetector:
 
             # Prevent rapid double-bounces on same paddle, UNLESS paddle is catching ball
             if ball.last_paddle_hit == paddle.player_id and not paddle_catching_ball:
-                # Still separate ball from paddle to prevent overlap/tunneling
+                # Separate only if ball is penetrating paddle (not just touching)
+                # This allows ball to slide along paddle without abrupt direction changes
                 separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
-                self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
+                self.separate_ball_from_paddle(ball, paddle, separation_multiplier, force=False)
                 return False
 
             if should_bounce:
@@ -370,25 +371,33 @@ class CollisionDetector:
                 apply_paddle_bounce(ball, paddle, normal)
                 ball.last_paddle_hit = paddle.player_id
 
-            # ALWAYS separate ball from paddle when there's a collision
-            # This prevents tunneling even when ball is moving away
-            separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
-            self.separate_ball_from_paddle(ball, paddle, separation_multiplier)
+                # Force separation after bounce to prevent re-collision
+                separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
+                self.separate_ball_from_paddle(ball, paddle, separation_multiplier, force=True)
+            else:
+                # No bounce, but check if ball is penetrating and needs separation
+                # Don't force - only separate if actually penetrating
+                separation_multiplier = 1.0 + abs(paddle_approach) / 50.0
+                self.separate_ball_from_paddle(ball, paddle, separation_multiplier, force=False)
 
             return should_bounce
 
         return False
 
     def separate_ball_from_paddle(
-        self, ball: Ball, paddle: Paddle, separation_multiplier: float = 1.0
+        self, ball: Ball, paddle: Paddle, separation_multiplier: float = 1.0, force: bool = False
     ) -> None:
         """
         Ensures the ball is positioned outside the paddle after collision.
+
+        Only separates if the ball is actually penetrating the paddle, not just touching.
+        This prevents abrupt direction changes when ball slides along paddle edges to corners.
 
         Args:
             ball: The ball to separate
             paddle: The paddle to separate from
             separation_multiplier: Extra separation factor for fast-moving paddles
+            force: If True, always separate regardless of penetration depth
         """
         rect = paddle.get_rect()
         x, y, width, height = rect
@@ -397,7 +406,7 @@ class CollisionDetector:
         ball_center_x = ball.position.x
         ball_center_y = ball.position.y
 
-        # Calculate distances to each edge
+        # Calculate distances to each edge (negative = inside paddle)
         dist_to_left = ball_center_x - x
         dist_to_right = (x + width) - ball_center_x
         dist_to_top = ball_center_y - y
@@ -406,23 +415,34 @@ class CollisionDetector:
         # Find the closest edge
         min_dist = min(dist_to_left, dist_to_right, dist_to_top, dist_to_bottom)
 
-        # Push ball away from the closest edge with safety margin
-        # Increase separation for fast-moving paddles to prevent re-collision
-        safety_margin = 3.0 * separation_multiplier  # Increased from 2.0 to 3.0
-        required_distance = ball.radius + safety_margin
+        # Check if ball is actually penetrating the paddle
+        # Penetration = distance to edge < ball radius
+        penetration_depth = ball.radius - min_dist
 
-        if min_dist == dist_to_left:
-            # Ball is closest to left edge, push it left
-            ball.position.x = x - required_distance
-        elif min_dist == dist_to_right:
-            # Ball is closest to right edge, push it right
-            ball.position.x = x + width + required_distance
-        elif min_dist == dist_to_top:
-            # Ball is closest to top edge, push it up
-            ball.position.y = y - required_distance
-        else:
-            # Ball is closest to bottom edge, push it down
-            ball.position.y = y + height + required_distance
+        # Only separate if:
+        # 1. Ball is penetrating (penetration_depth > 0), OR
+        # 2. Force separation is requested (e.g., after bounce)
+        # Small threshold to avoid separating when just barely touching
+        penetration_threshold = 1.0  # Only separate if penetrating more than 1 pixel
+
+        if penetration_depth > penetration_threshold or force:
+            # Push ball away from the closest edge with safety margin
+            # Increase separation for fast-moving paddles to prevent re-collision
+            safety_margin = 3.0 * separation_multiplier
+            required_distance = ball.radius + safety_margin
+
+            if min_dist == dist_to_left:
+                # Ball is closest to left edge, push it left
+                ball.position.x = x - required_distance
+            elif min_dist == dist_to_right:
+                # Ball is closest to right edge, push it right
+                ball.position.x = x + width + required_distance
+            elif min_dist == dist_to_top:
+                # Ball is closest to top edge, push it up
+                ball.position.y = y - required_distance
+            else:
+                # Ball is closest to bottom edge, push it down
+                ball.position.y = y + height + required_distance
 
     def check_ball_rotating_paddle(self, ball: Ball, rotating_paddle: RotatingPaddle) -> bool:
         """Checks collision with a rotating paddle"""
