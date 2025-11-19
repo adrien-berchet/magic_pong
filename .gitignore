@@ -1,4 +1,6 @@
 models*
+*.code-workspace
+test_models
 
 # macOS users
 .DS_Store

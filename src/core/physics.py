@@ -235,8 +235,8 @@ class PhysicsEngine:
             "player2_position": self.player2.position.to_tuple(),
             "player1_paddle_size": self.player1.height,
             "player2_paddle_size": self.player2.height,
-            "player1_last_position": self.player1.prev_position,
-            "player2_last_position": self.player2.prev_position,
+            "player1_last_position": self.player1.prev_position.to_tuple(),
+            "player2_last_position": self.player2.prev_position.to_tuple(),
             "active_bonuses": [
                 (bonus.position.x, bonus.position.y, bonus.type.value)
                 for bonus in self.bonuses
@@ -252,7 +252,7 @@ class PhysicsEngine:
 
     def is_game_over(self) -> bool:
         """Checks if the game is over"""
-        return max(self.score) >= game_config.MAX_SCORE  # type: ignore[no-any-return]
+        return max(self.score) >= game_config.MAX_SCORE
 
     def get_winner(self) -> int:
         """Returns the winner (1 or 2), or 0 if no winner"""
