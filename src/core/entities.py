@@ -84,7 +84,9 @@ class Ball:
     def __init__(self, x: float, y: float, vx: float, vy: float):
         self.position = Vector2D(x, y)
         self.velocity = Vector2D(vx, vy)
-        self.prev_position = Vector2D(x, y) - self.velocity * (1 / 60)  # Assume initial dt=1/60
+        # Initialize prev_position slightly behind current position based on velocity
+        # This ensures consistent state for first-frame collision detection
+        self.prev_position = Vector2D(x - vx * (1 / 60), y - vy * (1 / 60))
         self.radius = game_config.BALL_RADIUS
         self.last_paddle_hit: int | None = None  # To avoid multiple bounces
 
@@ -113,13 +115,19 @@ class Ball:
     def bounce_vertical(self) -> None:
         """Vertical bounce (top/bottom walls)"""
         self.velocity.y = -self.velocity.y
+        self._clamp_speed()
 
     def bounce_horizontal(self) -> None:
         """Horizontal bounce (paddles)"""
         self.velocity.x = -self.velocity.x
-        # Slight acceleration after each bounce
-        # speed_increase = game_config.BALL_SPEED_INCREASE
-        # self.velocity = self.velocity * speed_increase
+        self._clamp_speed()
+
+    def _clamp_speed(self) -> None:
+        """Clamp ball speed to MAX_BALL_SPEED to prevent runaway velocity"""
+        speed = self.velocity.magnitude()
+        max_speed = game_config.MAX_BALL_SPEED
+        if speed > max_speed:
+            self.velocity = self.velocity.normalize() * max_speed
 
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision circle properties (x, y, width, height)"""

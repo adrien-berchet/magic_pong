@@ -11,7 +11,7 @@ from magic_pong.utils.config import game_config
 def point_in_rect(point: Vector2D, rect: tuple[float, float, float, float]) -> bool:
     """Checks if a point is inside a rectangle"""
     x, y, width, height = rect
-    return x <= point.x <= x + width and y <= point.y <= y + height  # type: ignore[no-any-return]
+    return x <= point.x <= x + width and y <= point.y <= y + height
 
 
 def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -> bool:
@@ -25,7 +25,7 @@ def circle_rect_collision(ball: Ball, rect: tuple[float, float, float, float]) -
     # Distance between ball center and closest point
     distance = math.sqrt((ball.position.x - closest_x) ** 2 + (ball.position.y - closest_y) ** 2)
 
-    return distance <= ball.radius  # type: ignore[no-any-return]
+    return distance <= ball.radius
 
 
 def continuous_circle_paddle_collision(ball: Ball, paddle: Paddle, dt: float) -> tuple[bool, float]:
@@ -133,7 +133,7 @@ def check_trajectory_intersection(
             # Found intersection, find precise entry time
             t_prev = (i - 1) / num_samples
             return True, find_entry_collision_time_range(
-                start_pos, end_pos, radius, sample_rect, t_prev, t
+                start_pos, end_pos, radius, prev_rect, current_rect, t_prev, t
             )
 
     return False, 0.0
@@ -143,11 +143,12 @@ def find_entry_collision_time_range(
     start_pos: Vector2D,
     end_pos: Vector2D,
     radius: float,
-    rect: tuple[float, float, float, float],
+    prev_rect: tuple[float, float, float, float],
+    current_rect: tuple[float, float, float, float],
     t_start: float,
     t_end: float,
 ) -> float:
-    """Find precise entry collision time in a specific range"""
+    """Find precise entry collision time in a specific range with interpolated rectangle"""
     epsilon = 0.001
 
     while t_end - t_start > epsilon:
@@ -156,8 +157,15 @@ def find_entry_collision_time_range(
             start_pos.x + (end_pos.x - start_pos.x) * t_mid,
             start_pos.y + (end_pos.y - start_pos.y) * t_mid,
         )
+        # Interpolate rectangle position at t_mid
+        mid_rect = (
+            prev_rect[0] + (current_rect[0] - prev_rect[0]) * t_mid,
+            prev_rect[1] + (current_rect[1] - prev_rect[1]) * t_mid,
+            prev_rect[2] + (current_rect[2] - prev_rect[2]) * t_mid,
+            prev_rect[3] + (current_rect[3] - prev_rect[3]) * t_mid,
+        )
 
-        if circle_rect_collision_at_position(mid_pos, radius, rect):
+        if circle_rect_collision_at_position(mid_pos, radius, mid_rect):
             t_end = t_mid
         else:
             t_start = t_mid
@@ -178,7 +186,7 @@ def circle_rect_collision_at_position(
     # Distance between ball center and closest point
     distance = math.sqrt((position.x - closest_x) ** 2 + (position.y - closest_y) ** 2)
 
-    return distance <= radius  # type: ignore[no-any-return]
+    return distance <= radius
 
 
 def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) -> bool:
@@ -187,7 +195,7 @@ def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) 
     line_vec = line_end - line_start
     line_length = line_vec.magnitude()
 
-    if line_length == 0:
+    if line_length < 1e-6:  # Use epsilon for float comparison
         # Zero-length line, check distance to point
         distance = (ball.position - line_start).magnitude()
         return distance <= ball.radius
@@ -210,7 +218,7 @@ def circle_line_collision(ball: Ball, line_start: Vector2D, line_end: Vector2D) 
     # Distance from ball center to closest point
     distance = (ball.position - closest_point).magnitude()
 
-    return distance <= ball.radius  # type: ignore[no-any-return]
+    return distance <= ball.radius
 
 
 def get_paddle_collision_normal(ball: Ball, paddle: Paddle) -> Vector2D | None:

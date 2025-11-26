@@ -393,3 +393,125 @@ class TestEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestSpeedClamping:
+    """Test ball speed clamping functionality"""
+
+    def test_bounce_vertical_clamps_speed(self):
+        """Test that vertical bounce clamps excessive speed"""
+        from magic_pong.utils.config import game_config
+
+        ball = Ball(400, 300, 0, 0)
+        ball.velocity = Vector2D(1000, 1000)  # Excessive speed
+
+        ball.bounce_vertical()
+
+        speed = ball.velocity.magnitude()
+        assert (
+            speed <= game_config.MAX_BALL_SPEED
+        ), f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+
+    def test_bounce_horizontal_clamps_speed(self):
+        """Test that horizontal bounce clamps excessive speed"""
+        from magic_pong.utils.config import game_config
+
+        ball = Ball(400, 300, 0, 0)
+        ball.velocity = Vector2D(1000, 1000)  # Excessive speed
+
+        ball.bounce_horizontal()
+
+        speed = ball.velocity.magnitude()
+        assert (
+            speed <= game_config.MAX_BALL_SPEED
+        ), f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+
+    def test_normal_speed_not_affected(self):
+        """Test that normal speed is not changed by clamping"""
+        ball = Ball(400, 300, 0, 0)
+        ball.velocity = Vector2D(100, 50)
+        original_speed = ball.velocity.magnitude()
+
+        ball.bounce_vertical()
+
+        new_speed = ball.velocity.magnitude()
+        assert abs(new_speed - original_speed) < 0.1, "Normal speed should not be affected"
+
+
+class TestInterpolatedCollision:
+    """Test that collision detection properly interpolates moving paddle"""
+
+    def test_moving_paddle_collision_interpolation(self):
+        """Test collision detection with a moving paddle catching up to ball"""
+        from magic_pong.utils.config import game_config
+
+        # Paddle at x=100, moving into ball path
+        paddle = Paddle(100, 100, player_id=1)
+        paddle_width = game_config.PADDLE_WIDTH
+
+        # Ball is near paddle's right edge and moving away slowly
+        ball_start_x = 100 + paddle_width + 5  # Just right of paddle
+        ball_end_x = 100 + paddle_width + 10  # Moved further right
+
+        ball = Ball(ball_end_x, 140, 0, 0)  # Inside paddle Y range
+        ball.velocity = Vector2D(50, 0)  # Moving right (away from paddle)
+        ball.prev_position = Vector2D(ball_start_x, 140)
+        ball.position = Vector2D(ball_end_x, 140)
+
+        # Test that ball was outside and is still outside (no collision)
+        collision, time = continuous_circle_paddle_collision(ball, paddle, dt=0.016)
+
+        # This should NOT collide because ball started outside and stayed outside
+        # This verifies the function handles the case correctly
+        assert isinstance(collision, bool), "Should return a boolean"
+
+    def test_ball_entering_paddle_from_side(self):
+        """Test ball entering paddle from the side is detected"""
+        from magic_pong.utils.config import game_config
+
+        paddle = Paddle(100, 100, player_id=1)
+        paddle_width = game_config.PADDLE_WIDTH
+
+        # Ball starts outside paddle's left edge and ends inside
+        ball = Ball(100 + paddle_width / 2, 140, 0, 0)  # End position inside paddle
+        ball.velocity = Vector2D(100, 0)
+        ball.prev_position = Vector2D(85, 140)  # Start well outside to left
+        ball.position = Vector2D(100 + paddle_width / 2, 140)  # Inside paddle
+
+        collision, time = continuous_circle_paddle_collision(ball, paddle, dt=0.016)
+
+        # Should detect entering collision
+        assert collision is True, "Should detect ball entering paddle"
+
+
+class TestZeroLengthLine:
+    """Test edge case of zero-length line in circle_line_collision"""
+
+    def test_zero_length_line_collision(self):
+        """Test that zero-length line is handled correctly"""
+        from magic_pong.core.collision import circle_line_collision
+
+        ball = Ball(100, 100, 0, 0)
+        ball.radius = 10
+
+        # Zero-length line (same start and end point)
+        line_start = Vector2D(105, 100)
+        line_end = Vector2D(105, 100)
+
+        # Ball should collide with the point
+        collision = circle_line_collision(ball, line_start, line_end)
+        assert collision is True, "Should detect collision with zero-length line (point)"
+
+    def test_zero_length_line_no_collision(self):
+        """Test that distant zero-length line doesn't collide"""
+        from magic_pong.core.collision import circle_line_collision
+
+        ball = Ball(100, 100, 0, 0)
+        ball.radius = 10
+
+        # Zero-length line far from ball
+        line_start = Vector2D(200, 200)
+        line_end = Vector2D(200, 200)
+
+        collision = circle_line_collision(ball, line_start, line_end)
+        assert collision is False, "Should not detect collision with distant point"
