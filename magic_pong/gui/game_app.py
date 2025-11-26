@@ -8,6 +8,7 @@ import traceback
 from enum import Enum
 
 import pygame
+
 from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
@@ -247,9 +248,7 @@ class MagicPongApp:
             action_size = hyperparams.get("action_size", 9)
 
             # Create DQN agent with correct parameters
-            agent = DQNAgent(
-                state_size=state_size, action_size=action_size, player_id=2, name="Trained DQN AI"
-            )
+            agent = DQNAgent(state_size=state_size, action_size=action_size, name="Trained DQN AI")
 
             # Load the trained model
             agent.load_model(model_path)

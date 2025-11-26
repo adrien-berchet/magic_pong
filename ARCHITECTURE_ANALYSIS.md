@@ -82,7 +82,7 @@ self.ai_environment = GameEnvironment(self.physics_engine, headless)
 ### New Structure
 
 ```
-src/
+magic_pong/
 ├── core/
 │   ├── interfaces/          # NEW: Abstract interfaces
 │   │   ├── physics.py       # Physics backend protocol

@@ -5,6 +5,7 @@ Human player implementation for Magic Pong
 from typing import Any
 
 import pygame
+
 from magic_pong.core.entities import Action, Player
 from magic_pong.utils.config import game_config
 

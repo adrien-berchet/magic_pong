@@ -187,4 +187,4 @@ env = EnvironmentFactory.create(
 1. Try different reward functions to see what works best
 2. Experiment with observation spaces (vector vs history vs image)
 3. Share your custom reward/observation strategies!
-4. Check out `src/ai/interfaces/` for all available implementations
+4. Check out `magic_pong/ai/interfaces/` for all available implementations

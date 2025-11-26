@@ -6,6 +6,7 @@ from abc import abstractmethod
 from typing import Any
 
 import numpy as np
+
 from magic_pong.core.entities import Action, Player
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import ai_config, game_config
@@ -20,6 +21,19 @@ class AIPlayer(Player):
         super().__init__(name)
         self.episode_rewards: list[float] = []
         self.current_episode_reward = 0.0
+
+    @abstractmethod
+    def get_action(self, observation: dict[str, Any] | None) -> Action:
+        """
+        Returns the action to perform based on the observation
+
+        Args:
+            observation: Normalized game state (can be None)
+
+        Returns:
+            Action: Action to perform
+        """
+        pass
 
     @abstractmethod
     def on_step(
@@ -83,7 +97,7 @@ class ObservationProcessor:
         Returns:
             Dict: Normalized observation
         """
-        observation = {}
+        observation: dict[str, Any] = {}
 
         ball_x, ball_y = game_state["ball_position"]
         player_x, player_y = game_state[f"player{player_id}_position"]
@@ -328,13 +342,13 @@ class RewardCalculator:
 
     def _find_optimal_interception_point(
         self,
-        ball_pos: tuple,
-        ball_vel: tuple,
-        paddle_pos: tuple,
-        field_bounds: tuple,
+        ball_pos: tuple[float, float],
+        ball_vel: tuple[float, float],
+        paddle_pos: tuple[float, float],
+        field_bounds: tuple[float, float, float, float],
         player_id: int,
         y_only: bool = False,
-    ) -> tuple | None:
+    ) -> tuple[float, float] | None:
         """
         Find the optimal interception point on the ball's trajectory considering wall bounces
 
@@ -388,9 +402,11 @@ class RewardCalculator:
         else:
             distances = np.linalg.norm(trajectory_pts - paddle_pos, axis=1)
 
-        best_point = trajectory_pts[np.argmin(distances)]
+        best_point_arr = trajectory_pts[np.argmin(distances)]
         if y_only:
-            best_point = (paddle_pos[0], best_point[1])
+            best_point: tuple[float, float] = (paddle_pos[0], float(best_point_arr[1]))
+        else:
+            best_point = (float(best_point_arr[0]), float(best_point_arr[1]))
 
         # for point, time_step in trajectory_points:
         #     # Only consider points that are reasonably close to paddle's X zone

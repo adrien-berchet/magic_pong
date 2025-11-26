@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import pygame
+
 from magic_pong.ai.interface import GameEnvironment
 from magic_pong.core.entities import Action, Player
 from magic_pong.core.physics import PhysicsEngine

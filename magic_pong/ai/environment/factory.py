@@ -5,6 +5,7 @@ Environment Factory - Easy creation of training environments with custom compone
 from typing import Any
 
 import numpy as np
+
 from magic_pong.ai.interfaces import (
     DenseRewardCalculator,
     ObservationBuilder,
@@ -241,4 +242,4 @@ class GameEnvironmentWrapper:
     @property
     def observation_space_size(self) -> int:
         """Get observation space dimension"""
-        return self.observation_builder.observation_size
+        return int(self.observation_builder.observation_size)

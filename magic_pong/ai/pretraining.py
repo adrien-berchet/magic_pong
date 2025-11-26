@@ -1,22 +1,26 @@
 """
-Module de pré-entraînement pour l'IA DQN sur la tâche de proximité au point optimal.
+Pretraining module for DQN AI on the optimal point proximity task.
 
-Ce module permet d'entraîner l'IA à s'approcher du point optimal d'interception
-de la balle avant de passer à un entraînement plus complexe contre des adversaires.
+This module allows training the AI to approach the optimal ball interception
+point before moving on to more complex training against opponents.
 """
 
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
 from magic_pong.ai.interface import ObservationProcessor, RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
-from magic_pong.core.entities import Action, Paddle, Player
+from magic_pong.core.entities import Action, Paddle
 from magic_pong.utils.config import ai_config, game_config, game_config_tmp
+
+if TYPE_CHECKING:
+    from magic_pong.ai.models.dqn_ai import DQNAgent
 
 
 class OptimalPointPretrainer:
-    """Classe de pré-entraînement pour l'apprentissage du point optimal"""
+    """Pretraining class for optimal point learning"""
 
     def __init__(
         self,
@@ -29,12 +33,12 @@ class OptimalPointPretrainer:
     ):
         """
         Args:
-            field_width: Largeur du terrain
-            field_height: Hauteur du terrain
-            paddle_width: Largeur de la raquette
-            paddle_height: Hauteur de la raquette
-            ball_radius: Rayon de la balle
-            y_only: Si True, ne considère que la distance verticale pour la récompense
+            field_width: Field width
+            field_height: Field height
+            paddle_width: Paddle width
+            paddle_height: Paddle height
+            ball_radius: Ball radius
+            y_only: If True, only consider vertical distance for reward
         """
         self.field_width = field_width if field_width is not None else game_config.FIELD_WIDTH
         self.field_height = field_height if field_height is not None else game_config.FIELD_HEIGHT
@@ -45,18 +49,18 @@ class OptimalPointPretrainer:
         self.ball_radius = ball_radius if ball_radius is not None else game_config.BALL_RADIUS
 
         # Define observation processor
-        self.observation_processor = ObservationProcessor(field_width, field_height)
+        self.observation_processor = ObservationProcessor(self.field_width, self.field_height)
 
-        # Marges pour éviter les bords
+        # Margins to avoid edges
         self.margin = game_config.PADDLE_MARGIN
 
-        # Calculateur de récompenses pour utiliser les fonctions existantes
+        # Reward calculator to use existing functions
         self.reward_calculator = RewardCalculator(y_only=y_only)
 
         self.player_config: dict[int, dict[str, int | dict[str, float]]] = {
             1: {
                 "ball_spawn_zone": {
-                    "x_min": self.field_width * 0.5,  # Milieu du terrain vers la droite
+                    "x_min": self.field_width * 0.5,  # Middle of field towards right
                     "x_max": self.field_width - self.margin,
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin,
@@ -67,11 +71,11 @@ class OptimalPointPretrainer:
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin - self.paddle_height,
                 },
-                "direction": -1,  # Vers la gauche
+                "direction": -1,  # Towards left
             },
             2: {
                 "ball_spawn_zone": {
-                    "x_min": self.margin,  # Milieu du terrain vers la droite
+                    "x_min": self.margin,  # Middle of field towards left
                     "x_max": self.field_width * 0.5,
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin,
@@ -82,34 +86,33 @@ class OptimalPointPretrainer:
                     "y_min": self.margin,
                     "y_max": self.field_height - self.margin - self.paddle_height,
                 },
-                "direction": 1,  # Vers la droite
+                "direction": 1,  # Towards right
             },
         }
 
     def generate_random_ball_state(self, player_id: int = 1) -> dict[str, Any]:
         """
-        Génère un état aléatoire de balle qui se dirige vers le côté du joueur IA.
+        Generate a random ball state heading towards the AI player's side.
 
         Args:
-            player_id: ID du joueur IA (1 pour gauche, 2 pour droite)
+            player_id: AI player ID (1 for left, 2 for right)
 
         Returns:
-            Dict contenant la position et vélocité de la balle, et la position de la raquette
+            Dict containing ball position and velocity, and paddle position
         """
         ball_spawn_zone: dict[str, float] = self.player_config[player_id]["ball_spawn_zone"]  # type: ignore[assignment]
         paddle_zone: dict[str, float] = self.player_config[player_id]["paddle_zone"]  # type: ignore[assignment]
 
-        # Déterminer la direction selon le côté du joueur
+        # Determine direction based on player side
         ball_x = random.uniform(ball_spawn_zone["x_min"], ball_spawn_zone["x_max"])
         ball_y = random.uniform(ball_spawn_zone["y_min"], ball_spawn_zone["y_max"])
 
+        direction = int(self.player_config[player_id]["direction"])  # type: ignore[arg-type]
         angle_rad = np.random.uniform(np.pi / 4, -np.pi / 4)
-        ball_vx = (
-            self.player_config[player_id]["direction"] * game_config.BALL_SPEED * np.cos(angle_rad)
-        )
+        ball_vx = direction * game_config.BALL_SPEED * np.cos(angle_rad)
         ball_vy = game_config.BALL_SPEED * np.sin(angle_rad)
 
-        # Position aléatoire de la raquette dans sa zone
+        # Random paddle position within its zone
         paddle_x = np.random.uniform(paddle_zone["x_min"], paddle_zone["x_max"])
         paddle_y = np.random.uniform(paddle_zone["y_min"], paddle_zone["y_max"])
 
@@ -124,16 +127,16 @@ class OptimalPointPretrainer:
         self, ball_state: dict[str, Any], player_id: int = 1
     ) -> dict[str, Any]:
         """
-        Crée un état de jeu complet à partir d'un état de balle simplifié.
+        Create a complete game state from a simplified ball state.
 
         Args:
-            ball_state: État de balle généré par generate_random_ball_state
-            player_id: ID du joueur IA
+            ball_state: Ball state generated by generate_random_ball_state
+            player_id: AI player ID
 
         Returns:
-            État de jeu complet compatible avec l'interface IA
+            Complete game state compatible with AI interface
         """
-        # Position de l'adversaire (fixe, au centre de son côté)
+        # Opponent position (fixed, centered on their side)
         if player_id == 1:
             opponent_x = self.field_width - self.margin - self.paddle_width
         else:
@@ -152,7 +155,7 @@ class OptimalPointPretrainer:
             "active_bonuses": [],
             "rotating_paddles": [],
             "score": [np.random.randint(0, 10), np.random.randint(0, 10)],
-            "time_elapsed": np.random.uniform(0, 300),  # Jusqu'à 5 minutes
+            "time_elapsed": np.random.uniform(0, 300),  # Up to 5 minutes
             "field_bounds": ball_state["field_bounds"],
         }
 
@@ -160,11 +163,11 @@ class OptimalPointPretrainer:
 
     def _set_last_ball_distance(self, game_state: dict[str, Any], player_id: int) -> None:
         """
-        Met à jour la distance de la balle au point optimal dans le calculateur de récompenses.
+        Update the ball distance to optimal point in the reward calculator.
 
         Args:
-            game_state: État de jeu complet
-            player_id: ID du joueur
+            game_state: Complete game state
+            player_id: Player ID
         """
 
         # Get positions and velocity from game state
@@ -183,38 +186,38 @@ class OptimalPointPretrainer:
         optimal_point = self.reward_calculator._find_optimal_interception_point(
             ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id
         )
-        current_distance = np.linalg.norm(
-            optimal_point - np.array((paddle_center_x, paddle_center_y))
+        current_distance = float(
+            np.linalg.norm(optimal_point - np.array((paddle_center_x, paddle_center_y)))
         )
 
-        # Mettre à jour dans le calculateur de récompenses
+        # Update in reward calculator
         self.reward_calculator.last_ball_distance[player_id] = current_distance
 
     def calculate_optimal_position_reward(
         self, game_state: dict[str, Any], player_id: int = 1, dt: float = 1.0 / 60.0
     ) -> tuple[float, dict[str, Any]]:
         """
-        Calcule la récompense de proximité au point optimal avec un système adapté au pré-entraînement.
+        Calculate optimal point proximity reward with a system adapted for pretraining.
 
         Args:
-            game_state: État de jeu complet
-            player_id: ID du joueur
-            dt: Pas de temps
+            game_state: Complete game state
+            player_id: Player ID
+            dt: Time step
 
         Returns:
-            Tuple (récompense, informations détaillées)
+            Tuple (reward, detailed information)
         """
-        # Activer temporairement les récompenses de proximité
+        # Temporarily enable proximity rewards
         original_use_proximity = ai_config.USE_PROXIMITY_REWARD
         ai_config.USE_PROXIMITY_REWARD = True
 
         try:
-            # Calculer la récompense de proximité
+            # Calculate proximity reward
             proximity_reward = self.reward_calculator._calculate_proximity_reward(
                 game_state, player_id
             )
 
-            # Récupérer les informations sur le point optimal
+            # Retrieve optimal point information
             optimal_points = self.reward_calculator.get_optimal_points()
 
             info = {
@@ -225,7 +228,7 @@ class OptimalPointPretrainer:
             return proximity_reward, info
 
         finally:
-            # Restaurer la configuration originale
+            # Restore original configuration
             ai_config.USE_PROXIMITY_REWARD = original_use_proximity
 
     def simulate_paddle_movement(
@@ -236,16 +239,16 @@ class OptimalPointPretrainer:
         paddle_speed: float = 500.0,
     ) -> tuple[float, float]:
         """
-        Simule le mouvement de la raquette en fonction de l'action.
+        Simulate paddle movement based on action.
 
         Args:
-            current_paddle_pos: Position actuelle de la raquette (x, y)
-            action: Action choisie par le réseau de neurones
-            dt: Pas de temps
-            paddle_speed: Vitesse de la raquette
+            current_paddle_pos: Current paddle position (x, y)
+            action: Action chosen by the neural network
+            dt: Time step
+            paddle_speed: Paddle speed
 
         Returns:
-            Nouvelle position de la raquette (x, y)
+            New paddle position (x, y)
         """
         with game_config_tmp(
             FIELD_WIDTH=self.field_width,
@@ -258,31 +261,19 @@ class OptimalPointPretrainer:
             paddle_tmp.move(action.move_x, action.move_y, dt)
             return paddle_tmp.position.x, paddle_tmp.position.y
 
-        # paddle_x, paddle_y = current_paddle_pos
-
-        # # Appliquer le mouvement
-        # new_x = paddle_x + action.move_x * paddle_speed * dt
-        # new_y = paddle_y + action.move_y * paddle_speed * dt
-
-        # # Contraindre la position dans les limites du terrain
-        # new_x = max(self.margin, min(new_x, self.field_width - self.margin - self.paddle_width))
-        # new_y = max(0, min(new_y, self.field_height - self.paddle_height))
-
-        # return new_x, new_y
-
     def pretraining_step(
-        self, agent: Player, player_id: int = 1, num_steps: int = 1000
+        self, agent: "DQNAgent", player_id: int = 1, num_steps: int = 1000
     ) -> dict[str, Any]:
         """
-        Effectue une étape de pré-entraînement sur la proximité au point optimal.
+        Perform a pretraining step on optimal point proximity.
 
         Args:
-            agent: Agent DQN à entraîner
-            player_id: ID du joueur
-            num_steps: Nombre d'étapes de pré-entraînement
+            agent: DQN agent to train
+            player_id: Player ID
+            num_steps: Number of pretraining steps
 
         Returns:
-            Statistiques de l'étape de pré-entraînement
+            Pretraining step statistics
         """
         total_reward = 0.0
         total_loss = 0.0
@@ -293,69 +284,41 @@ class OptimalPointPretrainer:
         dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
 
         for _ in range(num_steps):
-            # Générer un état aléatoire de balle
+            # Generate random ball state
             ball_state = self.generate_random_ball_state(player_id)
             game_state = self.create_game_state_from_ball_state(ball_state, player_id)
             initial_paddle_pos = game_state[f"player{player_id}_position"]
 
-            # Initialise la récompense de proximité avant de modifier l'état du système
+            # Initialize proximity reward before modifying system state
             self.reward_calculator._calculate_proximity_reward(game_state, player_id)
 
-            # Convertir l'état en observation pour l'agent
+            # Convert state to observation for agent
             observation = self._game_state_to_observation(game_state, player_id)
             state = agent._observation_to_state(observation)
 
-            # L'agent choisit une action
+            # Agent chooses an action
             action_index = agent.act(state, training=True)
             action = self._index_to_action(action_index)
 
-            # Simuler le mouvement de la raquette
+            # Simulate paddle movement
             new_paddle_pos = self.simulate_paddle_movement(initial_paddle_pos, action, dt=dt)
 
-            # Mettre à jour l'état du jeu avec la nouvelle position
+            # Update game state with new position
             game_state[f"player{player_id}_position"] = new_paddle_pos
 
-            # Calculer la récompense de proximité
+            # Calculate proximity reward
             proximity_reward, info = self.calculate_optimal_position_reward(
                 game_state, player_id, dt=dt
             )
 
-            # ############################################################### #
-            # optimal_point = tuple(info['optimal_points'][player_id]['position'].tolist())
-            # initial_distance = np.linalg.norm(
-            #     np.array(optimal_point) - np.array((
-            #         initial_paddle_pos[0] + game_config.PADDLE_WIDTH / 2,
-            #         initial_paddle_pos[1] + game_config.PADDLE_HEIGHT / 2,
-            #     ))
-            # )
-            # new_distance = np.linalg.norm(
-            #     np.array(optimal_point) - np.array((
-            #         new_paddle_pos[0] + game_config.PADDLE_WIDTH / 2,
-            #         new_paddle_pos[1] + game_config.PADDLE_HEIGHT / 2,
-            #     ))
-            # )
-            # print(
-            #     f"Step {step+1}/{num_steps}:"
-            #     f"\n\t- Optimal point: {optimal_point}"
-            #     f"\n\t- Initial Paddle Position: {initial_paddle_pos}"
-            #     f"\n\t- Initial distance: {initial_distance}"
-            #     f"\n\t- Action: {action_index}"
-            #     f"\n\t- New Paddle Position: {new_paddle_pos}"
-            #     f"\n\t- New distance: {new_distance}"
-            #     f"\n\t- Delta distance (negative means closer): {new_distance - initial_distance}"
-            #     f"\n\t- Reward: {proximity_reward:.4f}"
-            #     "\n"
-            # )
-            # ############################################################### #
-
-            # Créer l'état suivant (même état mais avec nouvelle position de raquette)
+            # Create next state (same state but with new paddle position)
             next_observation = self._game_state_to_observation(game_state, player_id)
             next_state = agent._observation_to_state(next_observation)
 
-            # Stocker l'expérience dans la mémoire de replay
+            # Store experience in replay memory
             agent.remember(state, action_index, proximity_reward, next_state, done=False)
 
-            # Entraîner l'agent si assez d'expériences
+            # Train agent if enough experiences
             if len(agent.memory) > agent.batch_size:
                 loss = agent.replay()
                 if loss is not None:
@@ -365,7 +328,7 @@ class OptimalPointPretrainer:
             total_reward += proximity_reward
             rewards_history.append(proximity_reward)
 
-        # Calcul des statistiques
+        # Calculate statistics
         avg_reward = total_reward / num_steps if num_steps > 0 else 0.0
         avg_loss = total_loss / loss_count if loss_count > 0 else 0.0
 
@@ -383,50 +346,50 @@ class OptimalPointPretrainer:
         self, game_state: dict[str, Any], player_id: int
     ) -> dict[str, Any]:
         """
-        Convertit un état de jeu en observation pour l'agent.
-        Utilise la même logique que ObservationProcessor.
+        Convert a game state to observation for the agent.
+        Uses the same logic as ObservationProcessor.
         """
         return self.observation_processor.process_game_state(game_state, player_id)
 
     def _index_to_action(self, action_index: int) -> Action:
         """
-        Convertit un index d'action en objet Action.
-        Utilise la même grille 3x3 que l'agent DQN.
+        Convert an action index to Action object.
+        Uses the same 3x3 grid as the DQN agent.
         """
         actions = ACTION_MAPPING
 
         if 0 <= action_index < len(actions):
             return actions[action_index]
         else:
-            # Action par défaut si index invalide
+            # Default action if invalid index
             print(f"Invalid action index: {action_index}, returning no movement.")
             return Action(move_x=0.0, move_y=0.0)
 
     def run_pretraining_phase(
         self,
-        agent: Player,
+        agent: "DQNAgent",
         total_steps: int = 10000,
         steps_per_batch: int = 1000,
         player_id: int = 1,
         verbose: bool = True,
     ) -> dict[str, Any]:
         """
-        Exécute une phase complète de pré-entraînement.
+        Execute a complete pretraining phase.
 
         Args:
-            agent: Agent DQN à pré-entraîner
-            total_steps: Nombre total d'étapes de pré-entraînement
-            steps_per_batch: Nombre d'étapes par batch
-            player_id: ID du joueur
-            verbose: Affichage des statistiques
+            agent: DQN agent to pretrain
+            total_steps: Total number of pretraining steps
+            steps_per_batch: Number of steps per batch
+            player_id: Player ID
+            verbose: Display statistics
 
         Returns:
-            Statistiques complètes du pré-entraînement
+            Complete pretraining statistics
         """
         if verbose:
-            print("🎯 Début du pré-entraînement sur le point optimal")
-            print(f"   Total d'étapes: {total_steps}")
-            print(f"   Étapes par batch: {steps_per_batch}")
+            print("🎯 Starting pretraining on optimal point")
+            print(f"   Total steps: {total_steps}")
+            print(f"   Steps per batch: {steps_per_batch}")
 
         all_rewards = []
         all_losses = []
@@ -439,10 +402,10 @@ class OptimalPointPretrainer:
             current_batch_steps = min(steps_per_batch, remaining_steps)
             batch_num += 1
 
-            # Exécuter un batch de pré-entraînement
+            # Execute a pretraining batch
             batch_result = self.pretraining_step(agent, player_id, current_batch_steps)
 
-            # Collecter les statistiques
+            # Collect statistics
             all_rewards.extend(batch_result["rewards_history"])
             if batch_result["average_loss"] > 0:
                 all_losses.append(batch_result["average_loss"])
@@ -451,14 +414,14 @@ class OptimalPointPretrainer:
 
             if verbose:
                 print(
-                    f"   Batch {batch_num}: Récompense moy. = {batch_result['average_reward']:.3f}, "
-                    f"Loss moy. = {batch_result['average_loss']:.4f}, "
+                    f"   Batch {batch_num}: Avg reward = {batch_result['average_reward']:.3f}, "
+                    f"Avg loss = {batch_result['average_loss']:.4f}, "
                     f"Epsilon = {batch_result['epsilon']:.3f}"
                 )
 
             remaining_steps -= current_batch_steps
 
-        # Calcul des statistiques finales
+        # Calculate final statistics
         final_stats = {
             "total_steps": total_steps,
             "batches": batch_num,
@@ -472,27 +435,27 @@ class OptimalPointPretrainer:
         }
 
         if verbose:
-            print("✅ Pré-entraînement terminé!")
+            print("✅ Pretraining complete!")
             print(
-                f"   Récompense finale moyenne: {final_stats['average_reward']:.3f} ± {final_stats['reward_std']:.3f}"
+                f"   Final avg reward: {final_stats['average_reward']:.3f} ± {final_stats['reward_std']:.3f}"
             )
-            print(f"   Loss finale moyenne: {final_stats['average_loss']:.4f}")
-            print(f"   Epsilon final: {final_stats['final_epsilon']:.3f}")
+            print(f"   Final avg loss: {final_stats['average_loss']:.4f}")
+            print(f"   Final epsilon: {final_stats['final_epsilon']:.3f}")
 
         return final_stats
 
 
-def create_pretrainer(**kwargs: dict[str, Any]) -> OptimalPointPretrainer:
+def create_pretrainer(**kwargs: Any) -> OptimalPointPretrainer:
     """
-    Factory pour créer un pré-entraîneur avec la configuration par défaut du jeu.
+    Factory to create a pretrainer with default game configuration.
 
     Args:
-        **kwargs: Arguments supplémentaires pour le constructeur
+        **kwargs: Additional arguments for the constructor
 
     Returns:
-        Instance de OptimalPointPretrainer
+        OptimalPointPretrainer instance
     """
-    defaults = {
+    defaults: dict[str, Any] = {
         "field_width": game_config.FIELD_WIDTH,
         "field_height": game_config.FIELD_HEIGHT,
         "paddle_width": game_config.PADDLE_WIDTH,
@@ -500,7 +463,7 @@ def create_pretrainer(**kwargs: dict[str, Any]) -> OptimalPointPretrainer:
         "ball_radius": game_config.BALL_RADIUS,
     }
 
-    # Fusionner avec les arguments fournis
+    # Merge with provided arguments
     defaults.update(kwargs)
 
     return OptimalPointPretrainer(**defaults)

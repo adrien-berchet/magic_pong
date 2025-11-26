@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 import pygame
+
 from magic_pong.core.entities import Ball, Bonus, BonusType, Paddle, RotatingPaddle
 from magic_pong.utils.config import ai_config, game_config
 
@@ -28,17 +29,24 @@ class PygameRenderer:
         # Clock for controlling frame rate
         self.clock = pygame.time.Clock()
 
-        # Colors
-        self.colors = {
-            "background": game_config.BACKGROUND_COLOR,
-            "ball": game_config.BALL_COLOR,
-            "paddle": game_config.PADDLE_COLOR,
-            "bonus": game_config.BONUS_COLORS,
-            "text": (255, 255, 255),
-            "line": (100, 100, 100),
-            "optimal_point_p1": (255, 100, 100),  # Rouge pour joueur 1
-            "optimal_point_p2": (100, 255, 100),  # Vert pour joueur 2
+        # Default bonus colors
+        default_bonus_colors: dict[str, tuple[int, int, int]] = {
+            "enlarge_paddle": (0, 255, 0),
+            "shrink_opponent": (255, 0, 0),
+            "rotating_paddle": (0, 0, 255),
         }
+
+        # Colors - use typed dictionary
+        self.background_color: tuple[int, int, int] = game_config.BACKGROUND_COLOR
+        self.ball_color: tuple[int, int, int] = game_config.BALL_COLOR
+        self.paddle_color: tuple[int, int, int] = game_config.PADDLE_COLOR
+        self.bonus_colors: dict[str, tuple[int, int, int]] = (
+            game_config.BONUS_COLORS if game_config.BONUS_COLORS else default_bonus_colors
+        )
+        self.text_color: tuple[int, int, int] = (255, 255, 255)
+        self.line_color: tuple[int, int, int] = (100, 100, 100)
+        self.optimal_point_p1_color: tuple[int, int, int] = (255, 100, 100)
+        self.optimal_point_p2_color: tuple[int, int, int] = (100, 255, 100)
 
         # Font for text rendering
         self.font_large = pygame.font.Font(None, 74)
@@ -51,23 +59,21 @@ class PygameRenderer:
 
     def clear_screen(self) -> None:
         """Clear the screen with background color"""
-        self.screen.fill(self.colors["background"])
+        self.screen.fill(self.background_color)
 
     def draw_field(self) -> None:
         """Draw the game field (center line, borders)"""
         # Center line
         center_x = self.width // 2
-        pygame.draw.line(
-            self.screen, self.colors["line"], (center_x, 0), (center_x, self.height), 2
-        )
+        pygame.draw.line(self.screen, self.line_color, (center_x, 0), (center_x, self.height), 2)
 
         # Center circle
-        pygame.draw.circle(self.screen, self.colors["line"], (center_x, self.height // 2), 50, 2)
+        pygame.draw.circle(self.screen, self.line_color, (center_x, self.height // 2), 50, 2)
 
     def draw_ball(self, ball: Ball) -> None:
         """Draw the game ball"""
         pos = (int(ball.position.x), int(ball.position.y))
-        pygame.draw.circle(self.screen, self.colors["ball"], pos, int(ball.radius))
+        pygame.draw.circle(self.screen, self.ball_color, pos, int(ball.radius))
 
     def draw_optimal_point(
         self, position: tuple, player_id: int, is_approaching: bool = False
@@ -77,8 +83,7 @@ class PygameRenderer:
             return
 
         pos = (int(position[0]), int(position[1]))
-        color_key = f"optimal_point_p{player_id}"
-        color = self.colors.get(color_key, (255, 255, 255))
+        color = self.optimal_point_p1_color if player_id == 1 else self.optimal_point_p2_color
 
         # Draw the optimal point as a semi-transparent circle
         radius = 12 if is_approaching else 8
@@ -110,7 +115,7 @@ class PygameRenderer:
         rect = pygame.Rect(
             int(paddle.position.x), int(paddle.position.y), int(paddle.width), int(paddle.height)
         )
-        pygame.draw.rect(self.screen, self.colors["paddle"], rect)
+        pygame.draw.rect(self.screen, self.paddle_color, rect)
 
         # Draw size effect indicator
         if paddle.size_effect_timer > 0:
@@ -133,7 +138,7 @@ class PygameRenderer:
 
     def draw_bonus(self, bonus: Bonus) -> None:
         """Draw a bonus item"""
-        color = self.colors["bonus"].get(bonus.type.value, (255, 255, 255))
+        color = self.bonus_colors.get(bonus.type.value, (255, 255, 255))
 
         # Draw bonus as a diamond shape
         half_size = bonus.size // 2
@@ -156,7 +161,7 @@ class PygameRenderer:
     def draw_score(self, score: tuple[int, int]) -> None:
         """Draw the current score"""
         score_text = f"{score[0]}  -  {score[1]}"
-        text_surface = self.font_large.render(score_text, True, self.colors["text"])
+        text_surface = self.font_large.render(score_text, True, self.text_color)
         text_rect = text_surface.get_rect()
         text_rect.centerx = self.width // 2
         text_rect.top = 20
@@ -169,14 +174,14 @@ class PygameRenderer:
         if self.show_fps:
             fps = self.clock.get_fps()
             fps_text = f"FPS: {fps:.0f}"
-            fps_surface = self.font_small.render(fps_text, True, self.colors["text"])
+            fps_surface = self.font_small.render(fps_text, True, self.text_color)
             self.screen.blit(fps_surface, (10, y_offset))
             y_offset += 30
 
         if self.show_debug and "debug_info" in info:
             for key, value in info["debug_info"].items():
                 debug_text = f"{key}: {value}"
-                debug_surface = self.font_small.render(debug_text, True, self.colors["text"])
+                debug_surface = self.font_small.render(debug_text, True, self.text_color)
                 self.screen.blit(debug_surface, (10, y_offset))
                 y_offset += 25
 
@@ -194,21 +199,21 @@ class PygameRenderer:
         else:
             winner_text = f"Player {winner} wins!"
 
-        winner_surface = self.font_large.render(winner_text, True, self.colors["text"])
+        winner_surface = self.font_large.render(winner_text, True, self.text_color)
         winner_rect = winner_surface.get_rect()
         winner_rect.center = (self.width // 2, self.height // 2 - 50)
         self.screen.blit(winner_surface, winner_rect)
 
         # Final score
         score_text = f"Final score: {score[0]} - {score[1]}"
-        score_surface = self.font_medium.render(score_text, True, self.colors["text"])
+        score_surface = self.font_medium.render(score_text, True, self.text_color)
         score_rect = score_surface.get_rect()
         score_rect.center = (self.width // 2, self.height // 2 + 20)
         self.screen.blit(score_surface, score_rect)
 
         # Instructions
         restart_text = "Press SPACE to play again or ESC to quit"
-        restart_surface = self.font_small.render(restart_text, True, self.colors["text"])
+        restart_surface = self.font_small.render(restart_text, True, self.text_color)
         restart_rect = restart_surface.get_rect()
         restart_rect.center = (self.width // 2, self.height // 2 + 80)
         self.screen.blit(restart_surface, restart_rect)
@@ -222,14 +227,14 @@ class PygameRenderer:
         self.screen.blit(overlay, (0, 0))
 
         # Pause text
-        pause_surface = self.font_large.render("PAUSE", True, self.colors["text"])
+        pause_surface = self.font_large.render("PAUSE", True, self.text_color)
         pause_rect = pause_surface.get_rect()
         pause_rect.center = (self.width // 2, self.height // 2)
         self.screen.blit(pause_surface, pause_rect)
 
         # Instructions
         instructions = "Press P or SPACE to continue"
-        inst_surface = self.font_small.render(instructions, True, self.colors["text"])
+        inst_surface = self.font_small.render(instructions, True, self.text_color)
         inst_rect = inst_surface.get_rect()
         inst_rect.center = (self.width // 2, self.height // 2 + 60)
         self.screen.blit(inst_surface, inst_rect)
@@ -239,7 +244,7 @@ class PygameRenderer:
         self.clear_screen()
 
         # Title
-        title_surface = self.font_large.render("MAGIC PONG", True, self.colors["text"])
+        title_surface = self.font_large.render("MAGIC PONG", True, self.text_color)
         title_rect = title_surface.get_rect()
         title_rect.center = (self.width // 2, self.height // 4)
         self.screen.blit(title_surface, title_rect)
@@ -254,7 +259,7 @@ class PygameRenderer:
         ]
 
         for i, option in enumerate(options):
-            color = (255, 255, 0) if i == selected_option else self.colors["text"]
+            color = (255, 255, 0) if i == selected_option else self.text_color
             option_surface = self.font_medium.render(option, True, color)
             option_rect = option_surface.get_rect()
             option_rect.center = (self.width // 2, self.height // 2 + i * 60)
@@ -262,7 +267,7 @@ class PygameRenderer:
 
         # Instructions
         instructions = "Use UP/DOWN arrows and ENTER to select"
-        inst_surface = self.font_small.render(instructions, True, self.colors["text"])
+        inst_surface = self.font_small.render(instructions, True, self.text_color)
         inst_rect = inst_surface.get_rect()
         inst_rect.center = (self.width // 2, self.height * 3 // 4 + 50)
         self.screen.blit(inst_surface, inst_rect)
@@ -272,7 +277,7 @@ class PygameRenderer:
         self.clear_screen()
 
         # Title
-        title_surface = self.font_large.render("SELECT TRAINED MODEL", True, self.colors["text"])
+        title_surface = self.font_large.render("SELECT TRAINED MODEL", True, self.text_color)
         title_rect = title_surface.get_rect()
         title_rect.center = (self.width // 2, self.height // 6)
         self.screen.blit(title_surface, title_rect)
@@ -287,7 +292,7 @@ class PygameRenderer:
             self.screen.blit(no_models_surface, no_models_rect)
 
             back_surface = self.font_small.render(
-                "Press ESCAPE to return to main menu", True, self.colors["text"]
+                "Press ESCAPE to return to main menu", True, self.text_color
             )
             back_rect = back_surface.get_rect()
             back_rect.center = (self.width // 2, self.height // 2 + 60)
@@ -312,7 +317,7 @@ class PygameRenderer:
             is_selected = model_index == selected_model
 
             # Model name
-            color = (255, 255, 0) if is_selected else self.colors["text"]
+            color = (255, 255, 0) if is_selected else self.text_color
             model_surface = self.font_medium.render(model["name"], True, color)
             model_rect = model_surface.get_rect()
             model_rect.center = (self.width // 2, start_y + i * 50)
@@ -346,7 +351,7 @@ class PygameRenderer:
         ]
 
         for i, instruction in enumerate(instructions):
-            inst_surface = self.font_small.render(instruction, True, self.colors["text"])
+            inst_surface = self.font_small.render(instruction, True, self.text_color)
             inst_rect = inst_surface.get_rect()
             inst_rect.center = (self.width // 2, self.height * 4 // 5 + i * 25)
             self.screen.blit(inst_surface, inst_rect)
@@ -435,9 +440,7 @@ class PygameRenderer:
         self.screen.blit(help_bg, (help_x, help_y))
 
         # Border
-        pygame.draw.rect(
-            self.screen, self.colors["text"], (help_x, help_y, help_width, help_height), 2
-        )
+        pygame.draw.rect(self.screen, self.text_color, (help_x, help_y, help_width, help_height), 2)
 
         # Text
         for i, line in enumerate(help_lines):
@@ -448,7 +451,7 @@ class PygameRenderer:
                 color = (0, 255, 255)
                 font = self.font_small
             else:
-                color = self.colors["text"]
+                color = self.text_color
                 font = self.font_small
 
             if line.strip():  # Skip empty lines

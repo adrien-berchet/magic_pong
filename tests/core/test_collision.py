@@ -8,6 +8,7 @@ Tests the critical collision detection fixes including:
 """
 
 import pytest
+
 from magic_pong.core.collision import (
     CollisionDetector,
     apply_paddle_bounce,

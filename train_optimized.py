@@ -22,6 +22,7 @@ from pathlib import Path
 # Import pour configuration des jeux
 import matplotlib.pyplot as plt
 import numpy as np
+
 from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager

@@ -88,10 +88,10 @@ python examples/ai_vs_ai.py --mode training
 
 ```
 magic_pong/
-├── src/
+├── magic_pong/
 │   ├── core/           # Game engine and physics
 │   ├── ai/             # AI interface and examples
-│   ├── graphics/       # Graphics rendering (coming soon)
+│   ├── gui/            # Graphics rendering
 │   └── utils/          # Configuration and utilities
 ├── examples/           # Usage examples
 └── docs/              # Documentation
@@ -107,10 +107,10 @@ magic_pong/
 
 ## Configuration
 
-The game is highly configurable via [`src/utils/config.py`](src/utils/config.py):
+The game is highly configurable via [`magic_pong/utils/config.py`](magic_pong/utils/config.py):
 
 ```python
-from src.utils.config import game_config, ai_config
+from magic_pong.utils.config import game_config, ai_config
 
 # Game configuration
 game_config.FIELD_WIDTH = 800
@@ -125,8 +125,8 @@ ai_config.FAST_MODE_MULTIPLIER = 10.0
 ## Create a Custom AI
 
 ```python
-from src.ai.interface import Player
-from src.core.entities import Action
+from magic_pong.ai.interface import Player
+from magic_pong.core.entities import Action
 
 class MyAI(Player):
     def get_action(self, observation):
@@ -150,7 +150,7 @@ class MyAI(Player):
 ```python
 import torch
 import torch.nn as nn
-from src.ai.interface import Player
+from magic_pong.ai.interface import Player
 
 class PyTorchAI(Player):
     def __init__(self, player_id, model):

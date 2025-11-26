@@ -113,9 +113,11 @@ class GameConfig(BaseModel):
     BACKGROUND_COLOR: tuple[int, int, int] = Field(default=(0, 0, 0), description="RGB color")
     BALL_COLOR: tuple[int, int, int] = Field(default=(255, 255, 255), description="RGB color")
     PADDLE_COLOR: tuple[int, int, int] = Field(default=(255, 255, 255), description="RGB color")
-    BONUS_COLORS: dict | None = Field(default=None, description="Bonus colors mapping")
+    BONUS_COLORS: dict[str, tuple[int, int, int]] | None = Field(
+        default=None, description="Bonus colors mapping"
+    )
 
-    @field_validator("BALL_SPEED")  # type: ignore[misc]
+    @field_validator("BALL_SPEED")
     @classmethod
     def validate_ball_speed(cls, v: float, info: ValidationInfo) -> float:
         """Validate that ball speed doesn't exceed max speed"""
@@ -125,7 +127,7 @@ class GameConfig(BaseModel):
             raise ValueError(f"BALL_SPEED ({v}) must not exceed MAX_BALL_SPEED ({max_speed})")
         return v
 
-    @field_validator("KEYBOARD_LAYOUT")  # type: ignore[misc]
+    @field_validator("KEYBOARD_LAYOUT")
     @classmethod
     def validate_keyboard_layout(cls, v: str) -> str:
         """Validate keyboard layout exists"""
@@ -135,7 +137,7 @@ class GameConfig(BaseModel):
             )
         return v
 
-    @model_validator(mode="after")  # type: ignore[misc]
+    @model_validator(mode="after")
     def validate_field_dimensions(self) -> "GameConfig":
         """Validate field is large enough for game elements"""
         min_width = 2 * (self.PADDLE_MARGIN + self.PADDLE_WIDTH) + 100
@@ -195,7 +197,7 @@ class AIConfig(BaseModel):
         default=10.0, gt=0, description="Speed multiplier for fast mode"
     )
 
-    @field_validator("FAST_MODE_MULTIPLIER")  # type: ignore[misc]
+    @field_validator("FAST_MODE_MULTIPLIER")
     @classmethod
     def validate_fast_mode(cls, v: float) -> float:
         """Warn if fast mode multiplier is unreasonably high"""

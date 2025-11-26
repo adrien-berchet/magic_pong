@@ -72,28 +72,6 @@ magic-pong = "magic_pong.gui.game_app:main"
 [tool.setuptools]
 packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.models", "magic_pong.utils", "magic_pong.gui"]
 
-[tool.setuptools.package-dir]
-"magic_pong" = "src"
-
-# Configuration for Black (code formatting)
-[tool.black]
-line-length = 100
-target-version = ['py310', 'py311', 'py312']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
-
 # Configuration for Ruff (linting)
 [tool.ruff]
 target-version = "py310"
@@ -140,6 +118,10 @@ module = [
     "pygame.*",
     "numpy.*",
     "pydantic.*",
+    "torch",
+    "torch.*",
+    "matplotlib",
+    "matplotlib.*",
 ]
 ignore_missing_imports = true
 

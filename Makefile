@@ -1,53 +1,53 @@
 .PHONY: help install install-dev test test-all lint format type-check clean build docs
 .DEFAULT_GOAL := help
 
-help: ## Affiche cette aide
-	@echo "Commandes disponibles :"
+help: ## Display this help
+	@echo "Available commands:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-install: ## Installe le package en mode développement
+install: ## Install the package in development mode
 	pip install -e .
 
-install-dev: ## Installe les dépendances de développement
+install-dev: ## Install development dependencies
 	pip install -e ".[dev]"
 
-install-all: ## Installe toutes les dépendances (dev, ai, viz)
+install-all: ## Install all dependencies (dev, ai, viz)
 	pip install -e ".[all]"
 
-test: ## Lance les tests avec pytest
+test: ## Run tests with pytest
 	pytest tests/ -v
 
-test-cov: ## Lance les tests avec couverture de code
+test-cov: ## Run tests with code coverage
 	pytest tests/ -v --cov=magic_pong --cov-report=term-missing --cov-report=html
 
-test-all: ## Lance tous les tests avec tox
+test-all: ## Run all tests with tox
 	tox
 
-lint: ## Vérifie le code avec ruff
-	ruff check src/ tests/
+lint: ## Check code with ruff
+	ruff check magic_pong/ tests/
 
-lint-fix: ## Corrige automatiquement les problèmes de linting
-	ruff check --fix src/ tests/
+lint-fix: ## Automatically fix linting issues
+	ruff check --fix magic_pong/ tests/
 
-format: ## Formate le code avec black
-	black src/ tests/
+format: ## Format code with black
+	black magic_pong/ tests/
 
-format-check: ## Vérifie le formatage sans modifier les fichiers
-	black --check --diff src/ tests/
+format-check: ## Check formatting without modifying files
+	black --check --diff magic_pong/ tests/
 
-type-check: ## Vérifie les types avec mypy
-	mypy src/
+type-check: ## Check types with mypy
+	mypy magic_pong/
 
-quality: ## Lance tous les contrôles qualité (lint, format, type-check)
+quality: ## Run all quality checks (lint, format, type-check)
 	$(MAKE) lint
 	$(MAKE) format-check
 	$(MAKE) type-check
 
-quality-fix: ## Corrige automatiquement les problèmes de qualité
+quality-fix: ## Automatically fix quality issues
 	$(MAKE) lint-fix
 	$(MAKE) format
 
-clean: ## Nettoie les fichiers temporaires
+clean: ## Clean temporary files
 	find . -type f -name "*.pyc" -delete
 	find . -type d -name "__pycache__" -delete
 	find . -type d -name "*.egg-info" -exec rm -rf {} +
@@ -59,53 +59,52 @@ clean: ## Nettoie les fichiers temporaires
 	rm -rf .pytest_cache/
 	rm -rf .mypy_cache/
 
-build: ## Construit le package
+build: ## Build the package
 	python -m build
 
-docs: ## Génère la documentation (si configurée)
-	@echo "Documentation non configurée pour le moment"
+docs: ## Generate documentation (if configured)
+	@echo "Documentation not configured yet"
 
-dev-setup: install-dev ## Configuration complète pour le développement
-	@echo "✅ Environnement de développement configuré !"
-	@echo "Commandes utiles :"
-	@echo "  make test          - Lance les tests"
-	@echo "  make test-all      - Lance tous les tests avec tox"
-	@echo "  make quality       - Vérifie la qualité du code"
-	@echo "  make quality-fix   - Corrige automatiquement les problèmes"
+dev-setup: install-dev ## Complete setup for development
+	@echo "✅ Development environment configured!"
+	@echo "Useful commands:"
+	@echo "  make test          - Run tests"
+	@echo "  make test-all      - Run all tests with tox"
+	@echo "  make quality       - Check code quality"
+	@echo "  make quality-fix   - Automatically fix issues"
 
-# Commandes tox
-tox-py310: ## Lance les tests avec Python 3.10
+# Tox commands
+tox-py310: ## Run tests with Python 3.10
 	tox -e py310
 
-tox-py311: ## Lance les tests avec Python 3.11
+tox-py311: ## Run tests with Python 3.11
 	tox -e py311
 
-tox-py312: ## Lance les tests avec Python 3.12
+tox-py312: ## Run tests with Python 3.12
 	tox -e py312
 
-tox-lint: ## Lance le linting avec tox
+tox-lint: ## Run linting with tox
 	tox -e lint
 
-tox-format: ## Lance le formatage avec tox
+tox-format: ## Run formatting with tox
 	tox -e format
 
-tox-type-check: ## Lance la vérification de types avec tox
+tox-type-check: ## Run type checking with tox
 	tox -e type-check
 
-# Commandes pour les exemples
-# Commandes pre-commit
-pre-commit-install: ## Installe les hooks pre-commit
+# Pre-commit commands
+pre-commit-install: ## Install pre-commit hooks
 	pre-commit install
 
-pre-commit-run: ## Lance pre-commit sur tous les fichiers
+pre-commit-run: ## Run pre-commit on all files
 	pre-commit run --all-files
 
-pre-commit-update: ## Met à jour les hooks pre-commit
+pre-commit-update: ## Update pre-commit hooks
 	pre-commit autoupdate
 
-# Commandes pour les exemples
-run-example: ## Lance un exemple d'IA vs IA
+# Example commands
+run-example: ## Run an AI vs AI example
 	python -m magic_pong.ai.models.ai_vs_ai
 
-run-tournament: ## Lance un tournoi d'IA
+run-tournament: ## Run an AI tournament
 	magic-pong-tournament

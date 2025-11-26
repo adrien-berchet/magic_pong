@@ -2,7 +2,7 @@
 
 ## Current State
 
-`src/ai/interface.py` - 646 lines with mixed responsibilities:
+`magic_pong/ai/interface.py` - 646 lines with mixed responsibilities:
 - AIPlayer (52 lines) - Abstract AI player base class
 - ObservationProcessor (90 lines) - Converts game state to observations
 - RewardCalculator (386 lines) - Calculates rewards for training
@@ -18,7 +18,7 @@
 ## New Structure
 
 ```
-src/ai/
+magic_pong/ai/
 ├── interfaces/              # ✓ Done in Phase 1
 │   ├── observation.py       # ObservationBuilder protocol + implementations
 │   └── reward.py            # RewardCalculator protocol + implementations
@@ -35,7 +35,7 @@ src/ai/
 ## Implementation Steps
 
 ### Step 1: Create Environment Package ✓
-- [x] Create `src/ai/environment/` directory
+- [x] Create `magic_pong/ai/environment/` directory
 - [x] Create `__init__.py`
 
 ### Step 2: Move & Reorganize Classes

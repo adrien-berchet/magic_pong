@@ -1,5 +1,5 @@
 """
-Script d'entraînement DQN avec pré-entraînement sur le point optimal
+DQN training script with pretraining on the optimal point
 """
 
 import argparse
@@ -9,6 +9,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+
 from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.ai.pretraining import create_pretrainer
@@ -17,7 +18,7 @@ from magic_pong.utils.config import ai_config, game_config
 
 
 class DQNPretrainer:
-    """Gestionnaire d'entraînement DQN avec pré-entraînement sur le point optimal"""
+    """DQN training manager with pretraining on the optimal point"""
 
     def __init__(
         self,
@@ -30,12 +31,12 @@ class DQNPretrainer:
     ):
         """
         Args:
-            episodes: Nombre d'épisodes d'entraînement principal
-            pretraining_steps: Nombre d'étapes de pré-entraînement
-            save_interval: Intervalle de sauvegarde du modèle
-            eval_interval: Intervalle d'évaluation
-            eval_episodes: Nombre d'épisodes d'évaluation
-            model_dir: Répertoire de sauvegarde des modèles
+            episodes: Number of main training episodes
+            pretraining_steps: Number of pretraining steps
+            save_interval: Model save interval
+            eval_interval: Evaluation interval
+            eval_episodes: Number of evaluation episodes
+            model_dir: Model save directory
         """
         self.episodes = episodes
         self.pretraining_steps = pretraining_steps
@@ -44,15 +45,15 @@ class DQNPretrainer:
         self.eval_episodes = eval_episodes
         self.model_dir = model_dir
 
-        # Créer le répertoire des modèles
+        # Create models directory
         os.makedirs(model_dir, exist_ok=True)
 
-        # Métriques d'entraînement
+        # Training metrics
         self.training_rewards = []
         self.pretraining_rewards = []
         self.win_rates = []
 
-        # Pour la reprise d'entraînement
+        # For training resumption
         self.start_episode = 0
         self.best_avg_reward = float("-inf")
         self.pretraining_completed = False
@@ -66,27 +67,27 @@ class DQNPretrainer:
         y_only: bool = True,
     ) -> dict[str, Any]:
         """
-        Exécute la phase de pré-entraînement sur la proximité au point optimal.
+        Execute the pretraining phase on optimal point proximity.
 
         Args:
-            agent: Agent DQN à pré-entraîner
-            player_id: ID du joueur (1 pour gauche, 2 pour droite)
-            steps_per_batch: Nombre d'étapes par batch
-            save_pretrained_model: Sauvegarder le modèle après pré-entraînement
-            y_only: Si True, ne considère que la distance verticale pour la récompense
+            agent: DQN agent to pretrain
+            player_id: Player ID (1 for left, 2 for right)
+            steps_per_batch: Number of steps per batch
+            save_pretrained_model: Save model after pretraining
+            y_only: If True, only consider vertical distance for reward
 
         Returns:
-            Statistiques du pré-entraînement
+            Pretraining statistics
         """
-        print("🎯 === PHASE DE PRÉ-ENTRAÎNEMENT ===")
-        print("Objectif: Apprendre à s'approcher du point optimal d'interception")
-        print(f"Étapes de pré-entraînement: {self.pretraining_steps}")
+        print("🎯 === PRETRAINING PHASE ===")
+        print("Objective: Learn to approach the optimal interception point")
+        print(f"Pretraining steps: {self.pretraining_steps}")
         print()
 
-        # Créer le pré-entraîneur
+        # Create pretrainer
         pretrainer = create_pretrainer(y_only=y_only)
 
-        # Activer le mode headless pour la vitesse
+        # Enable headless mode for speed
         original_headless = ai_config.HEADLESS_MODE
         original_fast_mode = ai_config.FAST_MODE_MULTIPLIER
         initial_game_speed_multiplier = game_config.GAME_SPEED_MULTIPLIER
@@ -97,7 +98,7 @@ class DQNPretrainer:
         ai_config.MAX_PROXIMITY_REWARD = 1000
         ai_config.HEADLESS_MODE = True
         ai_config.FAST_MODE_MULTIPLIER = (
-            1.0  # Pas besoin de vitesse élevée pour le pré-entraînement
+            1.0  # No need for high speed during pretraining
         )
         game_config.GAME_SPEED_MULTIPLIER = 5.0
         game_config.FPS = 300.0
@@ -105,7 +106,7 @@ class DQNPretrainer:
         start_time = time.time()
 
         try:
-            # Exécuter le pré-entraînement
+            # Execute pretraining
             pretraining_stats = pretrainer.run_pretraining_phase(
                 agent=agent,
                 total_steps=self.pretraining_steps,
@@ -117,23 +118,23 @@ class DQNPretrainer:
             self.pretraining_rewards = pretraining_stats["all_rewards"]
             self.pretraining_completed = True
 
-            # Sauvegarder le modèle pré-entraîné
+            # Save pretrained model
             if save_pretrained_model:
                 pretrained_model_path = os.path.join(self.model_dir, "pretrained_optimal_point.pth")
                 agent.save_model(pretrained_model_path)
-                print(f"📁 Modèle pré-entraîné sauvegardé: {pretrained_model_path}")
+                print(f"📁 Pretrained model saved: {pretrained_model_path}")
 
             elapsed_time = time.time() - start_time
-            print(f"\n✅ Pré-entraînement terminé en {elapsed_time:.1f}s")
+            print(f"\n✅ Pretraining completed in {elapsed_time:.1f}s")
             print(
-                f"   Amélioration de la récompense de proximité: {pretraining_stats['average_reward']:.3f}"
+                f"   Proximity reward improvement: {pretraining_stats['average_reward']:.3f}"
             )
-            print("   Agent prêt pour l'entraînement principal!")
+            print("   Agent ready for main training!")
 
             return pretraining_stats
 
         finally:
-            # Restaurer la configuration originale
+            # Restore original configuration
             ai_config.HEADLESS_MODE = original_headless
             ai_config.FAST_MODE_MULTIPLIER = original_fast_mode
             game_config.GAME_SPEED_MULTIPLIER = initial_game_speed_multiplier
@@ -148,60 +149,60 @@ class DQNPretrainer:
         resume_training: bool = False,
     ) -> DQNAgent:
         """
-        Entraîne l'agent avec pré-entraînement puis entraînement principal.
+        Train the agent with pretraining then main training.
 
         Args:
-            opponent_type: Type d'adversaire pour l'entraînement principal
-            agent_kwargs: Arguments pour la création de l'agent DQN
-            skip_pretraining: Ignorer la phase de pré-entraînement
-            pretraining_only: Faire seulement le pré-entraînement
-            resume_training: Reprendre un entraînement existant
+            opponent_type: Opponent type for main training
+            agent_kwargs: Arguments for DQN agent creation
+            skip_pretraining: Skip pretraining phase
+            pretraining_only: Do only pretraining
+            resume_training: Resume existing training
 
         Returns:
-            Agent DQN entraîné
+            Trained DQN agent
         """
         if agent_kwargs is None:
             agent_kwargs = {}
 
-        print("🚀 === ENTRAÎNEMENT DQN AVEC PRÉ-ENTRAÎNEMENT ===")
-        print(f"Phase 1: Pré-entraînement ({self.pretraining_steps} étapes)")
-        print(f"Phase 2: Entraînement principal ({self.episodes} épisodes vs {opponent_type})")
+        print("🚀 === DQN TRAINING WITH PRETRAINING ===")
+        print(f"Phase 1: Pretraining ({self.pretraining_steps} steps)")
+        print(f"Phase 2: Main training ({self.episodes} episodes vs {opponent_type})")
         print()
 
-        # Ajouter la taille d'état correcte si non spécifiée
+        # Add correct state size if not specified
         if "state_size" not in agent_kwargs:
-            agent_kwargs["state_size"] = 32  # Taille correcte pour l'état étendu
+            agent_kwargs["state_size"] = 32  # Correct size for extended state
 
-        # Créer l'agent DQN
+        # Create DQN agent
         dqn_agent = DQNAgent(name="DQN_Pretrained", **agent_kwargs)
 
-        # Phase 1: Pré-entraînement (sauf si demandé de l'ignorer)
+        # Phase 1: Pretraining (unless skipped)
         if not skip_pretraining:
             pretraining_stats = self.run_pretraining_phase(dqn_agent, y_only=True)
 
-            # Tracer les résultats du pré-entraînement
+            # Plot pretraining results
             self.plot_pretraining_results(pretraining_stats)
 
             if pretraining_only:
-                print("🎯 Pré-entraînement seul terminé!")
+                print("🎯 Pretraining only completed!")
                 return dqn_agent
 
-        # Phase 2: Entraînement principal
-        print("\n🥊 === PHASE D'ENTRAÎNEMENT PRINCIPAL ===")
-        print(f"Adversaire: {opponent_type}")
-        print(f"Épisodes: {self.episodes}")
+        # Phase 2: Main training
+        print("\n🥊 === MAIN TRAINING PHASE ===")
+        print(f"Opponent: {opponent_type}")
+        print(f"Episodes: {self.episodes}")
 
-        # Configuration pour l'entraînement rapide
+        # Configuration for fast training
         ai_config.HEADLESS_MODE = True
         ai_config.FAST_MODE_MULTIPLIER = 10.0
 
-        # Créer l'adversaire
-        opponent = create_ai(opponent_type, player_id=2, name=f"Opponent_{opponent_type}")
+        # Create opponent
+        opponent = create_ai(opponent_type, name=f"Opponent_{opponent_type}")
 
-        # Créer le gestionnaire d'entraînement
+        # Create training manager
         training_manager = TrainingManager(headless=True)
 
-        # Variables pour le suivi
+        # Tracking variables
         episode_rewards = []
         recent_rewards = []
         best_avg_reward = self.best_avg_reward
@@ -209,28 +210,28 @@ class DQNPretrainer:
         start_time = time.time()
 
         for episode in range(self.episodes):
-            # Jouer un épisode complet
+            # Play a complete episode
             episode_stats = training_manager.train_episode(dqn_agent, opponent, max_steps=1000)
             episode_reward = episode_stats["total_reward_p1"]
 
             episode_rewards.append(episode_reward)
             recent_rewards.append(episode_reward)
 
-            # Garder seulement les 100 derniers épisodes
+            # Keep only last 100 episodes
             if len(recent_rewards) > 100:
                 recent_rewards.pop(0)
 
-            # Logging périodique
+            # Periodic logging
             if (episode + 1) % 50 == 0:
                 avg_reward = np.mean(recent_rewards)
                 elapsed_time = time.time() - start_time
-                print(f"Épisode {episode + 1}/{self.episodes}")
-                print(f"  Récompense moyenne (100 derniers): {avg_reward:.2f}")
+                print(f"Episode {episode + 1}/{self.episodes}")
+                print(f"  Average reward (last 100): {avg_reward:.2f}")
                 print(f"  Epsilon: {dqn_agent.epsilon:.3f}")
-                print(f"  Temps écoulé: {elapsed_time:.1f}s")
-                print(f"  Étapes d'entraînement: {dqn_agent.training_step}")
+                print(f"  Elapsed time: {elapsed_time:.1f}s")
+                print(f"  Training steps: {dqn_agent.training_step}")
 
-                # Sauvegarder le meilleur modèle
+                # Save best model
                 if avg_reward > best_avg_reward:
                     best_avg_reward = avg_reward
                     self.best_avg_reward = best_avg_reward
@@ -238,73 +239,73 @@ class DQNPretrainer:
                         self.model_dir, f"best_pretrained_vs_{opponent_type}.pth"
                     )
                     dqn_agent.save_model(model_path)
-                    print(f"  🏆 Nouveau meilleur modèle sauvegardé! Récompense: {avg_reward:.2f}")
+                    print(f"  🏆 New best model saved! Reward: {avg_reward:.2f}")
 
-            # Sauvegarde périodique
+            # Periodic save
             if (episode + 1) % self.save_interval == 0:
                 model_path = os.path.join(
                     self.model_dir, f"checkpoint_pretrained_ep{episode+1}_vs_{opponent_type}.pth"
                 )
                 dqn_agent.save_model(model_path)
 
-            # Évaluation périodique
+            # Periodic evaluation
             if (episode + 1) % self.eval_interval == 0:
                 win_rate = self.evaluate_agent(dqn_agent, opponent_type)
                 self.win_rates.append(win_rate)
-                print(f"  📊 Taux de victoire: {win_rate:.1%}")
+                print(f"  📊 Win rate: {win_rate:.1%}")
 
-        # Sauvegarder le modèle final
+        # Save final model
         final_model_path = os.path.join(self.model_dir, f"final_pretrained_vs_{opponent_type}.pth")
         dqn_agent.save_model(final_model_path)
 
-        # Stocker les métriques
+        # Store metrics
         self.training_rewards = episode_rewards
 
-        print("\n✅ Entraînement principal terminé!")
-        print(f"Temps total: {time.time() - start_time:.1f}s")
-        print(f"Récompense moyenne finale: {np.mean(recent_rewards):.2f}")
+        print("\n✅ Main training completed!")
+        print(f"Total time: {time.time() - start_time:.1f}s")
+        print(f"Final average reward: {np.mean(recent_rewards):.2f}")
 
         return dqn_agent
 
     def evaluate_agent(self, agent: DQNAgent, opponent_type: str) -> float:
-        """Évalue l'agent sur plusieurs parties"""
-        # Mettre l'agent en mode évaluation
+        """Evaluate the agent over multiple games"""
+        # Set agent to evaluation mode
         agent.set_training_mode(False)
 
-        # Créer l'adversaire
-        opponent = create_ai(opponent_type, player_id=2)
+        # Create opponent
+        opponent = create_ai(opponent_type)
 
-        # Créer le gestionnaire d'évaluation
+        # Create evaluation manager
         eval_manager = TrainingManager(headless=True)
 
         wins = 0
 
         for _ in range(self.eval_episodes):
-            # Jouer une partie complète
+            # Play a complete game
             episode_stats = eval_manager.train_episode(agent, opponent, max_steps=1000)
 
-            # Vérifier qui a gagné
-            if episode_stats["winner"] == agent.player_id:
+            # Check who won (agent is always player 1)
+            if episode_stats["winner"] == 1:
                 wins += 1
 
-        # Remettre l'agent en mode entraînement
+        # Set agent back to training mode
         agent.set_training_mode(True)
 
         return wins / self.eval_episodes
 
     def plot_pretraining_results(self, pretraining_stats: dict[str, Any]) -> None:
-        """Affiche les résultats du pré-entraînement"""
+        """Display pretraining results"""
         rewards = pretraining_stats["all_rewards"]
         if not rewards:
             return
 
         plt.figure(figsize=(12, 6))
 
-        # Graphique des récompenses de pré-entraînement
+        # Pretraining rewards graph
         plt.subplot(1, 2, 1)
         plt.plot(rewards, alpha=0.7, color="blue", linewidth=0.8)
 
-        # Moyenne mobile
+        # Moving average
         window_size = min(100, len(rewards) // 10)
         if window_size > 1:
             moving_avg = np.convolve(rewards, np.ones(window_size) / window_size, mode="valid")
@@ -313,55 +314,55 @@ class DQNPretrainer:
                 moving_avg,
                 color="red",
                 linewidth=2,
-                label=f"Moyenne mobile ({window_size})",
+                label=f"Moving average ({window_size})",
             )
 
-        plt.xlabel("Étape de pré-entraînement")
-        plt.ylabel("Récompense de proximité")
-        plt.title("Évolution pendant le pré-entraînement")
+        plt.xlabel("Pretraining step")
+        plt.ylabel("Proximity reward")
+        plt.title("Evolution during pretraining")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # Histogramme des récompenses
+        # Rewards histogram
         plt.subplot(1, 2, 2)
         plt.hist(rewards, bins=50, alpha=0.7, color="green", edgecolor="black")
-        plt.xlabel("Récompense de proximité")
-        plt.ylabel("Fréquence")
-        plt.title("Distribution des récompenses")
+        plt.xlabel("Proximity reward")
+        plt.ylabel("Frequency")
+        plt.title("Reward distribution")
         plt.grid(True, alpha=0.3)
 
-        # Statistiques
-        stats_text = f"""Statistiques du pré-entraînement:
-Récompense moyenne: {np.mean(rewards):.3f}
-Écart-type: {np.std(rewards):.3f}
+        # Statistics
+        stats_text = f"""Pretraining statistics:
+Average reward: {np.mean(rewards):.3f}
+Std deviation: {np.std(rewards):.3f}
 Min: {np.min(rewards):.3f}
 Max: {np.max(rewards):.3f}
-Étapes: {len(rewards)}"""
+Steps: {len(rewards)}"""
 
         plt.figtext(0.02, 0.02, stats_text, fontsize=10, verticalalignment="bottom")
 
         plt.tight_layout()
         plt.subplots_adjust(bottom=0.15)
 
-        # Sauvegarder le graphique
+        # Save plot
         plot_path = os.path.join(self.model_dir, "pretraining_results.png")
         plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-        print(f"📊 Graphiques du pré-entraînement sauvegardés: {plot_path}")
+        print(f"📊 Pretraining plots saved: {plot_path}")
 
         plt.show()
 
     def plot_full_training_results(self) -> None:
-        """Affiche les résultats complets (pré-entraînement + entraînement principal)"""
+        """Display complete results (pretraining + main training)"""
         if not self.training_rewards and not self.pretraining_rewards:
-            print("Aucune donnée d'entraînement à afficher")
+            print("No training data to display")
             return
 
         plt.figure(figsize=(15, 10))
 
-        # Graphique combiné des récompenses
+        # Combined rewards graph
         plt.subplot(2, 2, 1)
 
-        # Pré-entraînement
+        # Pretraining
         if self.pretraining_rewards:
             pretraining_x = np.arange(len(self.pretraining_rewards)) - len(self.pretraining_rewards)
             plt.plot(
@@ -369,17 +370,17 @@ Max: {np.max(rewards):.3f}
                 self.pretraining_rewards,
                 alpha=0.5,
                 color="blue",
-                label="Pré-entraînement",
+                label="Pretraining",
             )
 
-        # Entraînement principal
+        # Main training
         if self.training_rewards:
             training_x = np.arange(len(self.training_rewards))
             plt.plot(
-                training_x, self.training_rewards, alpha=0.7, color="red", label="Entraînement"
+                training_x, self.training_rewards, alpha=0.7, color="red", label="Training"
             )
 
-            # Moyenne mobile pour l'entraînement
+            # Moving average for training
             window_size = min(50, len(self.training_rewards) // 5)
             if window_size > 1:
                 moving_avg = np.convolve(
@@ -390,29 +391,29 @@ Max: {np.max(rewards):.3f}
                     moving_avg,
                     color="darkred",
                     linewidth=2,
-                    label=f"Moyenne mobile ({window_size})",
+                    label=f"Moving average ({window_size})",
                 )
 
-        plt.axvline(x=0, color="black", linestyle="--", alpha=0.5, label="Début entraînement")
-        plt.xlabel("Étape / Épisode")
-        plt.ylabel("Récompense")
-        plt.title("Évolution complète des récompenses")
+        plt.axvline(x=0, color="black", linestyle="--", alpha=0.5, label="Training start")
+        plt.xlabel("Step / Episode")
+        plt.ylabel("Reward")
+        plt.title("Complete reward evolution")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # Taux de victoire
+        # Win rate
         if self.win_rates:
             plt.subplot(2, 2, 2)
             episodes_eval = np.arange(
                 self.eval_interval, len(self.win_rates) * self.eval_interval + 1, self.eval_interval
             )
             plt.plot(episodes_eval, self.win_rates, "o-", color="green", linewidth=2)
-            plt.xlabel("Épisode")
-            plt.ylabel("Taux de victoire")
-            plt.title("Évolution du taux de victoire")
+            plt.xlabel("Episode")
+            plt.ylabel("Win rate")
+            plt.title("Win rate evolution")
             plt.grid(True, alpha=0.3)
 
-        # Comparaison des histogrammes
+        # Histogram comparison
         plt.subplot(2, 2, 3)
         if self.pretraining_rewards:
             plt.hist(
@@ -420,7 +421,7 @@ Max: {np.max(rewards):.3f}
                 bins=30,
                 alpha=0.5,
                 color="blue",
-                label="Pré-entraînement",
+                label="Pretraining",
                 density=True,
             )
         if self.training_rewards:
@@ -429,26 +430,26 @@ Max: {np.max(rewards):.3f}
                 bins=30,
                 alpha=0.5,
                 color="red",
-                label="Entraînement",
+                label="Training",
                 density=True,
             )
-        plt.xlabel("Récompense")
-        plt.ylabel("Densité")
-        plt.title("Distribution des récompenses")
+        plt.xlabel("Reward")
+        plt.ylabel("Density")
+        plt.title("Reward distribution")
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # Statistiques globales
+        # Global statistics
         plt.subplot(2, 2, 4)
-        stats_lines = ["Statistiques globales:\n"]
+        stats_lines = ["Global statistics:\n"]
 
         if self.pretraining_rewards:
             stats_lines.extend(
                 [
-                    "Pré-entraînement:",
-                    f"  Étapes: {len(self.pretraining_rewards)}",
-                    f"  Récompense moy.: {np.mean(self.pretraining_rewards):.3f}",
-                    f"  Récompense fin: {np.mean(self.pretraining_rewards[-100:]):.3f}",
+                    "Pretraining:",
+                    f"  Steps: {len(self.pretraining_rewards)}",
+                    f"  Avg reward: {np.mean(self.pretraining_rewards):.3f}",
+                    f"  Final reward: {np.mean(self.pretraining_rewards[-100:]):.3f}",
                     "",
                 ]
             )
@@ -457,10 +458,10 @@ Max: {np.max(rewards):.3f}
             recent_rewards = self.training_rewards[-100:]
             stats_lines.extend(
                 [
-                    "Entraînement principal:",
-                    f"  Épisodes: {len(self.training_rewards)}",
-                    f"  Récompense moy.: {np.mean(self.training_rewards):.2f}",
-                    f"  Récompense finale: {np.mean(recent_rewards):.2f}",
+                    "Main training:",
+                    f"  Episodes: {len(self.training_rewards)}",
+                    f"  Avg reward: {np.mean(self.training_rewards):.2f}",
+                    f"  Final reward: {np.mean(recent_rewards):.2f}",
                     "",
                 ]
             )
@@ -469,8 +470,8 @@ Max: {np.max(rewards):.3f}
             stats_lines.extend(
                 [
                     "Performance:",
-                    f"  Taux de victoire final: {self.win_rates[-1]:.1%}",
-                    f"  Meilleur taux: {max(self.win_rates):.1%}",
+                    f"  Final win rate: {self.win_rates[-1]:.1%}",
+                    f"  Best win rate: {max(self.win_rates):.1%}",
                 ]
             )
 
@@ -479,89 +480,89 @@ Max: {np.max(rewards):.3f}
 
         plt.tight_layout()
 
-        # Sauvegarder
+        # Save
         plot_path = os.path.join(self.model_dir, "full_training_results.png")
         plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-        print(f"📊 Graphiques complets sauvegardés: {plot_path}")
+        print(f"📊 Complete plots saved: {plot_path}")
 
         plt.show()
 
 
 def main():
-    """Fonction principale avec pré-entraînement"""
+    """Main function with pretraining"""
     parser = argparse.ArgumentParser(
-        description="Entraînement DQN avec pré-entraînement sur le point optimal"
+        description="DQN training with pretraining on the optimal point"
     )
 
-    # Arguments d'entraînement
+    # Training arguments
     parser.add_argument(
-        "--episodes", type=int, default=1000, help="Nombre d'épisodes d'entraînement principal"
+        "--episodes", type=int, default=1000, help="Number of main training episodes"
     )
     parser.add_argument(
         "--pretraining_steps",
         type=int,
         default=10000,
-        help="Nombre d'étapes de pré-entraînement sur le point optimal",
+        help="Number of pretraining steps on the optimal point",
     )
     parser.add_argument(
         "--opponent",
         type=str,
         default="follow_ball",
         choices=["random", "follow_ball", "defensive", "aggressive", "predictive"],
-        help="Type d'adversaire pour l'entraînement principal",
+        help="Opponent type for main training",
     )
 
-    # Arguments du réseau
-    parser.add_argument("--lr", type=float, default=0.001, help="Taux d'apprentissage")
+    # Network arguments
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument(
         "--tau",
         type=float,
         default=0.005,
-        help="Coefficient pour les soft updates du target network",
+        help="Coefficient for target network soft updates",
     )
-    parser.add_argument("--gamma", type=float, default=0.99, help="Facteur de discount")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument(
-        "--epsilon", type=float, default=1.0, help="Epsilon initial pour l'exploration"
-    )
-    parser.add_argument(
-        "--epsilon_decay", type=float, default=0.995, help="Facteur de décroissance d'epsilon"
+        "--epsilon", type=float, default=1.0, help="Initial epsilon for exploration"
     )
     parser.add_argument(
-        "--epsilon_min", type=float, default=0.01, help="Epsilon minimum pour l'exploration"
+        "--epsilon_decay", type=float, default=0.995, help="Epsilon decay factor"
     )
-    parser.add_argument("--memory_size", type=int, default=20000, help="Taille du replay buffer")
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Taille des batches d'entraînement"
+        "--epsilon_min", type=float, default=0.01, help="Minimum epsilon for exploration"
+    )
+    parser.add_argument("--memory_size", type=int, default=20000, help="Replay buffer size")
+    parser.add_argument(
+        "--batch_size", type=int, default=32, help="Training batch size"
     )
 
-    # Arguments de contrôle
+    # Control arguments
     parser.add_argument(
         "--skip_pretraining",
         action="store_true",
-        help="Ignorer la phase de pré-entraînement",
+        help="Skip the pretraining phase",
     )
     parser.add_argument(
         "--pretraining_only",
         action="store_true",
-        help="Faire seulement la phase de pré-entraînement",
+        help="Do only the pretraining phase",
     )
     parser.add_argument(
-        "--model_dir", type=str, default="models", help="Répertoire de sauvegarde des modèles"
+        "--model_dir", type=str, default="models", help="Model save directory"
     )
     parser.add_argument(
-        "--plot", action="store_true", help="Afficher les graphiques d'entraînement"
+        "--plot", action="store_true", help="Display training plots"
     )
 
     args = parser.parse_args()
 
-    # Créer le trainer avec pré-entraînement
+    # Create trainer with pretraining
     trainer = DQNPretrainer(
         episodes=args.episodes,
         pretraining_steps=args.pretraining_steps,
         model_dir=args.model_dir,
     )
 
-    # Configuration de l'agent
+    # Agent configuration
     agent_kwargs = {
         "tau": args.tau,
         "lr": args.lr,
@@ -574,12 +575,12 @@ def main():
     }
 
     print("🎯 Configuration:")
-    print(f"   Pré-entraînement: {args.pretraining_steps} étapes")
-    print(f"   Entraînement: {args.episodes} épisodes vs {args.opponent}")
-    print(f"   Sauvegarde: {args.model_dir}")
+    print(f"   Pretraining: {args.pretraining_steps} steps")
+    print(f"   Training: {args.episodes} episodes vs {args.opponent}")
+    print(f"   Save directory: {args.model_dir}")
     print()
 
-    # Entraîner l'agent
+    # Train the agent
     trainer.train_with_pretraining(
         opponent_type=args.opponent,
         agent_kwargs=agent_kwargs,
@@ -587,11 +588,11 @@ def main():
         pretraining_only=args.pretraining_only,
     )
 
-    # Afficher les graphiques si demandé
+    # Display plots if requested
     if args.plot:
         trainer.plot_full_training_results()
 
-    print("\n🎉 Entraînement avec pré-entraînement terminé avec succès!")
+    print("\n🎉 Training with pretraining completed successfully!")
 
 
 if __name__ == "__main__":

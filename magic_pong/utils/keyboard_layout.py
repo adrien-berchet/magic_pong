@@ -52,21 +52,22 @@ def get_config_file_path() -> Path:
     return config_dir / "user_config.json"
 
 
-def load_user_preferences() -> dict:
+def load_user_preferences() -> dict[str, str]:
     """Load user preferences from config file"""
     config_file = get_config_file_path()
 
     if config_file.exists():
         try:
             with open(config_file, encoding="utf-8") as f:
-                return json.load(f)
+                data: dict[str, str] = json.load(f)
+                return data
         except (OSError, json.JSONDecodeError):
             pass
 
     return {}
 
 
-def save_user_preferences(preferences: dict) -> None:
+def save_user_preferences(preferences: dict[str, str]) -> None:
     """Save user preferences to config file"""
     config_file = get_config_file_path()
 
@@ -125,7 +126,7 @@ def set_preferred_layout(layout: str) -> bool:
     return True
 
 
-def list_available_layouts() -> dict:
+def list_available_layouts() -> dict[str, str]:
     """Get all available keyboard layouts"""
     return {name: layout.name for name, layout in KEYBOARD_LAYOUTS.items()}
 

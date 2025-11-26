@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Any
 
 import numpy as np
+
 from magic_pong.utils.config import game_config
 
 
@@ -232,13 +233,13 @@ class Paddle:
 class Action:
     """Player action"""
 
-    move_x: int  # -1.0 or 1.0
-    move_y: int  # -1.0 or 1.0
+    move_x: float  # -1.0 to 1.0
+    move_y: float  # -1.0 to 1.0
 
     def __post_init__(self) -> None:
         # Clamp values between -1 and 1
-        self.move_x = max(-1, min(1, self.move_x))
-        self.move_y = max(-1, min(1, self.move_y))
+        self.move_x = float(max(-1, min(1, self.move_x)))
+        self.move_y = float(max(-1, min(1, self.move_y)))
 
 
 class Player(ABC):
