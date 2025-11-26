@@ -1,4 +1,4 @@
-models*
+/models
 *.code-workspace
 test_models
 
@@ -88,3 +88,7 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Backup files
+*.backup
+*_old.py
