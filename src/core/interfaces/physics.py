@@ -44,9 +44,7 @@ class PhysicsBackend(Protocol):
         """
         ...
 
-    def update(
-        self, dt: float, player1_action: Action, player2_action: Action
-    ) -> dict[str, Any]:
+    def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict[str, Any]:
         """
         Update physics simulation by one timestep.
 

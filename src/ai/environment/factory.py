@@ -4,13 +4,15 @@ Environment Factory - Easy creation of training environments with custom compone
 
 from typing import Any
 
+import numpy as np
 from magic_pong.ai.interfaces import (
+    DenseRewardCalculator,
     ObservationBuilder,
     RewardCalculator,
-    DenseRewardCalculator,
     SparseRewardCalculator,
     VectorObservationBuilder,
 )
+from magic_pong.core.entities import Action as GameAction
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config
 
@@ -198,15 +200,13 @@ class GameEnvironmentWrapper:
         Returns:
             Tuple of (observation, reward, done, info)
         """
-        from magic_pong.core.entities import Action as GameAction
-        import numpy as np
 
         # Convert action to game action
         if isinstance(action, GameAction):
             game_action = action
         elif isinstance(action, np.ndarray):
             game_action = GameAction(move_x=float(action[0]), move_y=float(action[1]))
-        elif isinstance(action, (list, tuple)):
+        elif isinstance(action, list | tuple):
             game_action = GameAction(move_x=float(action[0]), move_y=float(action[1]))
         else:
             raise TypeError(f"Unsupported action type: {type(action)}")
