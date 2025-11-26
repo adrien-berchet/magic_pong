@@ -33,6 +33,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pygame>=2.5.0",
     "numpy>=1.24.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -63,35 +64,13 @@ Documentation = "https://github.com/adrien-berchet/magic-pong#readme"
 "Bug Tracker" = "https://github.com/adrien-berchet/magic-pong/issues"
 
 [project.scripts]
-magic-pong-tournament = "magic_pong.ai.examples.ai_vs_ai:tournament"
-magic-pong-training = "magic_pong.ai.examples.ai_vs_ai:training"
+magic-pong-tournament = "magic_pong.ai.models.ai_vs_ai:tournament"
+magic-pong-training = "magic_pong.ai.models.ai_vs_ai:training"
 magic-pong-gui = "magic_pong.gui.game_app:main"
 magic-pong = "magic_pong.gui.game_app:main"
 
 [tool.setuptools]
-packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.examples", "magic_pong.utils", "magic_pong.gui"]
-
-[tool.setuptools.package-dir]
-"magic_pong" = "src"
-
-# Configuration for Black (code formatting)
-[tool.black]
-line-length = 100
-target-version = ['py310', 'py311', 'py312']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
+packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.models", "magic_pong.utils", "magic_pong.gui"]
 
 # Configuration for Ruff (linting)
 [tool.ruff]
@@ -111,6 +90,7 @@ select = [
 ignore = [
     "E501",  # line too long, handled by black
     "B008",  # do not perform function calls in argument defaults
+    "B905",
     "C901",  # too complex
 ]
 
@@ -137,6 +117,11 @@ strict_equality = true
 module = [
     "pygame.*",
     "numpy.*",
+    "pydantic.*",
+    "torch",
+    "torch.*",
+    "matplotlib",
+    "matplotlib.*",
 ]
 ignore_missing_imports = true
 

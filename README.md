@@ -56,7 +56,7 @@ make dev-setup
 
 ```python
 from src.core.game_engine import TrainingManager
-from src.ai.examples.simple_ai import create_ai
+from src.ai.models.simple_ai import create_ai
 
 # Create training manager
 trainer = TrainingManager(headless=True)
@@ -88,10 +88,10 @@ python examples/ai_vs_ai.py --mode training
 
 ```
 magic_pong/
-├── src/
+├── magic_pong/
 │   ├── core/           # Game engine and physics
 │   ├── ai/             # AI interface and examples
-│   ├── graphics/       # Graphics rendering (coming soon)
+│   ├── gui/            # Graphics rendering
 │   └── utils/          # Configuration and utilities
 ├── examples/           # Usage examples
 └── docs/              # Documentation
@@ -102,15 +102,15 @@ magic_pong/
 - **PhysicsEngine**: Manages game physics, collisions, bonuses
 - **GameEngine**: Orchestrates the game and manages players
 - **TrainingManager**: Optimized for AI training
-- **AIPlayer**: Abstract interface for AIs
+- **Player**: Abstract interface for players
 - **GameEnvironment**: Environment compatible with RL frameworks
 
 ## Configuration
 
-The game is highly configurable via [`src/utils/config.py`](src/utils/config.py):
+The game is highly configurable via [`magic_pong/utils/config.py`](magic_pong/utils/config.py):
 
 ```python
-from src.utils.config import game_config, ai_config
+from magic_pong.utils.config import game_config, ai_config
 
 # Game configuration
 game_config.FIELD_WIDTH = 800
@@ -125,10 +125,10 @@ ai_config.FAST_MODE_MULTIPLIER = 10.0
 ## Create a Custom AI
 
 ```python
-from src.ai.interface import AIPlayer
-from src.core.entities import Action
+from magic_pong.ai.interface import Player
+from magic_pong.core.entities import Action
 
-class MyAI(AIPlayer):
+class MyAI(Player):
     def get_action(self, observation):
         # Your logic here
         ball_pos = observation['ball_pos']
@@ -150,9 +150,9 @@ class MyAI(AIPlayer):
 ```python
 import torch
 import torch.nn as nn
-from src.ai.interface import AIPlayer
+from magic_pong.ai.interface import Player
 
-class PyTorchAI(AIPlayer):
+class PyTorchAI(Player):
     def __init__(self, player_id, model):
         super().__init__(player_id)
         self.model = model

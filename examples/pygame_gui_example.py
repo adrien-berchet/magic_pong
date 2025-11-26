@@ -1,5 +1,5 @@
 """
-Exemple simple de jeu Magic Pong avec interface graphique
+Simple Magic Pong game example with graphical interface
 """
 
 import sys
@@ -7,18 +7,18 @@ import sys
 try:
     from magic_pong.gui.game_app import MagicPongApp
 except ImportError as e:
-    print(f"Erreur: Impossible d'importer les modules requis: {e}")
-    print("Assurez-vous que pygame est installé: pip install pygame")
+    print(f"Error: Unable to import required modules: {e}")
+    print("Make sure pygame is installed: pip install pygame")
     sys.exit(1)
 
 
 def run_simple_game():
-    """Lance une partie simple en mode 1 vs 1"""
-    print("Lancement d'une partie Magic Pong 1 vs 1...")
+    """Launch a simple 1 vs 1 game"""
+    print("Launching a Magic Pong 1 vs 1 game...")
 
     app = MagicPongApp()
 
-    # Optionnel: démarrer directement en mode 1v1
+    # Optional: start directly in 1v1 mode
     # app.start_game_mode(GameMode.ONE_VS_ONE)
 
     app.run()

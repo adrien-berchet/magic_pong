@@ -1,4 +1,6 @@
-models*
+/models
+*.code-workspace
+test_models
 
 # macOS users
 .DS_Store
@@ -86,3 +88,7 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Backup files
+*.backup
+*_old.py
