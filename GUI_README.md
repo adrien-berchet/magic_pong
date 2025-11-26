@@ -91,7 +91,7 @@ Two AIs compete automatically. Ideal mode for observing AI behavior or for demon
 
 ## Customization
 
-You can modify the configuration in `src/utils/config.py`:
+You can modify the configuration in `magic_pong/utils/config.py`:
 
 - Field dimensions
 - Game speeds
@@ -103,7 +103,7 @@ You can modify the configuration in `src/utils/config.py`:
 ### Import error
 - Check that pygame is installed: `pip install pygame`
 - Make sure you're in the correct directory
-- Verify that the `src` module is accessible
+- Verify that the `magic_pong` module is accessible
 
 ### Performance
 - Use F2 to display FPS
