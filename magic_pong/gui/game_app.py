@@ -188,7 +188,7 @@ class MagicPongApp:
                 return {
                     "path": model_path,
                     "valid": False,
-                    "error": f'Missing required data: {", ".join(missing_keys)}',
+                    "error": f"Missing required data: {', '.join(missing_keys)}",
                 }
 
             # Get hyperparameters for compatibility check

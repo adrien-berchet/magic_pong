@@ -11,7 +11,6 @@ from magic_pong.utils.config import ai_config, game_config
 
 def training() -> None:
     """AI vs AI training example"""
-
     print("=== Magic Pong - AI vs AI Training ===")
 
     # Configuration for fast training
@@ -55,10 +54,10 @@ def training() -> None:
     print(f"Total episodes: {final_stats['episodes']}")
     print(f"Total steps: {final_stats['total_steps']}")
     print(
-        f"{player1.name} wins: {final_stats['player1_wins']} ({final_stats['player1_wins']/final_stats['episodes']*100:.1f}%)"
+        f"{player1.name} wins: {final_stats['player1_wins']} ({final_stats['player1_wins'] / final_stats['episodes'] * 100:.1f}%)"
     )
     print(
-        f"{player2.name} wins: {final_stats['player2_wins']} ({final_stats['player2_wins']/final_stats['episodes']*100:.1f}%)"
+        f"{player2.name} wins: {final_stats['player2_wins']} ({final_stats['player2_wins'] / final_stats['episodes'] * 100:.1f}%)"
     )
     print(f"Average episode length: {final_stats['average_episode_length']:.1f} steps")
     print(f"Average reward {player1.name}: {final_stats['average_rewards']['player1']:.3f}")

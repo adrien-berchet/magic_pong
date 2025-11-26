@@ -2,6 +2,7 @@
 """
 Utility to configure Magic Pong keyboard layout
 """
+
 from magic_pong.utils.keyboard_layout import (
     get_preferred_layout,
     list_available_layouts,

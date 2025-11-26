@@ -149,9 +149,9 @@ class TestPhysicsEngine:
 
         # Paddle should be constrained
         assert engine.player1.position.y >= 0, "Paddle should not go above field"
-        assert (
-            engine.player1.position.y <= 600 - game_config.PADDLE_HEIGHT
-        ), "Paddle should not go below field"
+        assert engine.player1.position.y <= 600 - game_config.PADDLE_HEIGHT, (
+            "Paddle should not go below field"
+        )
 
     def test_game_time_advances(self):
         """Test that game time advances with updates"""
@@ -268,18 +268,18 @@ class TestBonusSpawner:
                         + game_config.PADDLE_WIDTH
                         + game_config.BONUS_SIZE
                     )
-                    assert (
-                        bonus.position.x >= safe_margin
-                    ), f"Bonus too close to left edge: {bonus.position.x}"
-                    assert (
-                        bonus.position.x <= 800 - safe_margin
-                    ), f"Bonus too close to right edge: {bonus.position.x}"
+                    assert bonus.position.x >= safe_margin, (
+                        f"Bonus too close to left edge: {bonus.position.x}"
+                    )
+                    assert bonus.position.x <= 800 - safe_margin, (
+                        f"Bonus too close to right edge: {bonus.position.x}"
+                    )
 
                     # Check vertical position
                     assert bonus.position.y >= game_config.BONUS_SIZE, "Bonus too close to top"
-                    assert (
-                        bonus.position.y <= 600 - game_config.BONUS_SIZE
-                    ), "Bonus too close to bottom"
+                    assert bonus.position.y <= 600 - game_config.BONUS_SIZE, (
+                        "Bonus too close to bottom"
+                    )
         finally:
             game_config.BONUSES_ENABLED = original_enabled
 
@@ -301,14 +301,14 @@ class TestBonusSpawner:
 
                 # X positions should be symmetric
                 expected_right_x = 800 - left_bonus.position.x
-                assert (
-                    abs(right_bonus.position.x - expected_right_x) < 1
-                ), "Bonuses should be symmetric"
+                assert abs(right_bonus.position.x - expected_right_x) < 1, (
+                    "Bonuses should be symmetric"
+                )
 
                 # Y positions should be the same
-                assert (
-                    abs(right_bonus.position.y - left_bonus.position.y) < 0.1
-                ), "Bonuses should have same Y"
+                assert abs(right_bonus.position.y - left_bonus.position.y) < 0.1, (
+                    "Bonuses should have same Y"
+                )
 
                 # Same type
                 assert right_bonus.type == left_bonus.type, "Bonuses should be same type"
@@ -410,9 +410,9 @@ class TestPhysicsIntegration:
             if events["paddle_hits"]:
                 paddle_hit = True
                 # Velocity should be reversed
-                assert (
-                    engine.ball.velocity.x != initial_vx
-                ), "Ball velocity should change after paddle hit"
+                assert engine.ball.velocity.x != initial_vx, (
+                    "Ball velocity should change after paddle hit"
+                )
                 break
 
         assert paddle_hit, "Ball should hit paddle"

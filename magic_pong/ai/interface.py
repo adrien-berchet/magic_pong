@@ -101,8 +101,10 @@ class ObservationProcessor:
 
         ball_x, ball_y = game_state["ball_position"]
         player_x, player_y = game_state[f"player{player_id}_position"]
-        opponent_x, opponent_y = game_state[f"player{3-player_id}_position"]
-        opponent_previous_x, opponent_previous_y = game_state[f"player{3-player_id}_last_position"]
+        opponent_x, opponent_y = game_state[f"player{3 - player_id}_position"]
+        opponent_previous_x, opponent_previous_y = game_state[
+            f"player{3 - player_id}_last_position"
+        ]
 
         # Normalized positions
         if ai_config.NORMALIZE_POSITIONS:
@@ -132,7 +134,7 @@ class ObservationProcessor:
 
         # Paddle sizes
         observation["player_paddle_size"] = game_state[f"player{player_id}_paddle_size"]
-        observation["opponent_paddle_size"] = game_state[f"player{3-player_id}_paddle_size"]
+        observation["opponent_paddle_size"] = game_state[f"player{3 - player_id}_paddle_size"]
 
         # Active bonuses
         bonuses = []

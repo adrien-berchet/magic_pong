@@ -267,7 +267,7 @@ class DQNTrainer:
             # Periodic save
             if (episode + 1) % self.save_interval == 0:
                 model_path = os.path.join(
-                    self.model_dir, f"checkpoint_ep{episode+1}_vs_{opponent_type}.pth"
+                    self.model_dir, f"checkpoint_ep{episode + 1}_vs_{opponent_type}.pth"
                 )
                 dqn_agent.save_model(model_path)
 
@@ -421,9 +421,7 @@ Final win rate: {self.win_rates[-1]:.1%}"""
 def main() -> None:
     """Main training function"""
     parser = argparse.ArgumentParser(description="DQN AI training for Magic Pong")
-    parser.add_argument(
-        "--episodes", type=int, default=1000, help="Number of training episodes"
-    )
+    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes")
     parser.add_argument(
         "--opponent",
         type=str,
@@ -436,13 +434,9 @@ def main() -> None:
     parser.add_argument(
         "--epsilon", type=float, default=1.0, help="Initial epsilon for exploration"
     )
-    parser.add_argument(
-        "--epsilon_decay", type=float, default=0.995, help="Epsilon decay factor"
-    )
+    parser.add_argument("--epsilon_decay", type=float, default=0.995, help="Epsilon decay factor")
     parser.add_argument("--memory_size", type=int, default=10000, help="Replay buffer size")
-    parser.add_argument(
-        "--batch_size", type=int, default=32, help="Training batch size"
-    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
     parser.add_argument(
         "--use_prioritized_replay",
         action="store_true",
@@ -454,9 +448,7 @@ def main() -> None:
     parser.add_argument(
         "--model_dir", type=str, default="models", help="Directory for saving models"
     )
-    parser.add_argument(
-        "--plot", action="store_true", help="Display training graphs"
-    )
+    parser.add_argument("--plot", action="store_true", help="Display training graphs")
     parser.add_argument(
         "--resume",
         action="store_true",

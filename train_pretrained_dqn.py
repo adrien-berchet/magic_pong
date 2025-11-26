@@ -97,9 +97,7 @@ class DQNPretrainer:
         ai_config.PROXIMITY_PENALTY_FACTOR = 1
         ai_config.MAX_PROXIMITY_REWARD = 1000
         ai_config.HEADLESS_MODE = True
-        ai_config.FAST_MODE_MULTIPLIER = (
-            1.0  # No need for high speed during pretraining
-        )
+        ai_config.FAST_MODE_MULTIPLIER = 1.0  # No need for high speed during pretraining
         game_config.GAME_SPEED_MULTIPLIER = 5.0
         game_config.FPS = 300.0
 
@@ -126,9 +124,7 @@ class DQNPretrainer:
 
             elapsed_time = time.time() - start_time
             print(f"\n✅ Pretraining completed in {elapsed_time:.1f}s")
-            print(
-                f"   Proximity reward improvement: {pretraining_stats['average_reward']:.3f}"
-            )
+            print(f"   Proximity reward improvement: {pretraining_stats['average_reward']:.3f}")
             print("   Agent ready for main training!")
 
             return pretraining_stats
@@ -244,7 +240,7 @@ class DQNPretrainer:
             # Periodic save
             if (episode + 1) % self.save_interval == 0:
                 model_path = os.path.join(
-                    self.model_dir, f"checkpoint_pretrained_ep{episode+1}_vs_{opponent_type}.pth"
+                    self.model_dir, f"checkpoint_pretrained_ep{episode + 1}_vs_{opponent_type}.pth"
                 )
                 dqn_agent.save_model(model_path)
 
@@ -376,9 +372,7 @@ Steps: {len(rewards)}"""
         # Main training
         if self.training_rewards:
             training_x = np.arange(len(self.training_rewards))
-            plt.plot(
-                training_x, self.training_rewards, alpha=0.7, color="red", label="Training"
-            )
+            plt.plot(training_x, self.training_rewards, alpha=0.7, color="red", label="Training")
 
             # Moving average for training
             window_size = min(50, len(self.training_rewards) // 5)
@@ -524,16 +518,12 @@ def main():
     parser.add_argument(
         "--epsilon", type=float, default=1.0, help="Initial epsilon for exploration"
     )
-    parser.add_argument(
-        "--epsilon_decay", type=float, default=0.995, help="Epsilon decay factor"
-    )
+    parser.add_argument("--epsilon_decay", type=float, default=0.995, help="Epsilon decay factor")
     parser.add_argument(
         "--epsilon_min", type=float, default=0.01, help="Minimum epsilon for exploration"
     )
     parser.add_argument("--memory_size", type=int, default=20000, help="Replay buffer size")
-    parser.add_argument(
-        "--batch_size", type=int, default=32, help="Training batch size"
-    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
 
     # Control arguments
     parser.add_argument(
@@ -546,12 +536,8 @@ def main():
         action="store_true",
         help="Do only the pretraining phase",
     )
-    parser.add_argument(
-        "--model_dir", type=str, default="models", help="Model save directory"
-    )
-    parser.add_argument(
-        "--plot", action="store_true", help="Display training plots"
-    )
+    parser.add_argument("--model_dir", type=str, default="models", help="Model save directory")
+    parser.add_argument("--plot", action="store_true", help="Display training plots")
 
     args = parser.parse_args()
 

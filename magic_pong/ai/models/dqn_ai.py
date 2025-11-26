@@ -380,9 +380,7 @@ class DQNNetwork(nn.Module):
 
         for fc, ln, dropout in zip(self.fc_layers, self.layer_norms, self.dropouts):
             x = fc(x)
-            if (
-                self.use_normalization and x.size(0) > 1
-            ):  # LayerNorm requires more than one sample
+            if self.use_normalization and x.size(0) > 1:  # LayerNorm requires more than one sample
                 x = ln(x)
             x = F.relu(x)
             x = dropout(x)

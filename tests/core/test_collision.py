@@ -223,9 +223,9 @@ class TestCollisionDetector:
 
         collision_type = detector.check_ball_walls(ball, 800, 600)
 
-        assert (
-            collision_type == "bottom"
-        ), f"Should detect bottom wall collision, got {collision_type}"
+        assert collision_type == "bottom", (
+            f"Should detect bottom wall collision, got {collision_type}"
+        )
 
     def test_goal_left(self):
         """Test ball going into left goal"""
@@ -409,9 +409,9 @@ class TestSpeedClamping:
         ball.bounce_vertical()
 
         speed = ball.velocity.magnitude()
-        assert (
-            speed <= game_config.MAX_BALL_SPEED
-        ), f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+        assert speed <= game_config.MAX_BALL_SPEED, (
+            f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+        )
 
     def test_bounce_horizontal_clamps_speed(self):
         """Test that horizontal bounce clamps excessive speed"""
@@ -423,9 +423,9 @@ class TestSpeedClamping:
         ball.bounce_horizontal()
 
         speed = ball.velocity.magnitude()
-        assert (
-            speed <= game_config.MAX_BALL_SPEED
-        ), f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+        assert speed <= game_config.MAX_BALL_SPEED, (
+            f"Speed should be clamped to {game_config.MAX_BALL_SPEED}, got {speed}"
+        )
 
     def test_normal_speed_not_affected(self):
         """Test that normal speed is not changed by clamping"""

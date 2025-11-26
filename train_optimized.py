@@ -272,7 +272,9 @@ def train_phase(
                     # Verbose dual-scale statistics
                     if args.verbose:
                         print(f"    🎯 Tactical LR: {training_stats['tactical_optimizer_lr']:.6f}")
-                        print(f"    🧠 Strategic LR: {training_stats['strategic_optimizer_lr']:.6f}")
+                        print(
+                            f"    🧠 Strategic LR: {training_stats['strategic_optimizer_lr']:.6f}"
+                        )
                         print(f"    📚 Training mode: {training_stats['training_mode']}")
                         print(
                             f"    📊 Episode buffer: {training_stats['episode_buffer_size']} experiences"
@@ -1150,7 +1152,7 @@ def create_progressive_training_plots(all_phase_data, args):
     for i, phase_data in enumerate(all_phase_data):
         all_rewards.extend(phase_data["rewards"])
         phase_boundaries.append(len(all_rewards))
-        phase_labels.append(f"Phase {i+1}: {phase_data['name']}")
+        phase_labels.append(f"Phase {i + 1}: {phase_data['name']}")
 
     episodes = range(len(all_rewards))
 
@@ -1286,7 +1288,7 @@ def create_phase_breakdown_plot(all_phase_data, args):
         rewards = phase_data["rewards"]
         if not rewards:
             ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes)
-            ax.set_title(f"Phase {i+1}: {phase_data['name']}")
+            ax.set_title(f"Phase {i + 1}: {phase_data['name']}")
             continue
 
         episodes = range(len(rewards))
@@ -1315,7 +1317,7 @@ def create_phase_breakdown_plot(all_phase_data, args):
         win_rate = phase_data["wins"] / phase_data["episodes"] * 100
 
         ax.set_title(
-            f"Phase {i+1}: {phase_data['name']}\n"
+            f"Phase {i + 1}: {phase_data['name']}\n"
             f"Win Rate: {win_rate:.1f}% | Objective: {phase_data['objective']}"
         )
         ax.set_xlabel("Episode")
@@ -1938,10 +1940,10 @@ def main():
     training_time = time.time() - start_time
 
     # Print training summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("TRAINING SUMMARY")
-    print(f"{'='*60}")
-    print(f"Training time: {training_time/60:.1f} minutes")
+    print(f"{'=' * 60}")
+    print(f"Training time: {training_time / 60:.1f} minutes")
     print(f"Total episodes: {training_results['total_episodes']}")
 
     if args.mode == "curriculum":
@@ -1997,9 +1999,9 @@ def main():
     if args.evaluate:
         eval_results = evaluate_final_performance(agent, args)
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("FINAL EVALUATION")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         for opponent, results in eval_results.items():
             print(
                 f"{opponent:12}: {results['win_rate']:5.1f}% wins, {results['avg_reward']:6.2f} avg reward"
