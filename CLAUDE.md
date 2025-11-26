@@ -11,21 +11,31 @@ This document provides comprehensive guidance for AI assistants (like Claude) wo
 - **AI-first design**: Headless mode, fast training (up to 1000x speed), framework-agnostic interface
 - **Modern Python architecture**: Type hints, modular design, comprehensive testing
 
-**Tech Stack**: Python 3.10+, pygame, numpy, PyTorch (optional), Gymnasium (optional)
+**Tech Stack**: Python 3.10+, pygame, numpy, pydantic, PyTorch (optional), Gymnasium (optional)
 
 ## Repository Structure
 
 ```
 magic_pong/
-├── src/                          # Source code (magic_pong package)
+├── magic_pong/                   # Main source package
 │   ├── core/                     # Core game engine
 │   │   ├── entities.py          # Game entities (Ball, Paddle, Bonus, etc.)
 │   │   ├── physics.py           # Physics engine and collision detection
 │   │   ├── game_engine.py       # Main game orchestration
-│   │   └── collision.py         # Advanced collision algorithms
-│   ├── ai/                       # AI interface and examples
-│   │   ├── interface.py         # Base AIPlayer class and environment
-│   │   └── examples/            # Example AI implementations
+│   │   ├── collision.py         # Advanced collision algorithms
+│   │   └── interfaces/          # Protocol definitions
+│   │       ├── player.py        # PlayerProtocol for polymorphic players
+│   │       ├── physics.py       # PhysicsEngine protocol
+│   │       └── renderer.py      # Renderer protocol
+│   ├── ai/                       # AI interface and implementations
+│   │   ├── interface.py         # Base AIPlayer class (backward compat)
+│   │   ├── pretraining.py       # Pretraining utilities
+│   │   ├── interfaces/          # Protocol-based interfaces
+│   │   │   ├── observation.py   # ObservationBuilder protocol
+│   │   │   └── reward.py        # RewardCalculator protocol
+│   │   ├── environment/         # Environment creation and management
+│   │   │   └── factory.py       # EnvironmentFactory for easy setup
+│   │   └── models/              # AI implementations (formerly examples/)
 │   │       ├── simple_ai.py     # Rule-based AIs (Random, Defensive, etc.)
 │   │       ├── dqn_ai.py        # Deep Q-Network implementation
 │   │       ├── ai_vs_ai.py      # AI tournament and training scripts
@@ -43,13 +53,18 @@ magic_pong/
 │   ├── game_modes_demo.py
 │   └── pygame_gui_example.py
 ├── train_optimized.py           # Optimized training script
+├── train_pretrained_dqn.py      # Pretrained DQN training
 ├── play_pong.py                 # Play against AI
 ├── configure_keyboard.py        # Keyboard layout configuration
+├── ARCHITECTURE_ANALYSIS.md     # Architecture documentation
+├── AI_REFACTOR_PLAN.md          # AI module refactoring plan
+├── USAGE_EXAMPLES.md            # Usage examples documentation
 ├── pyproject.toml               # Project metadata and tool config
 ├── requirements.txt             # Python dependencies
 ├── Makefile                     # Development commands
 ├── tox.ini                      # Multi-version testing config
 ├── .pre-commit-config.yaml      # Pre-commit hooks
+├── .codespellignorelines        # Codespell ignore list
 └── .github/workflows/ci.yml     # CI/CD pipeline
 
 ```
@@ -58,7 +73,7 @@ magic_pong/
 
 ### 1. Core Game Components
 
-**Entities** (`src/core/entities.py`):
+**Entities** (`magic_pong/core/entities.py`):
 - `Ball`: Game ball with position, velocity, collision detection
 - `Paddle`: Player paddle with movement constraints and size effects
 - `RotatingPaddle`: Bonus rotating paddle with angle and collision segments
@@ -67,37 +82,70 @@ magic_pong/
 - `Action`: Player action with normalized movement (-1 to 1)
 - `GameState`: Complete game state snapshot for AI
 
-**Physics Engine** (`src/core/physics.py`):
+**Physics Engine** (`magic_pong/core/physics.py`):
 - Handles all game physics, collisions, and bonus management
 - Separates concerns between physics simulation and rendering
 - Manages events (goals, hits, bonus collection) for AI reward calculation
 
-**Game Engine** (`src/core/game_engine.py`):
+**Game Engine** (`magic_pong/core/game_engine.py`):
 - Orchestrates game flow and player interactions
 - `TrainingManager`: Optimized headless training mode
 - Supports variable speed for fast AI training
 
-### 2. AI Interface
+**Core Interfaces** (`magic_pong/core/interfaces/`):
+- `PlayerProtocol`: Enables polymorphic player handling (human, AI, random)
+- `PhysicsEngine`: Protocol for physics engine implementations
+- `Renderer`: Protocol for different rendering backends
 
-**Base Classes** (`src/ai/interface.py`):
+### 2. AI Interface (Refactored Architecture)
+
+**Legacy Interface** (`magic_pong/ai/interface.py`):
+- Maintained for backward compatibility
+- Re-exports new protocol-based components
+
+**Protocol-Based Interfaces** (`magic_pong/ai/interfaces/`):
 
 ```python
-class AIPlayer(ABC):
-    @abstractmethod
-    def get_action(self, observation: dict) -> Action:
-        """Return action based on observation"""
-        pass
+# Observation Builder Protocol
+class ObservationBuilder(Protocol):
+    def build_observation(self, game_state: dict, player_id: int) -> np.ndarray:
+        """Build observation array from game state"""
+        ...
 
-    @abstractmethod
-    def on_step(self, observation, action, reward, done, info):
-        """Called after each step for learning"""
-        pass
+    @property
+    def observation_size(self) -> int:
+        """Get observation dimension"""
+        ...
+
+# Reward Calculator Protocol
+class RewardCalculator(Protocol):
+    def calculate_reward(self, game_state: dict, events: dict, player_id: int) -> float:
+        """Calculate reward for a player"""
+        ...
 ```
 
-**Key AI Components**:
-- `ObservationProcessor`: Normalizes game state for AI consumption
-- `RewardCalculator`: Computes rewards based on events and proximity
-- `GameEnvironment`: Gym-like environment wrapper for RL frameworks
+**Implementations**:
+- `VectorObservationBuilder`: Flat vector observations (positions, velocities)
+- `SparseRewardCalculator`: Only goal-based rewards (+1/-1)
+- `DenseRewardCalculator`: Includes hit rewards, bonus collection, proximity
+
+**Environment Factory** (`magic_pong/ai/environment/factory.py`):
+- Easy environment creation with custom components
+- Experiment with different reward functions and observation spaces
+- Sensible defaults for quick prototyping
+
+```python
+from magic_pong.ai.environment import EnvironmentFactory
+
+# Simple creation with defaults
+env = EnvironmentFactory.create_default(physics_engine)
+
+# Custom reward function
+env = EnvironmentFactory.create(
+    physics_engine,
+    reward_calculator=DenseRewardCalculator(hit_reward=0.2)
+)
+```
 
 **Observation Structure**:
 ```python
@@ -124,7 +172,7 @@ class AIPlayer(ABC):
 
 ### 3. Configuration System
 
-All configuration is centralized in `src/utils/config.py`:
+All configuration is centralized in `magic_pong/utils/config.py`:
 
 ```python
 from magic_pong.utils.config import game_config, ai_config
@@ -171,10 +219,11 @@ make pre-commit-install
 4. **Docstrings**: Required for public APIs (Google/NumPy style)
 
 **Quality Tools**:
-- **Black**: Code formatting (automatic, opinionated)
-- **Ruff**: Fast linting (replaces flake8, isort, pyupgrade)
+- **Ruff**: Fast linting and formatting (replaces flake8, isort, pyupgrade, black)
 - **MyPy**: Static type checking with strict settings
 - **Pytest**: Testing framework with coverage tracking
+- **Codespell**: Spell checking for code and documentation
+- **Pre-commit**: Automated quality checks before commits
 
 ### Common Development Commands
 
@@ -238,7 +287,7 @@ pytest tests/ -m "not slow"                     # Skip slow tests
 
 **Pre-commit Hooks**:
 - Automatically run on commit
-- Checks: trailing whitespace, YAML syntax, Black formatting, Ruff linting, MyPy types
+- Checks: trailing whitespace, YAML syntax, Ruff linting, MyPy types, Codespell
 - Fix issues before committing or use `git commit --no-verify` (discouraged)
 
 ### CI/CD Pipeline
@@ -291,19 +340,41 @@ make test          # Ensure tests pass
 ### Common Patterns
 
 **Adding a new AI**:
-1. Create class inheriting from `AIPlayer` in `src/ai/examples/`
+1. Create class inheriting from `AIPlayer` in `magic_pong/ai/models/`
 2. Implement `get_action()` and `on_step()` methods
-3. Add example usage in `src/ai/examples/ai_vs_ai.py`
+3. Add example usage in `magic_pong/ai/models/ai_vs_ai.py`
 4. Document in README.md
 
+**Using the new protocol-based interfaces**:
+```python
+from magic_pong.ai.interfaces import ObservationBuilder, RewardCalculator
+from magic_pong.ai.environment import EnvironmentFactory
+
+# Create custom observation builder
+class CustomObservationBuilder(ObservationBuilder):
+    def build_observation(self, game_state, player_id):
+        # Your custom observation logic
+        return observation_array
+
+    @property
+    def observation_size(self) -> int:
+        return 42  # Your observation dimension
+
+# Use it with the factory
+env = EnvironmentFactory.create(
+    physics_engine,
+    observation_builder=CustomObservationBuilder()
+)
+```
+
 **Adding a new bonus type**:
-1. Add enum value to `BonusType` in `src/core/entities.py`
-2. Implement effect in `PhysicsEngine._apply_bonus_effect()` in `src/core/physics.py`
-3. Add color to `game_config.BONUS_COLORS` in `src/utils/config.py`
-4. Update rendering in `src/gui/pygame_renderer.py`
+1. Add enum value to `BonusType` in `magic_pong/core/entities.py`
+2. Implement effect in `PhysicsEngine._apply_bonus_effect()` in `magic_pong/core/physics.py`
+3. Add color to `game_config.BONUS_COLORS` in `magic_pong/utils/config.py`
+4. Update rendering in `magic_pong/gui/pygame_renderer.py`
 
 **Adding configuration options**:
-1. Add field to `GameConfig` or `AIConfig` in `src/utils/config.py`
+1. Add field to `GameConfig` or `AIConfig` in `magic_pong/utils/config.py`
 2. Use the config value in relevant code
 3. Document in README.md with example usage
 
@@ -416,18 +487,26 @@ def test_new_bonus_effect():
 
 **Dependency graph**:
 ```
+core/interfaces/ (protocol definitions, no dependencies)
+    ↓
 entities.py (no dependencies except config)
     ↓
-physics.py (uses entities)
+physics.py (uses entities, implements PhysicsEngine protocol)
     ↓
-game_engine.py (uses physics)
+game_engine.py (uses physics, PlayerProtocol)
     ↓
-interface.py (uses game_engine)
+ai/interfaces/ (observation & reward protocols)
     ↓
-AI implementations (use interface)
+ai/environment/ (uses protocols, provides EnvironmentFactory)
+    ↓
+ai/models/ (AI implementations, use environment & interfaces)
 ```
 
-**Keep this order** - don't create circular dependencies.
+**Key Design Principles**:
+- **Protocol-based**: Use protocols for dependency inversion
+- **No circular dependencies**: Keep strict module hierarchy
+- **Separation of concerns**: Core, AI, and GUI are independent
+- **Backward compatibility**: Legacy interfaces re-export new components
 
 ## Troubleshooting Common Issues
 
@@ -445,7 +524,7 @@ python -c "import magic_pong; print(magic_pong.__file__)"
 
 ```bash
 # Run MyPy on specific file
-mypy src/core/entities.py
+mypy magic_pong/core/entities.py
 
 # Common fixes:
 # - Add type: ignore comments for third-party libraries
@@ -480,13 +559,69 @@ pytest tests/ --cov=magic_pong --cov-report=html
 open htmlcov/index.html
 ```
 
+## Working with Protocol-Based Architecture
+
+The codebase has been refactored to use Python protocols for better extensibility and testability.
+
+### Key Protocols
+
+**PlayerProtocol** (`magic_pong/core/interfaces/player.py`):
+- Enables polymorphic player handling
+- All players (human, AI, random) implement the same interface
+- Game engine doesn't need to know player type
+
+**ObservationBuilder** (`magic_pong/ai/interfaces/observation.py`):
+- Customize how game state is converted to observations
+- Easy to experiment with different observation spaces
+- Examples: vector-based, image-based, history-based
+
+**RewardCalculator** (`magic_pong/ai/interfaces/reward.py`):
+- Customize reward functions for training
+- Examples: sparse (goals only), dense (hits + bonuses), shaped (proximity)
+- Protocol-based design allows easy A/B testing
+
+### Using the EnvironmentFactory
+
+The factory pattern simplifies environment creation:
+
+```python
+from magic_pong.ai.environment import EnvironmentFactory
+from magic_pong.ai.interfaces import DenseRewardCalculator
+
+# Quick start with defaults
+env = EnvironmentFactory.create_default(physics_engine)
+
+# Custom configuration
+env = EnvironmentFactory.create(
+    physics=physics_engine,
+    headless=True,
+    player_id=1,
+    reward_calculator=DenseRewardCalculator(
+        goal_reward=1.0,
+        hit_reward=0.2,
+        bonus_reward=0.3
+    )
+)
+```
+
+### Backward Compatibility
+
+The refactoring maintains backward compatibility:
+- `magic_pong/ai/interface.py` still exists and re-exports components
+- Existing code using `AIPlayer`, `ObservationProcessor`, etc. continues to work
+- New code should prefer protocol-based interfaces for better extensibility
+
 ## Resources and References
 
 - **README.md**: User-facing documentation and quickstart
 - **GUI_README.md**: GUI-specific documentation
+- **ARCHITECTURE_ANALYSIS.md**: Detailed architecture analysis and design decisions
+- **AI_REFACTOR_PLAN.md**: AI module refactoring plan and protocol-based design
+- **USAGE_EXAMPLES.md**: Comprehensive usage examples
 - **pyproject.toml**: All tool configurations
-- **examples/**: Working code examples
-- **src/ai/examples/**: AI implementation patterns
+- **examples/**: Working code examples (game modes, pygame GUI)
+- **magic_pong/ai/models/**: AI implementation patterns
+- **magic_pong/ai/interfaces/**: Protocol definitions for extensibility
 
 ## Contributing Checklist
 
@@ -510,10 +645,16 @@ Before submitting changes:
 - **Package Name**: magic-pong
 - **Current Version**: 0.1.0 (Alpha)
 - **Author**: Adrien Berchet
+- **Key Dependencies**:
+  - pygame >= 2.5.0 (game rendering)
+  - numpy >= 1.24.0 (numerical operations)
+  - pydantic >= 2.0.0 (data validation)
+  - torch >= 2.0.0 (optional, for neural networks)
+  - gymnasium >= 0.29.0 (optional, for RL environments)
 
 ---
 
-**Last Updated**: 2025-11-26
+**Last Updated**: 2025-11-26 (Post-refactoring to protocol-based architecture)
 
 This document should be updated when:
 - Major architectural changes occur
