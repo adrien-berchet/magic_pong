@@ -2,7 +2,8 @@
 Player protocol - defines interface for all player types (human, AI, etc.)
 """
 
-from typing import Any, Protocol
+from typing import Any
+from typing import Protocol
 
 from magic_pong.core.entities import Action
 

@@ -7,9 +7,11 @@ from typing import Any
 
 import numpy as np
 
-from magic_pong.core.entities import Action, Player
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Player
 from magic_pong.core.physics import PhysicsEngine
-from magic_pong.utils.config import ai_config, game_config
+from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import game_config
 
 
 class AIPlayer(Player):

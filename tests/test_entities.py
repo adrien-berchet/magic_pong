@@ -2,7 +2,10 @@
 Tests for Magic Pong game entities
 """
 
-from magic_pong.core.entities import Action, Ball, Paddle, Vector2D
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import Vector2D
 
 
 class TestVector2D:

@@ -7,8 +7,13 @@ from typing import Any
 
 import pygame
 
-from magic_pong.core.entities import Ball, Bonus, BonusType, Paddle, RotatingPaddle
-from magic_pong.utils.config import ai_config, game_config
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Bonus
+from magic_pong.core.entities import BonusType
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import RotatingPaddle
+from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import game_config
 
 
 class PygameRenderer:
@@ -255,6 +260,7 @@ class PygameRenderer:
             "1 vs AI (Player vs AI)",
             "Play vs Trained Model",
             "AI vs AI (Demonstration)",
+            "Settings",
             "Quit",
         ]
 
@@ -533,6 +539,206 @@ class PygameRenderer:
     def toggle_debug_display(self) -> None:
         """Toggle debug information display"""
         self.show_debug = not self.show_debug
+
+    def draw_config_category_menu(self, categories: list, selected_index: int) -> None:
+        """Draw the configuration category selection menu"""
+        self.clear_screen()
+
+        # Title
+        title_surface = self.font_large.render("SETTINGS", True, self.text_color)
+        title_rect = title_surface.get_rect()
+        title_rect.center = (self.width // 2, self.height // 6)
+        self.screen.blit(title_surface, title_rect)
+
+        # Categories
+        start_y = self.height // 3
+        for i, category_name in enumerate(categories):
+            color = (255, 255, 0) if i == selected_index else self.text_color
+            category_surface = self.font_medium.render(category_name, True, color)
+            category_rect = category_surface.get_rect()
+            category_rect.center = (self.width // 2, start_y + i * 60)
+            self.screen.blit(category_surface, category_rect)
+
+        # Instructions
+        instructions = [
+            "Use UP/DOWN to navigate",
+            "Press ENTER to select category",
+            "Press S to SAVE configuration",
+            "Press R to RESET to defaults",
+            "Press ESC to return to menu",
+        ]
+
+        inst_y = self.height * 4 // 5
+        for i, instruction in enumerate(instructions):
+            inst_surface = self.font_small.render(instruction, True, self.text_color)
+            inst_rect = inst_surface.get_rect()
+            inst_rect.center = (self.width // 2, inst_y + i * 25)
+            self.screen.blit(inst_surface, inst_rect)
+
+    def draw_config_option_menu(
+        self,
+        category_name: str,
+        options: list[dict],
+        selected_index: int,
+        is_editing: bool = False,
+    ) -> None:
+        """Draw the configuration options menu for a specific category"""
+        self.clear_screen()
+
+        # Title
+        title_surface = self.font_large.render(f"{category_name} Settings", True, self.text_color)
+        title_rect = title_surface.get_rect()
+        title_rect.center = (self.width // 2, 60)
+        self.screen.blit(title_surface, title_rect)
+
+        # Options
+        start_y = 140
+        max_visible = 8  # Maximum options visible at once
+
+        # Calculate scroll offset
+        scroll_offset = 0
+        if selected_index >= max_visible - 1:
+            scroll_offset = selected_index - max_visible + 1
+
+        for i in range(max_visible):
+            option_index = i + scroll_offset
+            if option_index >= len(options):
+                break
+
+            option = options[option_index]
+            is_selected = option_index == selected_index
+            y_pos = start_y + i * 55
+
+            # Option label
+            label_color = (255, 255, 0) if is_selected else self.text_color
+            if is_editing and is_selected:
+                label_color = (0, 255, 0)  # Green when editing
+
+            label_surface = self.font_medium.render(option["label"], True, label_color)
+            label_rect = label_surface.get_rect()
+            label_rect.midleft = (100, y_pos)
+            self.screen.blit(label_surface, label_rect)
+
+            # Option value
+            value_text = self._format_config_value(option["value"], option["field_type"])
+            value_color = (0, 255, 0) if (is_editing and is_selected) else (200, 200, 200)
+            value_surface = self.font_medium.render(value_text, True, value_color)
+            value_rect = value_surface.get_rect()
+            value_rect.midright = (self.width - 100, y_pos)
+            self.screen.blit(value_surface, value_rect)
+
+            # Show range for selected numeric options
+            if is_selected and option["field_type"] == "numeric":
+                range_text = f"[{option['min_value']:.0f} - {option['max_value']:.0f}]"
+                range_surface = self.font_small.render(range_text, True, (150, 150, 150))
+                range_rect = range_surface.get_rect()
+                range_rect.midright = (self.width - 100, y_pos + 25)
+                self.screen.blit(range_surface, range_rect)
+
+        # Scroll indicators
+        if scroll_offset > 0:
+            up_arrow = self.font_small.render("↑ More options above", True, (150, 150, 150))
+            up_rect = up_arrow.get_rect()
+            up_rect.center = (self.width // 2, start_y - 20)
+            self.screen.blit(up_arrow, up_rect)
+
+        if scroll_offset + max_visible < len(options):
+            down_arrow = self.font_small.render("↓ More options below", True, (150, 150, 150))
+            down_rect = down_arrow.get_rect()
+            down_rect.center = (self.width // 2, start_y + max_visible * 55 + 10)
+            self.screen.blit(down_arrow, down_rect)
+
+        # Instructions
+        inst_y = self.height - 120
+        if is_editing:
+            instructions = [
+                "LEFT/RIGHT to change value",
+                "ENTER to confirm",
+                "ESC to cancel",
+            ]
+        else:
+            instructions = [
+                "UP/DOWN to navigate",
+                "ENTER to edit value",
+                "ESC to return",
+            ]
+
+        for i, instruction in enumerate(instructions):
+            inst_surface = self.font_small.render(instruction, True, self.text_color)
+            inst_rect = inst_surface.get_rect()
+            inst_rect.center = (self.width // 2, inst_y + i * 25)
+            self.screen.blit(inst_surface, inst_rect)
+
+    def _format_config_value(self, value: Any, field_type: str) -> str:
+        """Format a configuration value for display"""
+        if field_type == "boolean":
+            return "ON" if value else "OFF"
+        elif field_type == "numeric":
+            if isinstance(value, float):
+                return f"{value:.2f}"
+            return str(value)
+        elif field_type == "selection":
+            return str(value).upper()
+        else:
+            return str(value)
+
+    def draw_confirmation_dialog(self, message: str, title: str = "Confirm") -> None:
+        """Draw a confirmation dialog"""
+        # Semi-transparent overlay
+        overlay = pygame.Surface((self.width, self.height))
+        overlay.set_alpha(180)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+
+        # Dialog box
+        box_width = min(500, self.width - 100)
+        box_height = 200
+        box_x = (self.width - box_width) // 2
+        box_y = (self.height - box_height) // 2
+
+        dialog_box = pygame.Surface((box_width, box_height))
+        dialog_box.fill((40, 40, 40))
+        pygame.draw.rect(dialog_box, (255, 255, 0), dialog_box.get_rect(), 3)
+        self.screen.blit(dialog_box, (box_x, box_y))
+
+        # Title
+        title_surface = self.font_medium.render(title, True, (255, 255, 0))
+        title_rect = title_surface.get_rect()
+        title_rect.center = (self.width // 2, box_y + 40)
+        self.screen.blit(title_surface, title_rect)
+
+        # Message (word wrap)
+        words = message.split(" ")
+        lines = []
+        current_line: list[str] = []
+
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            text_width = self.font_small.size(test_line)[0]
+
+            if text_width <= box_width - 40:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [word]
+
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        # Display message
+        for i, line in enumerate(lines[:2]):  # Max 2 lines
+            line_surface = self.font_small.render(line, True, self.text_color)
+            line_rect = line_surface.get_rect()
+            line_rect.center = (self.width // 2, box_y + 85 + i * 30)
+            self.screen.blit(line_surface, line_rect)
+
+        # Instructions
+        confirm_text = "Press ENTER to confirm, ESC to cancel"
+        confirm_surface = self.font_small.render(confirm_text, True, (200, 200, 200))
+        confirm_rect = confirm_surface.get_rect()
+        confirm_rect.center = (self.width // 2, box_y + box_height - 30)
+        self.screen.blit(confirm_surface, confirm_rect)
 
     def cleanup(self) -> None:
         """Clean up PyGame resources"""

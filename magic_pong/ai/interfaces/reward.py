@@ -2,7 +2,8 @@
 Reward calculator protocol - enables custom reward functions for RL training
 """
 
-from typing import Any, Protocol
+from typing import Any
+from typing import Protocol
 
 
 class RewardCalculator(Protocol):

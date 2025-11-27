@@ -9,14 +9,14 @@ Tests the critical collision detection fixes including:
 
 import pytest
 
-from magic_pong.core.collision import (
-    CollisionDetector,
-    apply_paddle_bounce,
-    circle_rect_collision_at_position,
-    continuous_circle_paddle_collision,
-    get_paddle_collision_normal,
-)
-from magic_pong.core.entities import Ball, Paddle, Vector2D
+from magic_pong.core.collision import CollisionDetector
+from magic_pong.core.collision import apply_paddle_bounce
+from magic_pong.core.collision import circle_rect_collision_at_position
+from magic_pong.core.collision import continuous_circle_paddle_collision
+from magic_pong.core.collision import get_paddle_collision_normal
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import Vector2D
 
 
 class TestContinuousCollisionDetection:

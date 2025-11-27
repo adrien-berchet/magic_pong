@@ -6,7 +6,8 @@ from typing import Any
 
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
-from magic_pong.utils.config import ai_config, game_config
+from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import game_config
 
 
 def training() -> None:

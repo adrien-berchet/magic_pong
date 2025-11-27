@@ -7,7 +7,12 @@ import random
 from typing import Any
 
 from magic_pong.core.collision import CollisionDetector
-from magic_pong.core.entities import Action, Ball, Bonus, BonusType, Paddle, RotatingPaddle
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Bonus
+from magic_pong.core.entities import BonusType
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import RotatingPaddle
 from magic_pong.utils.config import game_config
 
 

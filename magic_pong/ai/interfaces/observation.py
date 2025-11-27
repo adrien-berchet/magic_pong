@@ -2,7 +2,8 @@
 Observation builder protocol - enables custom observation spaces for RL training
 """
 
-from typing import Any, Protocol
+from typing import Any
+from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt

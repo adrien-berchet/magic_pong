@@ -6,6 +6,8 @@ import os
 import sys
 import traceback
 from enum import Enum
+from typing import Any
+from typing import Literal
 
 import pygame
 
@@ -14,8 +16,17 @@ from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.core.entities import Player
 from magic_pong.core.game_engine import GameEngine
-from magic_pong.gui.human_player import HumanPlayer, InputManager, create_human_players
+from magic_pong.gui.human_player import HumanPlayer
+from magic_pong.gui.human_player import InputManager
+from magic_pong.gui.human_player import create_human_players
 from magic_pong.gui.pygame_renderer import PygameRenderer
+from magic_pong.utils.config import game_config
+from magic_pong.utils.config import load_config_from_file
+from magic_pong.utils.config_manager import CONFIG_CATEGORIES
+from magic_pong.utils.config_manager import ConfigCategory
+from magic_pong.utils.config_manager import ConfigFieldType
+from magic_pong.utils.config_manager import get_config_value
+from magic_pong.utils.config_manager import set_config_value
 
 
 class GameMode(Enum):
@@ -26,6 +37,7 @@ class GameMode(Enum):
     ONE_VS_AI = "1vAI"
     LOAD_MODEL = "load_model"
     AI_DEMO = "demo"
+    CONFIG = "config"
 
 
 class GameState(Enum):
@@ -33,6 +45,9 @@ class GameState(Enum):
 
     MENU = "menu"
     MODEL_SELECTION = "model_selection"
+    CONFIG_CATEGORY = "config_category"
+    CONFIG_OPTIONS = "config_options"
+    CONFIG_CONFIRM = "config_confirm"
     PLAYING = "playing"
     PAUSED = "paused"
     GAME_OVER = "game_over"
@@ -61,6 +76,7 @@ class MagicPongApp:
             ("1 vs AI (Player vs AI)", GameMode.ONE_VS_AI),
             ("Play vs Trained Model", GameMode.LOAD_MODEL),
             ("AI vs AI (Demonstration)", GameMode.AI_DEMO),
+            ("Settings", GameMode.CONFIG),
             ("Quit", None),
         ]
 
@@ -79,11 +95,23 @@ class MagicPongApp:
         # Players
         self.human_players: dict[int, HumanPlayer | None] = {1: None, 2: None}
 
+        # Configuration state
+        self.config_category_selected = 0
+        self.config_option_selected = 0
+        self.config_is_editing = False
+        self.config_current_category: ConfigCategory | None = None
+        self.config_edit_backup: Any | None = None
+        self.config_confirm_action: Literal["save", "reset"] | None = None
+
         print("Magic Pong initialized successfully!")
         print("Use arrows to navigate and ENTER to select")
 
         # Initialize available models
         self._discover_models()
+
+        # Try to load saved configuration
+        if load_config_from_file():
+            print("Loaded saved configuration")
 
     def start_game_mode(self, mode: GameMode) -> None:
         """Start a specific game mode"""
@@ -290,6 +318,11 @@ class MagicPongApp:
                 if selected_mode is None:
                     # Quit option
                     self.running = False
+                elif selected_mode == GameMode.CONFIG:
+                    # Enter configuration menu
+                    self.state = GameState.CONFIG_CATEGORY
+                    self.config_category_selected = 0
+                    print("Entering configuration menu")
                 elif selected_mode == GameMode.LOAD_MODEL:
                     # Switch to model selection screen
                     if self.available_models:
@@ -373,6 +406,155 @@ class MagicPongApp:
             if event.key == pygame.K_F1 or event.key == pygame.K_ESCAPE:
                 self.show_help = False
 
+    def handle_config_category_input(self, event: pygame.event.Event) -> None:
+        """Handle input in configuration category selection menu"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_UP:
+                self.config_category_selected = (self.config_category_selected - 1) % len(
+                    CONFIG_CATEGORIES
+                )
+            elif event.key == pygame.K_DOWN:
+                self.config_category_selected = (self.config_category_selected + 1) % len(
+                    CONFIG_CATEGORIES
+                )
+            elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                # Enter selected category
+                self.config_current_category = CONFIG_CATEGORIES[self.config_category_selected]
+                self.config_option_selected = 0
+                self.state = GameState.CONFIG_OPTIONS
+                print(f"Entering {self.config_current_category.name} configuration")
+            elif event.key == pygame.K_s:
+                # Save configuration
+                self.config_confirm_action = "save"
+                self.state = GameState.CONFIG_CONFIRM
+            elif event.key == pygame.K_r:
+                # Reset to defaults
+                self.config_confirm_action = "reset"
+                self.state = GameState.CONFIG_CONFIRM
+            elif event.key == pygame.K_ESCAPE:
+                # Return to main menu
+                self.state = GameState.MENU
+                print("Returning to main menu")
+
+    def handle_config_options_input(self, event: pygame.event.Event) -> None:
+        """Handle input in configuration options menu"""
+        if not self.config_current_category:
+            return
+
+        options = self.config_current_category.options
+
+        if event.type == pygame.KEYDOWN:
+            if self.config_is_editing:
+                # Currently editing a value
+                self._handle_config_edit_input(event)
+            else:
+                # Navigating options
+                if event.key == pygame.K_UP:
+                    self.config_option_selected = (self.config_option_selected - 1) % len(options)
+                elif event.key == pygame.K_DOWN:
+                    self.config_option_selected = (self.config_option_selected + 1) % len(options)
+                elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                    # Start editing current option
+                    selected_option = options[self.config_option_selected]
+                    self.config_edit_backup = get_config_value(game_config, selected_option.key)
+                    self.config_is_editing = True
+                    print(f"Editing {selected_option.label}")
+                elif event.key == pygame.K_ESCAPE:
+                    # Return to category menu
+                    self.state = GameState.CONFIG_CATEGORY
+                    self.config_current_category = None
+                    print("Returning to category menu")
+
+    def _handle_config_edit_input(self, event: pygame.event.Event) -> None:
+        """Handle input while editing a configuration value"""
+        if not self.config_current_category:
+            return
+
+        option = self.config_current_category.options[self.config_option_selected]
+        current_value = get_config_value(game_config, option.key)
+
+        if event.key == pygame.K_RETURN:
+            # Confirm edit
+            self.config_is_editing = False
+            self.config_edit_backup = None
+            print(f"Updated {option.label} to {get_config_value(game_config, option.key)}")
+
+        elif event.key == pygame.K_ESCAPE:
+            # Cancel edit
+            if self.config_edit_backup is not None:
+                set_config_value(game_config, option.key, self.config_edit_backup)
+            self.config_is_editing = False
+            self.config_edit_backup = None
+            print(f"Cancelled editing {option.label}")
+
+        elif option.field_type == ConfigFieldType.BOOLEAN:
+            # Toggle boolean value (SPACE or LEFT/RIGHT)
+            if (
+                event.key == pygame.K_SPACE
+                or event.key == pygame.K_LEFT
+                or event.key == pygame.K_RIGHT
+            ):
+                new_value = not current_value
+                set_config_value(game_config, option.key, new_value)
+
+        elif option.field_type == ConfigFieldType.NUMERIC:
+            # Adjust numeric value
+            if event.key == pygame.K_LEFT:
+                new_value = max(option.min_value, current_value - option.step)
+                set_config_value(game_config, option.key, new_value)
+            elif event.key == pygame.K_RIGHT:
+                new_value = min(option.max_value, current_value + option.step)
+                set_config_value(game_config, option.key, new_value)
+
+        elif option.field_type == ConfigFieldType.SELECTION:
+            # Cycle through selections
+            if option.choices and (event.key == pygame.K_LEFT or event.key == pygame.K_RIGHT):
+                current_index = option.choices.index(current_value)
+                if event.key == pygame.K_LEFT:
+                    new_index = (current_index - 1) % len(option.choices)
+                else:
+                    new_index = (current_index + 1) % len(option.choices)
+                set_config_value(game_config, option.key, option.choices[new_index])
+
+    def handle_config_confirm_input(self, event: pygame.event.Event) -> None:
+        """Handle input in configuration confirmation dialog"""
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                # Confirm action
+                if self.config_confirm_action == "save":
+                    self._save_configuration()
+                elif self.config_confirm_action == "reset":
+                    self._reset_configuration()
+                self.state = GameState.CONFIG_CATEGORY
+                self.config_confirm_action = None
+            elif event.key == pygame.K_ESCAPE:
+                # Cancel action
+                self.state = GameState.CONFIG_CATEGORY
+                self.config_confirm_action = None
+                print("Cancelled action")
+
+    def _save_configuration(self) -> None:
+        """Save current configuration to file"""
+        try:
+            game_config.save_to_file()
+            print("Configuration saved successfully!")
+            self._show_error_message("Configuration saved successfully!", 2.0)
+        except Exception as e:
+            error_msg = f"Failed to save configuration: {str(e)}"
+            print(error_msg)
+            self._show_error_message(error_msg, 3.0)
+
+    def _reset_configuration(self) -> None:
+        """Reset configuration to defaults"""
+        try:
+            game_config.reset_to_defaults()
+            print("Configuration reset to defaults!")
+            self._show_error_message("Configuration reset to defaults!", 2.0)
+        except Exception as e:
+            error_msg = f"Failed to reset configuration: {str(e)}"
+            print(error_msg)
+            self._show_error_message(error_msg, 3.0)
+
     def toggle_pause(self) -> None:
         """Toggle pause state"""
         if self.state == GameState.PLAYING:
@@ -425,6 +607,50 @@ class MagicPongApp:
 
         elif self.state == GameState.MODEL_SELECTION:
             self.renderer.draw_model_selection_menu(self.available_models, self.model_selected)
+
+        elif self.state == GameState.CONFIG_CATEGORY:
+            # Draw configuration category menu
+            category_names = [cat.name for cat in CONFIG_CATEGORIES]
+            self.renderer.draw_config_category_menu(category_names, self.config_category_selected)
+
+        elif self.state == GameState.CONFIG_OPTIONS:
+            # Draw configuration options menu
+            if self.config_current_category:
+                options_data = []
+                for opt in self.config_current_category.options:
+                    options_data.append(
+                        {
+                            "label": opt.label,
+                            "value": get_config_value(game_config, opt.key),
+                            "field_type": opt.field_type.value,
+                            "min_value": opt.min_value,
+                            "max_value": opt.max_value,
+                        }
+                    )
+                self.renderer.draw_config_option_menu(
+                    self.config_current_category.name,
+                    options_data,
+                    self.config_option_selected,
+                    self.config_is_editing,
+                )
+
+        elif self.state == GameState.CONFIG_CONFIRM:
+            # Draw confirmation dialog
+            if self.config_confirm_action == "save":
+                message = "Save current configuration to file?"
+                title = "Save Configuration"
+            elif self.config_confirm_action == "reset":
+                message = "Reset all settings to default values?"
+                title = "Reset Configuration"
+            else:
+                message = "Confirm action?"
+                title = "Confirm"
+
+            # First draw the category menu as background
+            category_names = [cat.name for cat in CONFIG_CATEGORIES]
+            self.renderer.draw_config_category_menu(category_names, self.config_category_selected)
+            # Then overlay the confirmation dialog
+            self.renderer.draw_confirmation_dialog(message, title)
 
         elif self.state in [GameState.PLAYING, GameState.PAUSED, GameState.GAME_OVER]:
             # Get game state and render
@@ -481,6 +707,12 @@ class MagicPongApp:
                         self.handle_menu_input(event)
                     elif self.state == GameState.MODEL_SELECTION:
                         self.handle_model_selection_input(event)
+                    elif self.state == GameState.CONFIG_CATEGORY:
+                        self.handle_config_category_input(event)
+                    elif self.state == GameState.CONFIG_OPTIONS:
+                        self.handle_config_options_input(event)
+                    elif self.state == GameState.CONFIG_CONFIRM:
+                        self.handle_config_confirm_input(event)
                     elif self.state == GameState.PLAYING:
                         self.handle_game_input(event)
                     elif self.state == GameState.PAUSED:

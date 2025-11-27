@@ -2,9 +2,13 @@
 Renderer protocol - defines interface for different rendering backends
 """
 
-from typing import Any, Protocol
+from typing import Any
+from typing import Protocol
 
-from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Bonus
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import RotatingPaddle
 
 
 class RendererProtocol(Protocol):

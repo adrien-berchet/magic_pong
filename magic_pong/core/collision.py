@@ -4,7 +4,11 @@ Collision detection system for Magic Pong
 
 import math
 
-from magic_pong.core.entities import Ball, Bonus, Paddle, RotatingPaddle, Vector2D
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Bonus
+from magic_pong.core.entities import Paddle
+from magic_pong.core.entities import RotatingPaddle
+from magic_pong.core.entities import Vector2D
 from magic_pong.utils.config import game_config
 
 

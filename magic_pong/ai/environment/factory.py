@@ -6,13 +6,11 @@ from typing import Any
 
 import numpy as np
 
-from magic_pong.ai.interfaces import (
-    DenseRewardCalculator,
-    ObservationBuilder,
-    RewardCalculator,
-    SparseRewardCalculator,
-    VectorObservationBuilder,
-)
+from magic_pong.ai.interfaces import DenseRewardCalculator
+from magic_pong.ai.interfaces import ObservationBuilder
+from magic_pong.ai.interfaces import RewardCalculator
+from magic_pong.ai.interfaces import SparseRewardCalculator
+from magic_pong.ai.interfaces import VectorObservationBuilder
 from magic_pong.core.entities import Action as GameAction
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config

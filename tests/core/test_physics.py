@@ -10,8 +10,10 @@ Tests physics engine functionality including:
 
 import pytest
 
-from magic_pong.core.entities import Action, BonusType
-from magic_pong.core.physics import BonusSpawner, PhysicsEngine
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import BonusType
+from magic_pong.core.physics import BonusSpawner
+from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config
 
 

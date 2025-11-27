@@ -8,7 +8,8 @@ from typing import Any
 import pygame
 
 from magic_pong.ai.interface import GameEnvironment
-from magic_pong.core.entities import Action, Player
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Player
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.gui.human_player import HumanPlayer
 from magic_pong.gui.pygame_renderer import PygameRenderer

@@ -5,7 +5,8 @@ Examples of using different game modes of Magic Pong
 import sys
 
 try:
-    from magic_pong.gui.game_app import GameMode, MagicPongApp
+    from magic_pong.gui.game_app import GameMode
+    from magic_pong.gui.game_app import MagicPongApp
 except ImportError as e:
     print(f"Error: Unable to import required modules: {e}")
     print("Make sure pygame is installed: pip install pygame")

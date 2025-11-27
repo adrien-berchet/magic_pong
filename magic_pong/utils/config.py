@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import pygame
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel
+from pydantic import Field
+from pydantic import ValidationInfo
+from pydantic import field_validator
+from pydantic import model_validator
 
 
 @dataclass
@@ -167,6 +171,55 @@ class GameConfig(BaseModel):
         """Get the current keyboard layout configuration"""
         return KEYBOARD_LAYOUTS.get(self.KEYBOARD_LAYOUT, KEYBOARD_LAYOUTS["qwerty"])
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert config to dictionary for serialization"""
+        return self.model_dump()
+
+    def save_to_file(self, filepath: str = "magic_pong_config.json") -> None:
+        """Save configuration to a JSON file"""
+        import json
+        from pathlib import Path
+
+        config_dict = self.to_dict()
+        config_path = Path(filepath)
+
+        with open(config_path, "w") as f:
+            json.dump(config_dict, f, indent=2)
+
+    @classmethod
+    def load_from_file(cls, filepath: str = "magic_pong_config.json") -> "GameConfig":
+        """Load configuration from a JSON file"""
+        import json
+        from pathlib import Path
+
+        config_path = Path(filepath)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {filepath}")
+
+        with open(config_path) as f:
+            config_dict = json.load(f)
+
+        return cls(**config_dict)
+
+    def reset_to_defaults(self) -> None:
+        """Reset all fields to their default values"""
+        defaults = GameConfig()
+        for field_name in self.model_fields.keys():
+            setattr(self, field_name, getattr(defaults, field_name))
+
+    @classmethod
+    def get_editable_fields(cls) -> dict[str, dict[str, Any]]:
+        """Get list of fields that can be edited in the UI"""
+        editable = {}
+        for field_name, field_info in cls.model_fields.items():
+            field_type = field_info.annotation
+            editable[field_name] = {
+                "type": field_type,
+                "description": field_info.description or "",
+                "default": field_info.default,
+            }
+        return editable
+
 
 class AIConfig(BaseModel):
     """Configuration for AI interface with Pydantic validation"""
@@ -209,6 +262,21 @@ class AIConfig(BaseModel):
 # Global configuration instances with validation
 game_config = GameConfig()
 ai_config = AIConfig()
+
+
+def load_config_from_file(filepath: str = "magic_pong_config.json") -> bool:
+    """Load configuration from file into global game_config"""
+    try:
+        loaded_config = GameConfig.load_from_file(filepath)
+        # Update global config
+        for field_name in game_config.model_fields.keys():
+            setattr(game_config, field_name, getattr(loaded_config, field_name))
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return False
 
 
 def _change_values(obj: BaseModel, **kwargs: Any) -> dict[str, Any]:

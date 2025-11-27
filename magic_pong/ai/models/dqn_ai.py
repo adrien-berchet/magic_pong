@@ -4,8 +4,10 @@ Improved version with stabilization techniques
 """
 
 import random
-from collections import deque, namedtuple
-from typing import Any, cast
+from collections import deque
+from collections import namedtuple
+from typing import Any
+from typing import cast
 
 import numpy as np
 import torch

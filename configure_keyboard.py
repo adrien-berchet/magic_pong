@@ -3,12 +3,10 @@
 Utility to configure Magic Pong keyboard layout
 """
 
-from magic_pong.utils.keyboard_layout import (
-    get_preferred_layout,
-    list_available_layouts,
-    set_preferred_layout,
-    show_layout_help,
-)
+from magic_pong.utils.keyboard_layout import get_preferred_layout
+from magic_pong.utils.keyboard_layout import list_available_layouts
+from magic_pong.utils.keyboard_layout import set_preferred_layout
+from magic_pong.utils.keyboard_layout import show_layout_help
 
 
 def main():

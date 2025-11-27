@@ -7,7 +7,8 @@ import locale
 import os
 from pathlib import Path
 
-from magic_pong.utils.config import KEYBOARD_LAYOUTS, game_config
+from magic_pong.utils.config import KEYBOARD_LAYOUTS
+from magic_pong.utils.config import game_config
 
 
 def detect_system_layout() -> str:

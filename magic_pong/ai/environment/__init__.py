@@ -10,6 +10,7 @@ This package contains the components for building RL training environments:
 NEW in Phase 2: Protocol-based environment creation!
 """
 
-from magic_pong.ai.environment.factory import EnvironmentFactory, GameEnvironmentWrapper
+from magic_pong.ai.environment.factory import EnvironmentFactory
+from magic_pong.ai.environment.factory import GameEnvironmentWrapper
 
 __all__ = ["EnvironmentFactory", "GameEnvironmentWrapper"]

@@ -6,14 +6,19 @@ point before moving on to more complex training against opponents.
 """
 
 import random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+from typing import Any
 
 import numpy as np
 
-from magic_pong.ai.interface import ObservationProcessor, RewardCalculator
+from magic_pong.ai.interface import ObservationProcessor
+from magic_pong.ai.interface import RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
-from magic_pong.core.entities import Action, Paddle
-from magic_pong.utils.config import ai_config, game_config, game_config_tmp
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Paddle
+from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import game_config
+from magic_pong.utils.config import game_config_tmp
 
 if TYPE_CHECKING:
     from magic_pong.ai.models.dqn_ai import DQNAgent

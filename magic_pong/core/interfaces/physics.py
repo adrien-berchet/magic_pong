@@ -2,9 +2,12 @@
 Physics backend protocol - defines interface for physics engines
 """
 
-from typing import Any, Protocol
+from typing import Any
+from typing import Protocol
 
-from magic_pong.core.entities import Action, Ball, Paddle
+from magic_pong.core.entities import Action
+from magic_pong.core.entities import Ball
+from magic_pong.core.entities import Paddle
 
 
 class PhysicsBackend(Protocol):
