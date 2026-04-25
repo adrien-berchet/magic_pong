@@ -108,8 +108,18 @@ class PhysicsEngine:
         """Resets the ball to center with optional specific angle"""
         if direction == 0:
             direction = random.choice([-1, 1])
-        self.ball = Ball(self.field_width / 2, self.field_height / 2, game_config.BALL_SPEED, 0)
-        # self.ball.reset_to_center(direction, angle)
+        direction = 1 if direction > 0 else -1
+
+        if angle is None:
+            angle = random.uniform(-math.pi / 4, math.pi / 4)
+
+        speed = game_config.BALL_SPEED
+        self.ball = Ball(
+            self.field_width / 2,
+            self.field_height / 2,
+            direction * speed * math.cos(angle),
+            speed * math.sin(angle),
+        )
 
     def set_ball_initial_direction(self, direction: int = 1, angle_degrees: float = 0.0) -> None:
         """Sets a specific initial direction for the ball (useful for training)"""

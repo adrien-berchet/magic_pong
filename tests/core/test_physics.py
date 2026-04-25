@@ -8,6 +8,8 @@ Tests physics engine functionality including:
 - Paddle collision handling
 """
 
+import math
+
 import pytest
 
 from magic_pong.core.entities import Action
@@ -49,14 +51,48 @@ class TestPhysicsEngine:
 
         # Reset with rightward direction
         engine.reset_ball(direction=1)
-        # Ball velocity should be set based on reset_to_center if implemented
+        assert engine.ball.velocity.x > 0
 
         # Reset with leftward direction
         engine.reset_ball(direction=-1)
+        assert engine.ball.velocity.x < 0
 
         # Should not crash and ball should be at center
         assert 350 <= engine.ball.position.x <= 450
         assert 250 <= engine.ball.position.y <= 350
+
+    def test_reset_ball_with_direction_and_angle(self):
+        """Test resetting ball honors explicit direction and launch angle"""
+        engine = PhysicsEngine(800, 600)
+        angle = math.radians(30)
+
+        engine.reset_ball(direction=-1, angle=angle)
+
+        assert engine.ball.velocity.x == pytest.approx(-game_config.BALL_SPEED * math.cos(angle))
+        assert engine.ball.velocity.y == pytest.approx(game_config.BALL_SPEED * math.sin(angle))
+
+    def test_goal_restart_uses_scoring_direction(self):
+        """Goal restarts should serve toward the player who conceded."""
+        engine = PhysicsEngine(800, 600)
+        action_none = Action(0, 0)
+
+        engine.ball.position.x = 5
+        engine.ball.position.y = 300
+        engine.ball.velocity.x = -100
+        events = engine.update(dt=0.016, player1_action=action_none, player2_action=action_none)
+
+        assert events["goals"]
+        assert events["goals"][0]["player"] == 2
+        assert engine.ball.velocity.x > 0
+
+        engine.ball.position.x = 795
+        engine.ball.position.y = 300
+        engine.ball.velocity.x = 100
+        events = engine.update(dt=0.016, player1_action=action_none, player2_action=action_none)
+
+        assert events["goals"]
+        assert events["goals"][0]["player"] == 1
+        assert engine.ball.velocity.x < 0
 
     def test_reset_paddles(self):
         """Test that paddles are reset to initial positions"""

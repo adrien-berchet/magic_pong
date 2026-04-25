@@ -69,8 +69,8 @@ magic-pong-training = "magic_pong.ai.models.ai_vs_ai:training"
 magic-pong-gui = "magic_pong.gui.game_app:main"
 magic-pong = "magic_pong.gui.game_app:main"
 
-[tool.setuptools]
-packages = ["magic_pong", "magic_pong.core", "magic_pong.ai", "magic_pong.ai.models", "magic_pong.utils", "magic_pong.gui"]
+[tool.setuptools.packages.find]
+include = ["magic_pong*"]
 
 # Configuration for Ruff (linting)
 [tool.ruff]

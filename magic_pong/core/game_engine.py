@@ -103,7 +103,7 @@ class GameEngine:
         action2 = self._get_player_action(self.player2, 2) or Action(move_x=0.0, move_y=0.0)
 
         # Update physics via AI environment
-        obs1, obs2, reward1, reward2, done, info = self.ai_environment.step(action1, action2)
+        obs1, obs2, reward1, reward2, done, info = self.ai_environment.step(action1, action2, dt=dt)
 
         # Notify AI players
         if self.player1 and hasattr(self.player1, "on_step"):

@@ -245,7 +245,7 @@ class PygameRenderer:
         self.screen.blit(inst_surface, inst_rect)
 
     def draw_menu(self, selected_option: int = 0) -> None:
-        """Draw the main menu"""
+        """Draw the main menu with centered scrolling"""
         self.clear_screen()
 
         # Title
@@ -264,18 +264,91 @@ class PygameRenderer:
             "Quit",
         ]
 
-        for i, option in enumerate(options):
-            color = (255, 255, 0) if i == selected_option else self.text_color
-            option_surface = self.font_medium.render(option, True, color)
+        # Number of visible items (should be odd for centered selection)
+        max_visible = 5
+        center_y = self.height // 2
+        item_spacing = 60
+
+        # Define fade zones
+        fade_top = self.height // 4 + 60  # Below title
+        fade_bottom = self.height * 4 // 5 - 40  # Above instructions
+
+        # Calculate which items to show based on selected index
+        total_items = len(options)
+        half_visible = max_visible // 2
+
+        # Calculate the range of items to display
+        if total_items <= max_visible:
+            # Show all items centered
+            start_index = 0
+            end_index = total_items
+            selected_position = selected_option
+        else:
+            # Scrolling mode - keep selected item in center
+            start_index = max(0, selected_option - half_visible)
+            end_index = min(total_items, start_index + max_visible)
+
+            # Adjust start if we're near the end
+            if end_index == total_items:
+                start_index = max(0, total_items - max_visible)
+
+            selected_position = selected_option - start_index
+
+        # Draw visible menu items
+        for i in range(start_index, end_index):
+            display_position = i - start_index
+            offset_from_center = display_position - selected_position
+
+            # Calculate Y position relative to center
+            y_pos = center_y + offset_from_center * item_spacing
+
+            # Only draw items within safe bounds (with hard cutoff)
+            if y_pos < fade_top or y_pos > fade_bottom:
+                continue
+
+            # Determine color and size based on distance from selected
+            if i == selected_option:
+                color = (255, 255, 0)  # Yellow for selected
+                font = self.font_medium
+            else:
+                # Fade out items further from selection
+                distance = abs(offset_from_center)
+                if distance <= 1:
+                    brightness = 255
+                elif distance == 2:
+                    brightness = 180
+                else:
+                    brightness = 120
+                color = (brightness, brightness, brightness)
+                font = self.font_medium
+
+            # Render text normally (no alpha blending)
+            option_surface = font.render(options[i], True, color)
             option_rect = option_surface.get_rect()
-            option_rect.center = (self.width // 2, self.height // 2 + i * 60)
+            option_rect.center = (self.width // 2, y_pos)
             self.screen.blit(option_surface, option_rect)
+
+        # Scroll indicators - only show if there are actually hidden items
+        if total_items > max_visible:
+            # Show up arrow only if there are items hidden above
+            if selected_option > half_visible:
+                up_arrow = self.font_small.render("↑", True, (150, 150, 150))
+                up_rect = up_arrow.get_rect()
+                up_rect.center = (self.width // 2, fade_top + 10)
+                self.screen.blit(up_arrow, up_rect)
+
+            # Show down arrow only if there are items hidden below
+            if selected_option < total_items - half_visible - 1:
+                down_arrow = self.font_small.render("↓", True, (150, 150, 150))
+                down_rect = down_arrow.get_rect()
+                down_rect.center = (self.width // 2, fade_bottom - 10)
+                self.screen.blit(down_arrow, down_rect)
 
         # Instructions
         instructions = "Use UP/DOWN arrows and ENTER to select"
         inst_surface = self.font_small.render(instructions, True, self.text_color)
         inst_rect = inst_surface.get_rect()
-        inst_rect.center = (self.width // 2, self.height * 3 // 4 + 50)
+        inst_rect.center = (self.width // 2, self.height * 4 // 5)
         self.screen.blit(inst_surface, inst_rect)
 
     def draw_model_selection_menu(self, available_models: list, selected_model: int = 0) -> None:

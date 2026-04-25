@@ -11,7 +11,6 @@ from typing import Literal
 
 import pygame
 
-from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.core.entities import Player
@@ -276,6 +275,8 @@ class MagicPongApp:
             action_size = hyperparams.get("action_size", 9)
 
             # Create DQN agent with correct parameters
+            from magic_pong.ai.models.dqn_ai import DQNAgent
+
             agent = DQNAgent(state_size=state_size, action_size=action_size, name="Trained DQN AI")
 
             # Load the trained model
