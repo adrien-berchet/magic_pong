@@ -228,217 +228,487 @@ class PygameRenderer:
         restart_rect.center = (self.width // 2, self.height // 2 + 80)
         self.screen.blit(restart_surface, restart_rect)
 
-    def draw_pause_screen(self) -> None:
-        """Draw pause screen"""
+    def draw_pause_screen(self, actions: list[dict[str, Any]], selected_action: int = 0) -> None:
+        """Draw pause action menu overlay."""
         # Semi-transparent overlay
         overlay = pygame.Surface((self.width, self.height))
-        overlay.set_alpha(128)
+        overlay.set_alpha(172)
         overlay.fill((0, 0, 0))
         self.screen.blit(overlay, (0, 0))
 
-        # Pause text
-        pause_surface = self.font_large.render("PAUSE", True, self.text_color)
-        pause_rect = pause_surface.get_rect()
-        pause_rect.center = (self.width // 2, self.height // 2)
-        self.screen.blit(pause_surface, pause_rect)
+        panel_width = min(760, self.width - 48)
+        panel_height = min(430, self.height - 48)
+        panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
+        panel_rect.center = (self.width // 2, self.height // 2)
+        self._draw_panel(panel_rect, (9, 13, 20), (58, 70, 88))
 
-        # Instructions
-        instructions = "Press P or SPACE to continue"
-        inst_surface = self.font_small.render(instructions, True, self.text_color)
-        inst_rect = inst_surface.get_rect()
-        inst_rect.center = (self.width // 2, self.height // 2 + 60)
-        self.screen.blit(inst_surface, inst_rect)
+        title_surface = self.font_config_title.render("Paused", True, self.text_color)
+        self.screen.blit(title_surface, (panel_rect.x + 24, panel_rect.y + 20))
 
-    def draw_menu(self, selected_option: int = 0) -> None:
-        """Draw the main menu with centered scrolling"""
-        self.clear_screen()
+        subtitle_surface = self.font_config_hint.render(
+            "Choose an action for the current match", True, (154, 166, 184)
+        )
+        self.screen.blit(subtitle_surface, (panel_rect.x + 24, panel_rect.y + 62))
 
-        # Title
-        title_surface = self.font_large.render("MAGIC PONG", True, self.text_color)
-        title_rect = title_surface.get_rect()
-        title_rect.center = (self.width // 2, self.height // 4)
-        self.screen.blit(title_surface, title_rect)
+        body_top = panel_rect.y + 98
+        footer_rect = pygame.Rect(
+            panel_rect.x + 18, panel_rect.bottom - 64, panel_rect.width - 36, 46
+        )
+        list_rect = pygame.Rect(panel_rect.x + 18, body_top, 220, footer_rect.y - body_top - 14)
+        detail_rect = pygame.Rect(
+            list_rect.right + 14,
+            body_top,
+            panel_rect.right - list_rect.right - 32,
+            list_rect.height,
+        )
 
-        # Menu options
-        options = [
-            "1 vs 1 (Two players)",
-            "1 vs AI (Player vs AI)",
-            "Play vs Trained Model",
-            "AI vs AI (Demonstration)",
-            "Settings",
-            "Quit",
-        ]
+        self._draw_panel(list_rect, (14, 18, 27), (52, 63, 80))
+        self._draw_panel(detail_rect, (11, 15, 23), (48, 58, 74))
 
-        # Number of visible items (should be odd for centered selection)
-        max_visible = 5
-        center_y = self.height // 2
-        item_spacing = 60
+        self._draw_option_rows(actions, selected_action, list_rect, "ACTIONS")
+        self._draw_menu_detail(actions, selected_action, detail_rect)
+        self._draw_hint_bar(
+            footer_rect,
+            [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER", "Select"),
+                ("P/SPACE", "Resume"),
+                ("ESC", "Main menu"),
+            ],
+        )
 
-        # Define fade zones
-        fade_top = self.height // 4 + 60  # Below title
-        fade_bottom = self.height * 4 // 5 - 40  # Above instructions
+    def draw_menu(self, menu_options: list[dict[str, Any]], selected_option: int = 0) -> None:
+        """Draw the main menu as a two-panel control surface."""
+        self.screen.fill((7, 10, 15))
 
-        # Calculate which items to show based on selected index
-        total_items = len(options)
-        half_visible = max_visible // 2
+        margin = max(18, min(32, self.width // 28))
+        gap = max(12, min(18, self.width // 48))
+        footer_height = 56
+        body_top = 88
+        body_bottom = self.height - footer_height - 18
+        body_height = max(260, body_bottom - body_top)
+        sidebar_width = max(210, min(280, self.width // 3))
 
-        # Calculate the range of items to display
-        if total_items <= max_visible:
-            # Show all items centered
-            start_index = 0
-            end_index = total_items
-            selected_position = selected_option
-        else:
-            # Scrolling mode - keep selected item in center
-            start_index = max(0, selected_option - half_visible)
-            end_index = min(total_items, start_index + max_visible)
+        sidebar_rect = pygame.Rect(margin, body_top, sidebar_width, body_height)
+        detail_rect = pygame.Rect(
+            sidebar_rect.right + gap,
+            body_top,
+            self.width - sidebar_rect.right - gap - margin,
+            body_height,
+        )
+        footer_rect = pygame.Rect(
+            margin,
+            self.height - footer_height - 10,
+            self.width - 2 * margin,
+            footer_height,
+        )
 
-            # Adjust start if we're near the end
-            if end_index == total_items:
-                start_index = max(0, total_items - max_visible)
+        title_surface = self.font_config_title.render("Magic Pong", True, self.text_color)
+        self.screen.blit(title_surface, (margin, 24))
 
-            selected_position = selected_option - start_index
+        subtitle_surface = self.font_config_hint.render(
+            "Choose a mode or open the control panel", True, (154, 166, 184)
+        )
+        subtitle_rect = subtitle_surface.get_rect()
+        subtitle_rect.midleft = (margin + 214, 47)
+        self.screen.blit(subtitle_surface, subtitle_rect)
 
-        # Draw visible menu items
-        for i in range(start_index, end_index):
-            display_position = i - start_index
-            offset_from_center = display_position - selected_position
+        self._draw_panel(sidebar_rect, (14, 18, 27), (52, 63, 80))
+        self._draw_panel(detail_rect, (11, 15, 23), (48, 58, 74))
 
-            # Calculate Y position relative to center
-            y_pos = center_y + offset_from_center * item_spacing
+        self._draw_option_rows(menu_options, selected_option, sidebar_rect, "MODES")
+        self._draw_menu_detail(menu_options, selected_option, detail_rect)
+        self._draw_hint_bar(
+            footer_rect,
+            [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER/SPACE", "Select"),
+                ("ESC", "Quit"),
+            ],
+        )
 
-            # Only draw items within safe bounds (with hard cutoff)
-            if y_pos < fade_top or y_pos > fade_bottom:
-                continue
+    def _draw_option_rows(
+        self,
+        options: list[dict[str, Any]],
+        selected_index: int,
+        panel_rect: pygame.Rect,
+        heading: str,
+    ) -> None:
+        """Draw selectable menu rows inside a panel."""
+        heading_surface = self.font_config_micro.render(heading, True, (126, 138, 156))
+        self.screen.blit(heading_surface, (panel_rect.x + 16, panel_rect.y + 16))
 
-            # Determine color and size based on distance from selected
-            if i == selected_option:
-                color = (255, 255, 0)  # Yellow for selected
-                font = self.font_medium
-            else:
-                # Fade out items further from selection
-                distance = abs(offset_from_center)
-                if distance <= 1:
-                    brightness = 255
-                elif distance == 2:
-                    brightness = 180
-                else:
-                    brightness = 120
-                color = (brightness, brightness, brightness)
-                font = self.font_medium
-
-            # Render text normally (no alpha blending)
-            option_surface = font.render(options[i], True, color)
-            option_rect = option_surface.get_rect()
-            option_rect.center = (self.width // 2, y_pos)
-            self.screen.blit(option_surface, option_rect)
-
-        # Scroll indicators - only show if there are actually hidden items
-        if total_items > max_visible:
-            # Show up arrow only if there are items hidden above
-            if selected_option > half_visible:
-                up_arrow = self.font_small.render("↑", True, (150, 150, 150))
-                up_rect = up_arrow.get_rect()
-                up_rect.center = (self.width // 2, fade_top + 10)
-                self.screen.blit(up_arrow, up_rect)
-
-            # Show down arrow only if there are items hidden below
-            if selected_option < total_items - half_visible - 1:
-                down_arrow = self.font_small.render("↓", True, (150, 150, 150))
-                down_rect = down_arrow.get_rect()
-                down_rect.center = (self.width // 2, fade_bottom - 10)
-                self.screen.blit(down_arrow, down_rect)
-
-        # Instructions
-        instructions = "Use UP/DOWN arrows and ENTER to select"
-        inst_surface = self.font_small.render(instructions, True, self.text_color)
-        inst_rect = inst_surface.get_rect()
-        inst_rect.center = (self.width // 2, self.height * 4 // 5)
-        self.screen.blit(inst_surface, inst_rect)
-
-    def draw_model_selection_menu(self, available_models: list, selected_model: int = 0) -> None:
-        """Draw the model selection menu"""
-        self.clear_screen()
-
-        # Title
-        title_surface = self.font_large.render("SELECT TRAINED MODEL", True, self.text_color)
-        title_rect = title_surface.get_rect()
-        title_rect.center = (self.width // 2, self.height // 6)
-        self.screen.blit(title_surface, title_rect)
-
-        # Check if models are available
-        if not available_models:
-            no_models_surface = self.font_medium.render(
-                "No trained models found!", True, (255, 100, 100)
-            )
-            no_models_rect = no_models_surface.get_rect()
-            no_models_rect.center = (self.width // 2, self.height // 2)
-            self.screen.blit(no_models_surface, no_models_rect)
-
-            back_surface = self.font_small.render(
-                "Press ESCAPE to return to main menu", True, self.text_color
-            )
-            back_rect = back_surface.get_rect()
-            back_rect.center = (self.width // 2, self.height // 2 + 60)
-            self.screen.blit(back_surface, back_rect)
+        if not options:
+            empty_surface = self.font_config_body.render("No options", True, (170, 180, 195))
+            empty_rect = empty_surface.get_rect(center=panel_rect.center)
+            self.screen.blit(empty_surface, empty_rect)
             return
 
-        # Display models list
-        start_y = self.height // 3
-        max_visible = min(6, len(available_models))  # Show max 6 models at once
+        selected_index = max(0, min(selected_index, len(options) - 1))
+        row_height = 52
+        list_top = panel_rect.y + 46
+        available_height = panel_rect.bottom - list_top - 12
+        max_visible = max(1, available_height // row_height)
+        max_scroll = max(0, len(options) - max_visible)
+        scroll_offset = min(max(0, selected_index - max_visible + 1), max_scroll)
 
-        # Calculate scroll offset if there are more models than can fit
-        scroll_offset = 0
-        if selected_model >= max_visible - 1:
-            scroll_offset = selected_model - max_visible + 1
-
-        for i in range(max_visible):
-            model_index = i + scroll_offset
-            if model_index >= len(available_models):
+        for visible_index in range(max_visible):
+            option_index = visible_index + scroll_offset
+            if option_index >= len(options):
                 break
 
-            model = available_models[model_index]
-            is_selected = model_index == selected_model
+            option = options[option_index]
+            is_selected = option_index == selected_index
+            is_available = bool(option.get("available", True))
+            row_rect = pygame.Rect(
+                panel_rect.x + 10,
+                list_top + visible_index * row_height,
+                panel_rect.width - 20,
+                row_height - 7,
+            )
 
-            # Model name
-            color = (255, 255, 0) if is_selected else self.text_color
-            model_surface = self.font_medium.render(model["name"], True, color)
-            model_rect = model_surface.get_rect()
-            model_rect.center = (self.width // 2, start_y + i * 50)
-            self.screen.blit(model_surface, model_rect)
-
-            # Model file name (smaller text)
             if is_selected:
-                file_surface = self.font_small.render(f"({model['file']})", True, (180, 180, 180))
-                file_rect = file_surface.get_rect()
-                file_rect.center = (self.width // 2, start_y + i * 50 + 25)
-                self.screen.blit(file_surface, file_rect)
+                pygame.draw.rect(self.screen, (32, 41, 55), row_rect, border_radius=8)
+                border_color = (255, 214, 95) if is_available else (255, 146, 92)
+                pygame.draw.rect(self.screen, border_color, row_rect, 1, border_radius=8)
+                accent_rect = pygame.Rect(row_rect.x, row_rect.y + 7, 4, row_rect.height - 14)
+                pygame.draw.rect(self.screen, border_color, accent_rect, border_radius=2)
 
-        # Scroll indicators
+            label_color = (255, 224, 118) if is_selected else (190, 198, 210)
+            if not is_available:
+                label_color = (255, 168, 118) if is_selected else (158, 132, 128)
+
+            label = self._truncate_text(
+                str(option.get("label", "Option")), self.font_config_body, row_rect.width - 28
+            )
+            label_surface = self.font_config_body.render(label, True, label_color)
+            self.screen.blit(label_surface, (row_rect.x + 14, row_rect.y + 7))
+
+            status = str(option.get("status", ""))
+            if status:
+                status_color = (150, 160, 176) if is_available else (196, 130, 116)
+                status_text = self._truncate_text(
+                    status, self.font_config_micro, row_rect.width - 28
+                )
+                status_surface = self.font_config_micro.render(status_text, True, status_color)
+                self.screen.blit(status_surface, (row_rect.x + 14, row_rect.y + 28))
+
         if scroll_offset > 0:
-            up_arrow = self.font_small.render("↑ More models above", True, (150, 150, 150))
-            up_rect = up_arrow.get_rect()
-            up_rect.center = (self.width // 2, start_y - 30)
-            self.screen.blit(up_arrow, up_rect)
+            indicator = self.font_config_micro.render("More above", True, (140, 150, 166))
+            self.screen.blit(
+                indicator, (panel_rect.right - indicator.get_width() - 18, list_top - 18)
+            )
 
-        if scroll_offset + max_visible < len(available_models):
-            down_arrow = self.font_small.render("↓ More models below", True, (150, 150, 150))
-            down_rect = down_arrow.get_rect()
-            down_rect.center = (self.width // 2, start_y + max_visible * 50 + 20)
-            self.screen.blit(down_arrow, down_rect)
+        if scroll_offset + max_visible < len(options):
+            indicator = self.font_config_micro.render("More below", True, (140, 150, 166))
+            self.screen.blit(
+                indicator,
+                (
+                    panel_rect.right - indicator.get_width() - 18,
+                    panel_rect.bottom - indicator.get_height() - 8,
+                ),
+            )
 
-        # Instructions
-        instructions = [
-            "Use UP/DOWN arrows to select",
-            "Press ENTER to load model",
-            "Press ESCAPE to return to main menu",
-        ]
+    def _draw_menu_detail(
+        self, options: list[dict[str, Any]], selected_index: int, detail_rect: pygame.Rect
+    ) -> None:
+        """Draw detail information for the selected menu/action option."""
+        if not options:
+            return
 
-        for i, instruction in enumerate(instructions):
-            inst_surface = self.font_small.render(instruction, True, self.text_color)
-            inst_rect = inst_surface.get_rect()
-            inst_rect.center = (self.width // 2, self.height * 4 // 5 + i * 25)
-            self.screen.blit(inst_surface, inst_rect)
+        selected_index = max(0, min(selected_index, len(options) - 1))
+        option = options[selected_index]
+        is_available = bool(option.get("available", True))
+
+        title = str(option.get("title") or option.get("label") or "Option")
+        title = self._truncate_text(title, self.font_config_section, detail_rect.width - 48)
+        title_surface = self.font_config_section.render(title, True, self.text_color)
+        self.screen.blit(title_surface, (detail_rect.x + 24, detail_rect.y + 24))
+
+        status = str(option.get("status", ""))
+        if status:
+            status_color = (92, 232, 146) if is_available else (255, 146, 92)
+            status_width = min(
+                max(92, self.font_config_micro.size(status)[0] + 28),
+                detail_rect.width - 48,
+            )
+            self._draw_status_badge(
+                status,
+                status_color,
+                pygame.Rect(detail_rect.x + 24, detail_rect.y + 64, status_width, 28),
+            )
+
+        description = str(option.get("description", ""))
+        description_y = detail_rect.y + 108
+        for line in self._wrap_text(description, self.font_config_hint, detail_rect.width - 48)[:4]:
+            line_surface = self.font_config_hint.render(line, True, (190, 198, 210))
+            self.screen.blit(line_surface, (detail_rect.x + 24, description_y))
+            description_y += 25
+
+        details = option.get("details", [])
+        detail_rows_rect = pygame.Rect(
+            detail_rect.x + 24,
+            description_y + 12,
+            detail_rect.width - 48,
+            detail_rect.bottom - description_y - 32,
+        )
+        if isinstance(details, list):
+            self._draw_detail_rows(details, detail_rows_rect)
+
+    def _draw_detail_rows(self, details: list[dict[str, Any]], rows_rect: pygame.Rect) -> None:
+        """Draw compact key/value detail rows."""
+        row_height = 44
+        max_visible = max(0, rows_rect.height // (row_height + 8))
+
+        for index, detail in enumerate(details[:max_visible]):
+            row_rect = pygame.Rect(
+                rows_rect.x,
+                rows_rect.y + index * (row_height + 8),
+                rows_rect.width,
+                row_height,
+            )
+            pygame.draw.rect(self.screen, (18, 24, 34), row_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (48, 58, 74), row_rect, 1, border_radius=8)
+
+            label = str(detail.get("label", ""))
+            value = str(detail.get("value", ""))
+            label_width = min(130, max(82, row_rect.width // 3))
+            value_width = max(1, row_rect.width - label_width - 34)
+
+            label_text = self._truncate_text(label, self.font_config_micro, label_width)
+            value_text = self._truncate_text(value, self.font_config_hint, value_width)
+
+            label_surface = self.font_config_micro.render(label_text.upper(), True, (126, 138, 156))
+            label_rect = label_surface.get_rect(midleft=(row_rect.x + 14, row_rect.centery))
+            self.screen.blit(label_surface, label_rect)
+
+            value_surface = self.font_config_hint.render(value_text, True, (220, 226, 236))
+            value_rect = value_surface.get_rect(
+                midleft=(row_rect.x + label_width + 20, row_rect.centery)
+            )
+            self.screen.blit(value_surface, value_rect)
+
+    def draw_model_selection_menu(
+        self, available_models: list[dict[str, Any]], selected_model: int = 0
+    ) -> None:
+        """Draw the trained model browser as a two-panel control surface."""
+        self.screen.fill((7, 10, 15))
+
+        model_options = [self._normalize_model_option(model) for model in available_models]
+
+        margin = max(18, min(32, self.width // 28))
+        gap = max(12, min(18, self.width // 48))
+        footer_height = 56
+        body_top = 88
+        body_bottom = self.height - footer_height - 18
+        body_height = max(260, body_bottom - body_top)
+        sidebar_width = max(260, min(340, self.width // 3))
+
+        sidebar_rect = pygame.Rect(margin, body_top, sidebar_width, body_height)
+        detail_rect = pygame.Rect(
+            sidebar_rect.right + gap,
+            body_top,
+            self.width - sidebar_rect.right - gap - margin,
+            body_height,
+        )
+        footer_rect = pygame.Rect(
+            margin,
+            self.height - footer_height - 10,
+            self.width - 2 * margin,
+            footer_height,
+        )
+
+        title_surface = self.font_config_title.render("Model Browser", True, self.text_color)
+        self.screen.blit(title_surface, (margin, 24))
+
+        subtitle_surface = self.font_config_hint.render(
+            "Choose a trained checkpoint for the DQN opponent", True, (154, 166, 184)
+        )
+        subtitle_rect = subtitle_surface.get_rect()
+        subtitle_rect.midleft = (margin + 250, 47)
+        self.screen.blit(subtitle_surface, subtitle_rect)
+
+        self._draw_panel(sidebar_rect, (14, 18, 27), (52, 63, 80))
+        self._draw_panel(detail_rect, (11, 15, 23), (48, 58, 74))
+
+        if model_options:
+            selected_model = max(0, min(selected_model, len(model_options) - 1))
+            self._draw_option_rows(model_options, selected_model, sidebar_rect, "MODELS")
+            self._draw_model_detail(model_options, selected_model, detail_rect)
+            hints = [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER/SPACE", "Load"),
+                ("ESC", "Back"),
+            ]
+        else:
+            self._draw_option_rows([], 0, sidebar_rect, "MODELS")
+            self._draw_empty_model_detail(detail_rect)
+            hints = [("ESC", "Main menu")]
+
+        self._draw_hint_bar(footer_rect, hints)
+
+    def _normalize_model_option(self, model: dict[str, Any]) -> dict[str, Any]:
+        """Accept both raw discovery rows and renderer-ready model rows."""
+        option = dict(model)
+        label = str(option.get("label") or option.get("name") or option.get("file") or "Model")
+        path = str(option.get("path") or "")
+        file_name = str(option.get("file") or (path.rsplit("/", 1)[-1] if path else "Unknown"))
+
+        option.setdefault("label", label)
+        option.setdefault("title", label)
+        option.setdefault("file", file_name)
+        option.setdefault("description", "Saved model checkpoint discovered locally.")
+        option.setdefault("status", "Discovered")
+        option.setdefault("available", True)
+        option.setdefault(
+            "details",
+            [
+                {"label": "Display name", "value": label},
+                {"label": "File", "value": file_name},
+                {"label": "Path", "value": path or "Unknown"},
+            ],
+        )
+        return option
+
+    def _draw_model_detail(
+        self, models: list[dict[str, Any]], selected_index: int, detail_rect: pygame.Rect
+    ) -> None:
+        """Draw the selected model metadata panel."""
+        if not models:
+            return
+
+        selected_index = max(0, min(selected_index, len(models) - 1))
+        model = models[selected_index]
+        is_available = bool(model.get("available", True))
+        status = str(model.get("status", ""))
+        title = str(model.get("title") or model.get("label") or "Model")
+
+        title_text = self._truncate_text(title, self.font_config_section, detail_rect.width - 48)
+        title_surface = self.font_config_section.render(title_text, True, self.text_color)
+        self.screen.blit(title_surface, (detail_rect.x + 24, detail_rect.y + 22))
+
+        file_name = str(model.get("file", ""))
+        if file_name:
+            file_text = self._truncate_text(
+                file_name, self.font_config_hint, detail_rect.width - 48
+            )
+            file_surface = self.font_config_hint.render(file_text, True, (154, 166, 184))
+            self.screen.blit(file_surface, (detail_rect.x + 24, detail_rect.y + 54))
+
+        if status:
+            if not is_available:
+                status_color = (255, 146, 92)
+            elif status.lower() == "valid":
+                status_color = (92, 232, 146)
+            else:
+                status_color = (100, 170, 255)
+            status_width = min(
+                max(92, self.font_config_micro.size(status)[0] + 28),
+                detail_rect.width - 48,
+            )
+            self._draw_status_badge(
+                status,
+                status_color,
+                pygame.Rect(detail_rect.x + 24, detail_rect.y + 84, status_width, 28),
+            )
+
+        description = str(model.get("description", ""))
+        description_y = detail_rect.y + 126
+        for line in self._wrap_text(description, self.font_config_hint, detail_rect.width - 48)[:3]:
+            line_surface = self.font_config_hint.render(line, True, (190, 198, 210))
+            self.screen.blit(line_surface, (detail_rect.x + 24, description_y))
+            description_y += 24
+
+        details = model.get("details", [])
+        if isinstance(details, list):
+            rows_rect = pygame.Rect(
+                detail_rect.x + 24,
+                description_y + 12,
+                detail_rect.width - 48,
+                detail_rect.bottom - description_y - 32,
+            )
+            self._draw_model_detail_rows(details, rows_rect)
+
+    def _draw_empty_model_detail(self, detail_rect: pygame.Rect) -> None:
+        """Draw the empty state for the model browser."""
+        title_surface = self.font_config_section.render("No Trained Models", True, self.text_color)
+        self.screen.blit(title_surface, (detail_rect.x + 24, detail_rect.y + 24))
+
+        self._draw_status_badge(
+            "No models",
+            (255, 146, 92),
+            pygame.Rect(detail_rect.x + 24, detail_rect.y + 64, 104, 28),
+        )
+
+        description = "No .pth checkpoints were discovered in the local models directory."
+        description_y = detail_rect.y + 108
+        for line in self._wrap_text(description, self.font_config_hint, detail_rect.width - 48)[:3]:
+            line_surface = self.font_config_hint.render(line, True, (190, 198, 210))
+            self.screen.blit(line_surface, (detail_rect.x + 24, description_y))
+            description_y += 24
+
+        rows_rect = pygame.Rect(
+            detail_rect.x + 24,
+            description_y + 12,
+            detail_rect.width - 48,
+            detail_rect.bottom - description_y - 32,
+        )
+        self._draw_model_detail_rows(
+            [
+                {"label": "Location", "value": "models/"},
+                {"label": "Expected file", "value": "*.pth"},
+                {"label": "Back", "value": "Press ESC to return to the main menu"},
+            ],
+            rows_rect,
+        )
+
+    def _draw_model_detail_rows(
+        self, details: list[dict[str, Any]], rows_rect: pygame.Rect
+    ) -> None:
+        """Draw compact model metadata rows."""
+        row_height = 34
+        gap = 6
+        max_visible = max(0, rows_rect.height // (row_height + gap))
+
+        for index, detail in enumerate(details[:max_visible]):
+            row_rect = pygame.Rect(
+                rows_rect.x,
+                rows_rect.y + index * (row_height + gap),
+                rows_rect.width,
+                row_height,
+            )
+            pygame.draw.rect(self.screen, (18, 24, 34), row_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (48, 58, 74), row_rect, 1, border_radius=8)
+
+            label = str(detail.get("label", ""))
+            value = str(detail.get("value", ""))
+            tone = str(detail.get("tone", ""))
+            label_width = min(148, max(92, row_rect.width // 3))
+            value_width = max(1, row_rect.width - label_width - 34)
+
+            label_text = self._truncate_text(label, self.font_config_micro, label_width)
+            value_text = self._truncate_text(value, self.font_config_hint, value_width)
+
+            value_color = (220, 226, 236)
+            if tone == "error":
+                value_color = (255, 168, 118)
+            elif tone == "success":
+                value_color = (92, 232, 146)
+
+            label_surface = self.font_config_micro.render(label_text.upper(), True, (126, 138, 156))
+            label_rect = label_surface.get_rect(midleft=(row_rect.x + 14, row_rect.centery))
+            self.screen.blit(label_surface, label_rect)
+
+            value_surface = self.font_config_hint.render(value_text, True, value_color)
+            value_rect = value_surface.get_rect(
+                midleft=(row_rect.x + label_width + 20, row_rect.centery)
+            )
+            self.screen.blit(value_surface, value_rect)
+
+        if len(details) > max_visible and max_visible > 0:
+            overflow = self.font_config_micro.render("More metadata hidden", True, (140, 150, 166))
+            overflow_rect = overflow.get_rect(bottomright=(rows_rect.right, rows_rect.bottom))
+            self.screen.blit(overflow, overflow_rect)
 
     def draw_error_message(self, message: str) -> None:
         """Draw an error message overlay"""
@@ -1089,6 +1359,35 @@ class PygameRenderer:
             trimmed = trimmed[:-1]
 
         return trimmed.rstrip() + suffix
+
+    def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+        """Wrap text to fit within a maximum width."""
+        if not text:
+            return []
+
+        lines: list[str] = []
+        current_line: list[str] = []
+
+        for word in text.split():
+            if font.size(word)[0] > max_width:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                    current_line = []
+                lines.append(self._truncate_text(word, font, max_width))
+                continue
+
+            test_line = " ".join(current_line + [word])
+            if font.size(test_line)[0] <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [word]
+
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        return lines
 
     def draw_confirmation_dialog(self, message: str, title: str = "Confirm") -> None:
         """Draw a confirmation dialog"""
