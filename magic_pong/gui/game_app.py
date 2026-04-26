@@ -101,6 +101,7 @@ class MagicPongApp:
         self.config_current_category: ConfigCategory | None = None
         self.config_edit_backup: Any | None = None
         self.config_confirm_action: Literal["save", "reset"] | None = None
+        self.config_confirm_return_state = GameState.CONFIG_CATEGORY
 
         print("Magic Pong initialized successfully!")
         print("Use arrows to navigate and ENTER to select")
@@ -427,10 +428,12 @@ class MagicPongApp:
             elif event.key == pygame.K_s:
                 # Save configuration
                 self.config_confirm_action = "save"
+                self.config_confirm_return_state = GameState.CONFIG_CATEGORY
                 self.state = GameState.CONFIG_CONFIRM
             elif event.key == pygame.K_r:
                 # Reset to defaults
                 self.config_confirm_action = "reset"
+                self.config_confirm_return_state = GameState.CONFIG_CATEGORY
                 self.state = GameState.CONFIG_CONFIRM
             elif event.key == pygame.K_ESCAPE:
                 # Return to main menu
@@ -460,6 +463,16 @@ class MagicPongApp:
                     self.config_edit_backup = get_config_value(game_config, selected_option.key)
                     self.config_is_editing = True
                     print(f"Editing {selected_option.label}")
+                elif event.key == pygame.K_s:
+                    # Save configuration
+                    self.config_confirm_action = "save"
+                    self.config_confirm_return_state = GameState.CONFIG_OPTIONS
+                    self.state = GameState.CONFIG_CONFIRM
+                elif event.key == pygame.K_r:
+                    # Reset to defaults
+                    self.config_confirm_action = "reset"
+                    self.config_confirm_return_state = GameState.CONFIG_OPTIONS
+                    self.state = GameState.CONFIG_CONFIRM
                 elif event.key == pygame.K_ESCAPE:
                     # Return to category menu
                     self.state = GameState.CONFIG_CATEGORY
@@ -474,7 +487,9 @@ class MagicPongApp:
         option = self.config_current_category.options[self.config_option_selected]
         current_value = get_config_value(game_config, option.key)
 
-        if event.key == pygame.K_RETURN:
+        if event.key == pygame.K_RETURN or (
+            event.key == pygame.K_SPACE and option.field_type != ConfigFieldType.BOOLEAN
+        ):
             # Confirm edit
             self.config_is_editing = False
             self.config_edit_backup = None
@@ -526,12 +541,14 @@ class MagicPongApp:
                     self._save_configuration()
                 elif self.config_confirm_action == "reset":
                     self._reset_configuration()
-                self.state = GameState.CONFIG_CATEGORY
+                self.state = self.config_confirm_return_state
                 self.config_confirm_action = None
+                self.config_confirm_return_state = GameState.CONFIG_CATEGORY
             elif event.key == pygame.K_ESCAPE:
                 # Cancel action
-                self.state = GameState.CONFIG_CATEGORY
+                self.state = self.config_confirm_return_state
                 self.config_confirm_action = None
+                self.config_confirm_return_state = GameState.CONFIG_CATEGORY
                 print("Cancelled action")
 
     def _save_configuration(self) -> None:
@@ -601,6 +618,24 @@ class MagicPongApp:
             if self.error_timer <= 0:
                 self.error_message = None
 
+    def _build_config_options_data(self, category: ConfigCategory) -> list[dict[str, Any]]:
+        """Build renderer-friendly option data for a configuration category."""
+        options_data = []
+        for opt in category.options:
+            options_data.append(
+                {
+                    "label": opt.label,
+                    "value": get_config_value(game_config, opt.key),
+                    "field_type": opt.field_type.value,
+                    "min_value": opt.min_value,
+                    "max_value": opt.max_value,
+                    "step": opt.step,
+                    "choices": opt.choices,
+                    "description": opt.description,
+                }
+            )
+        return options_data
+
     def render(self) -> None:
         """Render the current state"""
         if self.state == GameState.MENU:
@@ -617,22 +652,15 @@ class MagicPongApp:
         elif self.state == GameState.CONFIG_OPTIONS:
             # Draw configuration options menu
             if self.config_current_category:
-                options_data = []
-                for opt in self.config_current_category.options:
-                    options_data.append(
-                        {
-                            "label": opt.label,
-                            "value": get_config_value(game_config, opt.key),
-                            "field_type": opt.field_type.value,
-                            "min_value": opt.min_value,
-                            "max_value": opt.max_value,
-                        }
-                    )
+                category_names = [cat.name for cat in CONFIG_CATEGORIES]
+                options_data = self._build_config_options_data(self.config_current_category)
                 self.renderer.draw_config_option_menu(
                     self.config_current_category.name,
                     options_data,
                     self.config_option_selected,
                     self.config_is_editing,
+                    category_names,
+                    self.config_category_selected,
                 )
 
         elif self.state == GameState.CONFIG_CONFIRM:
@@ -647,9 +675,26 @@ class MagicPongApp:
                 message = "Confirm action?"
                 title = "Confirm"
 
-            # First draw the category menu as background
             category_names = [cat.name for cat in CONFIG_CATEGORIES]
-            self.renderer.draw_config_category_menu(category_names, self.config_category_selected)
+            if (
+                self.config_confirm_return_state == GameState.CONFIG_OPTIONS
+                and self.config_current_category
+            ):
+                # First draw the options menu as background
+                options_data = self._build_config_options_data(self.config_current_category)
+                self.renderer.draw_config_option_menu(
+                    self.config_current_category.name,
+                    options_data,
+                    self.config_option_selected,
+                    self.config_is_editing,
+                    category_names,
+                    self.config_category_selected,
+                )
+            else:
+                # First draw the category menu as background
+                self.renderer.draw_config_category_menu(
+                    category_names, self.config_category_selected
+                )
             # Then overlay the confirmation dialog
             self.renderer.draw_confirmation_dialog(message, title)
 

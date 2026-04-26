@@ -57,6 +57,11 @@ class PygameRenderer:
         self.font_large = pygame.font.Font(None, 74)
         self.font_medium = pygame.font.Font(None, 48)
         self.font_small = pygame.font.Font(None, 36)
+        self.font_config_title = pygame.font.Font(None, 54)
+        self.font_config_section = pygame.font.Font(None, 34)
+        self.font_config_body = pygame.font.Font(None, 28)
+        self.font_config_hint = pygame.font.Font(None, 24)
+        self.font_config_micro = pygame.font.Font(None, 20)
 
         # UI state
         self.show_fps = False
@@ -614,39 +619,44 @@ class PygameRenderer:
         self.show_debug = not self.show_debug
 
     def draw_config_category_menu(self, categories: list, selected_index: int) -> None:
-        """Draw the configuration category selection menu"""
-        self.clear_screen()
+        """Draw the configuration category selection panel."""
+        layout = self._draw_settings_shell(categories, selected_index, "Choose a settings group")
+        content_rect = layout["content"]
 
-        # Title
-        title_surface = self.font_large.render("SETTINGS", True, self.text_color)
-        title_rect = title_surface.get_rect()
-        title_rect.center = (self.width // 2, self.height // 6)
-        self.screen.blit(title_surface, title_rect)
+        selected_name = categories[selected_index] if categories else "Settings"
+        title_surface = self.font_config_section.render("Control Panel", True, self.text_color)
+        self.screen.blit(title_surface, (content_rect.x + 24, content_rect.y + 24))
 
-        # Categories
-        start_y = self.height // 3
-        for i, category_name in enumerate(categories):
-            color = (255, 255, 0) if i == selected_index else self.text_color
-            category_surface = self.font_medium.render(category_name, True, color)
-            category_rect = category_surface.get_rect()
-            category_rect.center = (self.width // 2, start_y + i * 60)
-            self.screen.blit(category_surface, category_rect)
+        prompt = "Select a category to edit its options."
+        prompt_surface = self.font_config_body.render(prompt, True, (190, 198, 210))
+        self.screen.blit(prompt_surface, (content_rect.x + 24, content_rect.y + 64))
 
-        # Instructions
-        instructions = [
-            "Use UP/DOWN to navigate",
-            "Press ENTER to select category",
-            "Press S to SAVE configuration",
-            "Press R to RESET to defaults",
-            "Press ESC to return to menu",
-        ]
+        preview_rect = pygame.Rect(
+            content_rect.x + 24,
+            content_rect.y + 120,
+            content_rect.width - 48,
+            min(128, content_rect.height - 168),
+        )
+        pygame.draw.rect(self.screen, (22, 27, 36), preview_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (58, 70, 88), preview_rect, 1, border_radius=8)
 
-        inst_y = self.height * 4 // 5
-        for i, instruction in enumerate(instructions):
-            inst_surface = self.font_small.render(instruction, True, self.text_color)
-            inst_rect = inst_surface.get_rect()
-            inst_rect.center = (self.width // 2, inst_y + i * 25)
-            self.screen.blit(inst_surface, inst_rect)
+        preview_title = self.font_config_body.render(selected_name, True, (255, 220, 95))
+        self.screen.blit(preview_title, (preview_rect.x + 18, preview_rect.y + 18))
+
+        preview_text = "Press ENTER or SPACE to open this group."
+        preview_surface = self.font_config_hint.render(preview_text, True, (168, 176, 190))
+        self.screen.blit(preview_surface, (preview_rect.x + 18, preview_rect.y + 55))
+
+        self._draw_hint_bar(
+            layout["footer"],
+            [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER", "Open"),
+                ("S", "Save"),
+                ("R", "Reset"),
+                ("ESC", "Back"),
+            ],
+        )
 
     def draw_config_option_menu(
         self,
@@ -654,106 +664,431 @@ class PygameRenderer:
         options: list[dict],
         selected_index: int,
         is_editing: bool = False,
+        categories: list | None = None,
+        selected_category_index: int = 0,
     ) -> None:
-        """Draw the configuration options menu for a specific category"""
-        self.clear_screen()
+        """Draw the configuration options control panel for a category."""
+        sidebar_categories = categories or [category_name]
+        layout = self._draw_settings_shell(
+            sidebar_categories,
+            selected_category_index,
+            f"{category_name} settings",
+        )
+        content_rect = layout["content"]
 
-        # Title
-        title_surface = self.font_large.render(f"{category_name} Settings", True, self.text_color)
-        title_rect = title_surface.get_rect()
-        title_rect.center = (self.width // 2, 60)
-        self.screen.blit(title_surface, title_rect)
+        header_y = content_rect.y + 18
+        title_surface = self.font_config_section.render(category_name, True, self.text_color)
+        self.screen.blit(title_surface, (content_rect.x + 22, header_y))
 
-        # Options
-        start_y = 140
-        max_visible = 8  # Maximum options visible at once
+        status_text = "EDITING" if is_editing else "READY"
+        status_color = (70, 210, 130) if is_editing else (100, 170, 255)
+        self._draw_status_badge(
+            status_text,
+            status_color,
+            pygame.Rect(content_rect.right - 112, header_y + 2, 86, 28),
+        )
 
-        # Calculate scroll offset
-        scroll_offset = 0
-        if selected_index >= max_visible - 1:
-            scroll_offset = selected_index - max_visible + 1
+        row_height = 68
+        list_top = content_rect.y + 62
+        available_height = content_rect.bottom - list_top - 14
+        max_visible = max(1, available_height // row_height)
 
-        for i in range(max_visible):
-            option_index = i + scroll_offset
+        max_scroll = max(0, len(options) - max_visible)
+        scroll_offset = min(max(0, selected_index - max_visible + 1), max_scroll)
+
+        for visible_index in range(max_visible):
+            option_index = visible_index + scroll_offset
             if option_index >= len(options):
                 break
 
             option = options[option_index]
-            is_selected = option_index == selected_index
-            y_pos = start_y + i * 55
+            row_rect = pygame.Rect(
+                content_rect.x + 16,
+                list_top + visible_index * row_height,
+                content_rect.width - 32,
+                row_height - 8,
+            )
+            self._draw_config_option_row(
+                option,
+                row_rect,
+                option_index == selected_index,
+                is_editing and option_index == selected_index,
+            )
 
-            # Option label
-            label_color = (255, 255, 0) if is_selected else self.text_color
-            if is_editing and is_selected:
-                label_color = (0, 255, 0)  # Green when editing
-
-            label_surface = self.font_medium.render(option["label"], True, label_color)
-            label_rect = label_surface.get_rect()
-            label_rect.midleft = (100, y_pos)
-            self.screen.blit(label_surface, label_rect)
-
-            # Option value
-            value_text = self._format_config_value(option["value"], option["field_type"])
-            value_color = (0, 255, 0) if (is_editing and is_selected) else (200, 200, 200)
-            value_surface = self.font_medium.render(value_text, True, value_color)
-            value_rect = value_surface.get_rect()
-            value_rect.midright = (self.width - 100, y_pos)
-            self.screen.blit(value_surface, value_rect)
-
-            # Show range for selected numeric options
-            if is_selected and option["field_type"] == "numeric":
-                range_text = f"[{option['min_value']:.0f} - {option['max_value']:.0f}]"
-                range_surface = self.font_small.render(range_text, True, (150, 150, 150))
-                range_rect = range_surface.get_rect()
-                range_rect.midright = (self.width - 100, y_pos + 25)
-                self.screen.blit(range_surface, range_rect)
-
-        # Scroll indicators
         if scroll_offset > 0:
-            up_arrow = self.font_small.render("↑ More options above", True, (150, 150, 150))
-            up_rect = up_arrow.get_rect()
-            up_rect.center = (self.width // 2, start_y - 20)
-            self.screen.blit(up_arrow, up_rect)
+            indicator = self.font_config_micro.render("More above", True, (140, 150, 166))
+            self.screen.blit(
+                indicator, (content_rect.right - indicator.get_width() - 24, list_top - 18)
+            )
 
         if scroll_offset + max_visible < len(options):
-            down_arrow = self.font_small.render("↓ More options below", True, (150, 150, 150))
-            down_rect = down_arrow.get_rect()
-            down_rect.center = (self.width // 2, start_y + max_visible * 55 + 10)
-            self.screen.blit(down_arrow, down_rect)
+            indicator = self.font_config_micro.render("More below", True, (140, 150, 166))
+            self.screen.blit(
+                indicator,
+                (
+                    content_rect.right - indicator.get_width() - 24,
+                    content_rect.bottom - indicator.get_height() - 8,
+                ),
+            )
 
-        # Instructions
-        inst_y = self.height - 120
-        if is_editing:
-            instructions = [
-                "LEFT/RIGHT to change value",
-                "ENTER to confirm",
-                "ESC to cancel",
+        selected_field_type = ""
+        if options and 0 <= selected_index < len(options):
+            selected_field_type = options[selected_index]["field_type"]
+
+        if is_editing and selected_field_type == "boolean":
+            hints = [
+                ("LEFT/RIGHT", "Change"),
+                ("SPACE", "Toggle"),
+                ("ENTER", "Confirm"),
+                ("ESC", "Cancel"),
+            ]
+        elif is_editing:
+            hints = [
+                ("LEFT/RIGHT", "Change"),
+                ("ENTER/SPACE", "Confirm"),
+                ("ESC", "Cancel"),
             ]
         else:
-            instructions = [
-                "UP/DOWN to navigate",
-                "ENTER to edit value",
-                "ESC to return",
+            hints = [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER", "Edit"),
+                ("S", "Save"),
+                ("R", "Reset"),
+                ("ESC", "Back"),
             ]
 
-        for i, instruction in enumerate(instructions):
-            inst_surface = self.font_small.render(instruction, True, self.text_color)
-            inst_rect = inst_surface.get_rect()
-            inst_rect.center = (self.width // 2, inst_y + i * 25)
-            self.screen.blit(inst_surface, inst_rect)
+        self._draw_hint_bar(layout["footer"], hints)
 
     def _format_config_value(self, value: Any, field_type: str) -> str:
         """Format a configuration value for display"""
         if field_type == "boolean":
             return "ON" if value else "OFF"
         elif field_type == "numeric":
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
             if isinstance(value, float):
-                return f"{value:.2f}"
+                return f"{value:.2f}".rstrip("0").rstrip(".")
             return str(value)
         elif field_type == "selection":
             return str(value).upper()
         else:
             return str(value)
+
+    def _draw_settings_shell(
+        self, categories: list, selected_index: int, subtitle: str
+    ) -> dict[str, pygame.Rect]:
+        """Draw the shared settings frame and category sidebar."""
+        self.screen.fill((7, 10, 15))
+
+        margin = max(18, min(30, self.width // 28))
+        gap = max(12, min(18, self.width // 48))
+        footer_height = 56
+        body_top = 82
+        body_bottom = self.height - footer_height - 18
+        body_height = max(220, body_bottom - body_top)
+        sidebar_width = max(150, min(220, self.width // 4))
+
+        sidebar_rect = pygame.Rect(margin, body_top, sidebar_width, body_height)
+        content_rect = pygame.Rect(
+            sidebar_rect.right + gap,
+            body_top,
+            self.width - sidebar_rect.right - gap - margin,
+            body_height,
+        )
+        footer_rect = pygame.Rect(
+            margin,
+            self.height - footer_height - 10,
+            self.width - 2 * margin,
+            footer_height,
+        )
+
+        title_surface = self.font_config_title.render("Settings", True, self.text_color)
+        self.screen.blit(title_surface, (margin, 24))
+
+        subtitle_text = self._truncate_text(
+            subtitle, self.font_config_hint, max(120, self.width - 260)
+        )
+        subtitle_surface = self.font_config_hint.render(subtitle_text, True, (154, 166, 184))
+        subtitle_rect = subtitle_surface.get_rect()
+        subtitle_rect.midleft = (margin + 190, 47)
+        self.screen.blit(subtitle_surface, subtitle_rect)
+
+        self._draw_panel(sidebar_rect, (14, 18, 27), (52, 63, 80))
+        self._draw_panel(content_rect, (11, 15, 23), (48, 58, 74))
+
+        nav_label = self.font_config_micro.render("CATEGORIES", True, (126, 138, 156))
+        self.screen.blit(nav_label, (sidebar_rect.x + 16, sidebar_rect.y + 16))
+
+        row_y = sidebar_rect.y + 46
+        row_height = 42
+        for index, category in enumerate(categories):
+            row_rect = pygame.Rect(
+                sidebar_rect.x + 10,
+                row_y + index * row_height,
+                sidebar_rect.width - 20,
+                row_height - 6,
+            )
+            is_selected = index == selected_index
+            if is_selected:
+                pygame.draw.rect(self.screen, (32, 41, 55), row_rect, border_radius=8)
+                pygame.draw.rect(self.screen, (255, 214, 95), row_rect, 1, border_radius=8)
+                accent_rect = pygame.Rect(row_rect.x, row_rect.y + 7, 4, row_rect.height - 14)
+                pygame.draw.rect(self.screen, (255, 214, 95), accent_rect, border_radius=2)
+
+            color = self.text_color if is_selected else (170, 180, 195)
+            category_text = self._truncate_text(
+                category, self.font_config_body, row_rect.width - 22
+            )
+            category_surface = self.font_config_body.render(category_text, True, color)
+            category_rect = category_surface.get_rect()
+            category_rect.midleft = (row_rect.x + 14, row_rect.centery)
+            self.screen.blit(category_surface, category_rect)
+
+        return {"sidebar": sidebar_rect, "content": content_rect, "footer": footer_rect}
+
+    def _draw_panel(
+        self,
+        rect: pygame.Rect,
+        fill_color: tuple[int, int, int],
+        border_color: tuple[int, int, int],
+    ) -> None:
+        """Draw a bordered panel."""
+        pygame.draw.rect(self.screen, fill_color, rect, border_radius=8)
+        pygame.draw.rect(self.screen, border_color, rect, 1, border_radius=8)
+
+    def _draw_status_badge(self, text: str, color: tuple[int, int, int], rect: pygame.Rect) -> None:
+        """Draw the current settings panel state."""
+        pygame.draw.rect(self.screen, (22, 28, 38), rect, border_radius=6)
+        pygame.draw.rect(self.screen, color, rect, 1, border_radius=6)
+
+        text_surface = self.font_config_micro.render(text, True, color)
+        text_rect = text_surface.get_rect(center=rect.center)
+        self.screen.blit(text_surface, text_rect)
+
+    def _draw_config_option_row(
+        self,
+        option: dict,
+        row_rect: pygame.Rect,
+        is_selected: bool,
+        is_editing: bool,
+    ) -> None:
+        """Draw one settings option row with an appropriate value control."""
+        fill_color = (26, 32, 43) if is_selected else (14, 19, 29)
+        border_color = (74, 212, 132) if is_editing else (255, 214, 95)
+        muted_color = (150, 160, 176)
+
+        pygame.draw.rect(self.screen, fill_color, row_rect, border_radius=8)
+        if is_selected:
+            pygame.draw.rect(self.screen, border_color, row_rect, 2, border_radius=8)
+
+        control_width = min(240, max(176, int(row_rect.width * 0.44)))
+        control_rect = pygame.Rect(
+            row_rect.right - control_width - 14,
+            row_rect.y + 10,
+            control_width,
+            row_rect.height - 20,
+        )
+        label_width = control_rect.x - row_rect.x - 28
+
+        label_color = (255, 224, 118) if is_selected else self.text_color
+        if is_editing:
+            label_color = (92, 232, 146)
+
+        label_text = self._truncate_text(option["label"], self.font_config_body, label_width)
+        label_surface = self.font_config_body.render(label_text, True, label_color)
+        self.screen.blit(label_surface, (row_rect.x + 14, row_rect.y + 10))
+
+        description = option.get("description") or ""
+        description_text = self._truncate_text(description, self.font_config_hint, label_width)
+        description_surface = self.font_config_hint.render(description_text, True, muted_color)
+        self.screen.blit(description_surface, (row_rect.x + 14, row_rect.y + 35))
+
+        self._draw_config_value_control(option, control_rect, is_selected, is_editing)
+
+    def _draw_config_value_control(
+        self,
+        option: dict,
+        control_rect: pygame.Rect,
+        is_selected: bool,
+        is_editing: bool,
+    ) -> None:
+        """Draw a type-specific control for a setting value."""
+        field_type = option["field_type"]
+        if field_type == "boolean":
+            self._draw_boolean_toggle(control_rect, bool(option["value"]), is_editing)
+        elif field_type == "numeric":
+            self._draw_numeric_slider(option, control_rect, is_selected, is_editing)
+        elif field_type == "selection":
+            self._draw_selection_segments(option, control_rect, is_editing)
+        else:
+            value_text = self._format_config_value(option["value"], field_type)
+            color = (92, 232, 146) if is_editing else (210, 218, 228)
+            value_text = self._truncate_text(value_text, self.font_config_body, control_rect.width)
+            value_surface = self.font_config_body.render(value_text, True, color)
+            value_rect = value_surface.get_rect(midright=(control_rect.right, control_rect.centery))
+            self.screen.blit(value_surface, value_rect)
+
+    def _draw_boolean_toggle(
+        self, control_rect: pygame.Rect, value: bool, is_editing: bool
+    ) -> None:
+        """Draw a boolean as an ON/OFF toggle."""
+        toggle_width = min(118, control_rect.width)
+        toggle_height = 32
+        toggle_rect = pygame.Rect(
+            control_rect.right - toggle_width,
+            control_rect.centery - toggle_height // 2,
+            toggle_width,
+            toggle_height,
+        )
+        fill_color = (50, 144, 95) if value else (62, 70, 82)
+        border_color = (92, 232, 146) if is_editing else (112, 124, 142)
+        pygame.draw.rect(self.screen, fill_color, toggle_rect, border_radius=toggle_height // 2)
+        pygame.draw.rect(
+            self.screen, border_color, toggle_rect, 2, border_radius=toggle_height // 2
+        )
+
+        knob_radius = 11
+        knob_x = toggle_rect.right - 18 if value else toggle_rect.x + 18
+        pygame.draw.circle(self.screen, (235, 240, 246), (knob_x, toggle_rect.centery), knob_radius)
+
+        value_text = "ON" if value else "OFF"
+        text_color = (236, 244, 240) if value else (218, 224, 232)
+        text_surface = self.font_config_micro.render(value_text, True, text_color)
+        text_x = toggle_rect.x + 18 if value else toggle_rect.right - text_surface.get_width() - 18
+        text_rect = text_surface.get_rect(midleft=(text_x, toggle_rect.centery))
+        self.screen.blit(text_surface, text_rect)
+
+    def _draw_numeric_slider(
+        self, option: dict, control_rect: pygame.Rect, is_selected: bool, is_editing: bool
+    ) -> None:
+        """Draw a numeric value with slider context."""
+        value = option["value"]
+        min_value = option.get("min_value")
+        max_value = option.get("max_value")
+        value_text = self._format_config_value(value, "numeric")
+        value_color = (92, 232, 146) if is_editing else (220, 226, 236)
+
+        value_surface = self.font_config_body.render(value_text, True, value_color)
+        value_rect = value_surface.get_rect(topright=(control_rect.right, control_rect.y - 1))
+        self.screen.blit(value_surface, value_rect)
+
+        track_width = control_rect.width
+        track_rect = pygame.Rect(control_rect.x, control_rect.y + 28, track_width, 6)
+        pygame.draw.rect(self.screen, (50, 58, 70), track_rect, border_radius=3)
+
+        if min_value is not None and max_value is not None and max_value != min_value:
+            percent = (float(value) - float(min_value)) / (float(max_value) - float(min_value))
+            percent = max(0.0, min(1.0, percent))
+            fill_width = max(4, int(track_rect.width * percent))
+            fill_rect = pygame.Rect(track_rect.x, track_rect.y, fill_width, track_rect.height)
+            fill_color = (92, 232, 146) if is_editing else (100, 170, 255)
+            pygame.draw.rect(self.screen, fill_color, fill_rect, border_radius=3)
+            thumb_x = track_rect.x + fill_width
+            thumb_color = (
+                (92, 232, 146) if is_editing else (255, 214, 95) if is_selected else (190, 198, 210)
+            )
+            pygame.draw.circle(self.screen, thumb_color, (thumb_x, track_rect.centery), 6)
+
+            min_text = self._format_config_value(min_value, "numeric")
+            max_text = self._format_config_value(max_value, "numeric")
+            min_surface = self.font_config_micro.render(min_text, True, (132, 142, 158))
+            max_surface = self.font_config_micro.render(max_text, True, (132, 142, 158))
+            self.screen.blit(min_surface, (track_rect.x, track_rect.bottom + 4))
+            max_rect = max_surface.get_rect(topright=(track_rect.right, track_rect.bottom + 4))
+            self.screen.blit(max_surface, max_rect)
+
+    def _draw_selection_segments(
+        self, option: dict, control_rect: pygame.Rect, is_editing: bool
+    ) -> None:
+        """Draw a selection value as compact segmented choices."""
+        choices = option.get("choices") or []
+        if not choices:
+            value_text = self._format_config_value(option["value"], "selection")
+            value_surface = self.font_config_body.render(value_text, True, (220, 226, 236))
+            value_rect = value_surface.get_rect(midright=(control_rect.right, control_rect.centery))
+            self.screen.blit(value_surface, value_rect)
+            return
+
+        segment_height = 30
+        segment_rect = pygame.Rect(
+            control_rect.x,
+            control_rect.centery - segment_height // 2,
+            control_rect.width,
+            segment_height,
+        )
+        segment_width = max(1, segment_rect.width // len(choices))
+        selected_value = option["value"]
+
+        for index, choice in enumerate(choices):
+            part_rect = pygame.Rect(
+                segment_rect.x + index * segment_width,
+                segment_rect.y,
+                segment_width,
+                segment_height,
+            )
+            if index == len(choices) - 1:
+                part_rect.width = segment_rect.right - part_rect.x
+
+            is_current = choice == selected_value
+            fill_color = (50, 144, 95) if is_current else (22, 28, 38)
+            border_color = (92, 232, 146) if is_editing and is_current else (74, 86, 104)
+            pygame.draw.rect(self.screen, fill_color, part_rect)
+            pygame.draw.rect(self.screen, border_color, part_rect, 1)
+
+            label = self._truncate_text(
+                str(choice).upper(), self.font_config_micro, part_rect.width - 8
+            )
+            text_color = (240, 246, 244) if is_current else (170, 180, 195)
+            choice_surface = self.font_config_micro.render(label, True, text_color)
+            choice_rect = choice_surface.get_rect(center=part_rect.center)
+            self.screen.blit(choice_surface, choice_rect)
+
+    def _draw_hint_bar(self, footer_rect: pygame.Rect, hints: list[tuple[str, str]]) -> None:
+        """Draw compact keyboard hints in the settings footer."""
+        self._draw_panel(footer_rect, (12, 16, 24), (44, 54, 70))
+
+        x = footer_rect.x + 12
+        y = footer_rect.y + 13
+        chip_height = 30
+        gap = 8
+
+        for key, action in hints:
+            label = f"{key} {action}"
+            label_width = self.font_config_hint.size(label)[0]
+            chip_width = label_width + 18
+
+            if x + chip_width > footer_rect.right - 12:
+                x = footer_rect.x + 12
+                y += chip_height + 6
+                if y + chip_height > footer_rect.bottom - 6:
+                    break
+
+            chip_rect = pygame.Rect(x, y, chip_width, chip_height)
+            pygame.draw.rect(self.screen, (24, 30, 40), chip_rect, border_radius=6)
+            pygame.draw.rect(self.screen, (58, 70, 88), chip_rect, 1, border_radius=6)
+
+            label_surface = self.font_config_hint.render(label, True, (202, 210, 222))
+            label_rect = label_surface.get_rect(center=chip_rect.center)
+            self.screen.blit(label_surface, label_rect)
+
+            x += chip_width + gap
+
+    def _truncate_text(self, text: str, font: pygame.font.Font, max_width: int) -> str:
+        """Trim text to fit a single line."""
+        if font.size(text)[0] <= max_width:
+            return text
+
+        suffix = "..."
+        suffix_width = font.size(suffix)[0]
+        available_width = max_width - suffix_width
+        if available_width <= 0:
+            return suffix
+
+        trimmed = text
+        while trimmed and font.size(trimmed)[0] > available_width:
+            trimmed = trimmed[:-1]
+
+        return trimmed.rstrip() + suffix
 
     def draw_confirmation_dialog(self, message: str, title: str = "Confirm") -> None:
         """Draw a confirmation dialog"""
