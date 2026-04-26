@@ -65,7 +65,7 @@ class Vector2D:
         return Vector2D(-self.x, -self.y)
 
     def magnitude(self) -> float:
-        return float(np.linalg.norm([self.x, self.y]))
+        return math.hypot(self.x, self.y)
 
     def normalize(self) -> "Vector2D":
         mag = self.magnitude()
@@ -170,7 +170,11 @@ class Paddle:
             self.max_x = game_config.FIELD_WIDTH - self.width - game_config.PADDLE_MARGIN
 
         self.min_y = 0.0
-        self.max_y = game_config.FIELD_HEIGHT - self.original_height
+        self._recompute_y_bounds()
+
+    def _recompute_y_bounds(self) -> None:
+        """Refresh vertical bounds after height changes."""
+        self.max_y = game_config.FIELD_HEIGHT - self.height
 
     def update(self, dt: float) -> None:
         """Updates the paddle (temporary effects)"""
@@ -208,10 +212,8 @@ class Paddle:
         diff_size = new_size - self.height
         self.position.y -= diff_size / 2  # Center the paddle
 
-        # Readjust Y limits
-        self.max_y = game_config.FIELD_HEIGHT - self.height
-
         self.height = new_size
+        self._recompute_y_bounds()
 
         # Ensure constraints
         self.constrain_position()
@@ -219,7 +221,8 @@ class Paddle:
     def reset_size(self) -> None:
         """Resets to normal size"""
         self.height = self.original_height
-        self.max_y = game_config.FIELD_HEIGHT - self.height
+        self._recompute_y_bounds()
+        self.constrain_position()
 
     def get_rect(self) -> tuple[float, float, float, float]:
         """Returns the collision rectangle properties (x, y, width, height)"""

@@ -6,6 +6,19 @@ from typing import Any
 from typing import Protocol
 
 
+def _event_player(event: Any) -> int | None:
+    """Return a player id from canonical dict events or older scalar/tuple events."""
+    if isinstance(event, dict):
+        player = event.get("player")
+        return int(player) if player is not None else None
+    if isinstance(event, int):
+        return event
+    if isinstance(event, tuple | list) and event:
+        player = event[0]
+        return int(player) if isinstance(player, int) else None
+    return None
+
+
 class RewardCalculator(Protocol):
     """
     Protocol for reward calculation strategies.
@@ -124,16 +137,16 @@ class DenseRewardCalculator:
                 reward += self.lose_penalty
 
         # Paddle hits
-        for hit_player in events.get("paddle_hits", []):
-            if hit_player == player_id:
+        for hit_event in events.get("paddle_hits", []):
+            if _event_player(hit_event) == player_id:
                 reward += self.hit_reward
 
         # Wall bounces (small reward for keeping ball in play)
         reward += len(events.get("wall_bounces", [])) * self.wall_reward
 
         # Bonus collection
-        for bonus_player, _ in events.get("bonus_collected", []):
-            if bonus_player == player_id:
+        for bonus_event in events.get("bonus_collected", []):
+            if _event_player(bonus_event) == player_id:
                 reward += self.bonus_reward
 
         return reward

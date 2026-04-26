@@ -6,6 +6,7 @@ from magic_pong.core.entities import Action
 from magic_pong.core.entities import Ball
 from magic_pong.core.entities import Paddle
 from magic_pong.core.entities import Vector2D
+from magic_pong.utils.config import game_config
 
 
 class TestVector2D:
@@ -168,6 +169,16 @@ class TestPaddle:
         assert paddle.height == original_height * 1.5
         assert paddle.size_effect_timer == 5.0
 
+    def test_apply_size_effect_constrains_bottom_edge(self) -> None:
+        """Enlarging a bottom-edge paddle must keep it inside the field."""
+        paddle = Paddle(100.0, game_config.FIELD_HEIGHT - game_config.PADDLE_HEIGHT, 1)
+
+        paddle.apply_size_effect(2.0, 5.0)
+
+        assert paddle.max_y == game_config.FIELD_HEIGHT - paddle.height
+        assert paddle.position.y == paddle.max_y
+        assert paddle.position.y + paddle.height <= game_config.FIELD_HEIGHT
+
     def test_reset_size(self) -> None:
         """Test resetting to normal size"""
         paddle = Paddle(100.0, 200.0, 1)
@@ -176,3 +187,15 @@ class TestPaddle:
         paddle.reset_size()
         assert paddle.height == original_height
         assert paddle.size_effect_timer == 5.0
+
+    def test_reset_size_constrains_bottom_edge_after_shrink(self) -> None:
+        """Resetting from a smaller paddle must recompute bounds before constraining."""
+        paddle = Paddle(100.0, 200.0, 1)
+        paddle.apply_size_effect(0.25, 5.0)
+        paddle.position.y = paddle.max_y
+
+        paddle.reset_size()
+
+        assert paddle.max_y == game_config.FIELD_HEIGHT - paddle.height
+        assert paddle.position.y == paddle.max_y
+        assert paddle.position.y + paddle.height <= game_config.FIELD_HEIGHT

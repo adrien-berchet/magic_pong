@@ -307,9 +307,11 @@ class RewardCalculator:
         proximity_reward = 0.0
         if distance_change < 0:  # Getting closer to optimal interception point
             dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
-            previous_x_dist = (
-                game_state.get(f"player{player_id}_prev_position", (0, 0))[0] - ball_vel[0] * dt
+            previous_position = game_state.get(
+                f"player{player_id}_prev_position",
+                game_state.get(f"player{player_id}_last_position", (0, 0)),
             )
+            previous_x_dist = previous_position[0] - ball_vel[0] * dt
             new_x_dist = ball_pos[0] - paddle_center_x
             ball_player_direction = (player_id == 1 and ball_vel[0] < 0) or (
                 player_id == 2 and ball_vel[0] > 0
@@ -600,7 +602,7 @@ class GameEnvironment:
         return obs1, obs2
 
     def step(
-        self, action1: Action | None, action2: Action | None
+        self, action1: Action | None, action2: Action | None, dt: float | None = None
     ) -> tuple[dict[str, Any], dict[str, Any], float, float, bool, dict[str, Any]]:
         """
         Performs a step in the environment
@@ -608,6 +610,7 @@ class GameEnvironment:
         Args:
             action1: Player 1 action
             action2: Player 2 action
+            dt: Optional explicit delta time in seconds. If omitted, use the configured fixed step.
 
         Returns:
             Tuple: (obs1, obs2, reward1, reward2, done, info)
@@ -619,10 +622,10 @@ class GameEnvironment:
             action2 = Action(move_x=0.0, move_y=0.0)
 
         # Update physics
-        # dt = 1.0 / 60.0  # 60 FPS
-        dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
-        if ai_config.HEADLESS_MODE:
-            dt *= ai_config.FAST_MODE_MULTIPLIER
+        if dt is None:
+            dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
+            if self.headless or ai_config.HEADLESS_MODE:
+                dt *= ai_config.FAST_MODE_MULTIPLIER
 
         events = self.physics_engine.update(dt, action1, action2)
         game_state = self.physics_engine.get_game_state()
@@ -630,6 +633,8 @@ class GameEnvironment:
         # Calculate rewards
         reward1 = self.reward_calculators[1].calculate_reward(game_state, events, 1)
         reward2 = self.reward_calculators[2].calculate_reward(game_state, events, 2)
+
+        self.step_count += 1
 
         # Check if episode is finished
         done = self.physics_engine.is_game_over() or self.step_count >= self.max_steps
@@ -649,8 +654,6 @@ class GameEnvironment:
                 2: self.reward_calculators[2].get_optimal_points().get(2),
             },
         }
-
-        self.step_count += 1
 
         return obs1, obs2, reward1, reward2, done, info
 
