@@ -1513,55 +1513,62 @@ def evaluate_final_performance(agent, args):
         headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
     )
 
-    # Disable exploration for evaluation
+    # Disable learning for evaluation while honoring explicit evaluation exploration.
+    was_training = agent.training_enabled
+    was_exploring = agent.exploration_enabled
     original_epsilon = agent.epsilon
+    agent.set_training_mode(False)
     agent.epsilon = args.eval_epsilon
+    agent.set_exploration_mode(args.eval_epsilon > 0)
 
-    results = {}
+    try:
+        results = {}
 
-    for opponent_name, opponent in opponents.items():
-        print(f"\nAgainst {opponent_name}:")
-        wins = 0
-        rewards = []
+        for opponent_name, opponent in opponents.items():
+            print(f"\nAgainst {opponent_name}:")
+            wins = 0
+            rewards = []
 
-        for _ in range(args.eval_episodes):
-            agent.on_episode_start()
-            episode_stats = training_manager.train_episode(
-                agent, opponent, max_steps=args.max_steps_per_episode
-            )
+            for _ in range(args.eval_episodes):
+                agent.on_episode_start()
+                episode_stats = training_manager.train_episode(
+                    agent, opponent, max_steps=args.max_steps_per_episode
+                )
 
-            if episode_stats.get("winner") == 1:
-                wins += 1
-            rewards.append(episode_stats["total_reward_p1"])
+                if episode_stats.get("winner") == 1:
+                    wins += 1
+                rewards.append(episode_stats["total_reward_p1"])
 
-        win_rate = wins / args.eval_episodes * 100
-        avg_reward = np.mean(rewards)
+            win_rate = wins / args.eval_episodes * 100
+            avg_reward = np.mean(rewards)
 
-        results[opponent_name] = {
-            "win_rate": win_rate,
-            "avg_reward": avg_reward,
-            "std_reward": np.std(rewards),
-        }
+            results[opponent_name] = {
+                "win_rate": win_rate,
+                "avg_reward": avg_reward,
+                "std_reward": np.std(rewards),
+            }
 
-        print(f"  Win rate: {win_rate:.1f}%")
-        print(f"  Average reward: {avg_reward:.2f} ± {np.std(rewards):.2f}")
+            print(f"  Win rate: {win_rate:.1f}%")
+            print(f"  Average reward: {avg_reward:.2f} ± {np.std(rewards):.2f}")
 
-    # Restore epsilon
-    agent.epsilon = original_epsilon
+        # Save evaluation results
+        if args.save_eval_results:
+            eval_path = Path(args.output_dir) / f"{args.model_prefix}_evaluation.json"
+            with open(eval_path, "w") as f:
+                json.dump(results, f, indent=2)
+            print(f"Evaluation results saved: {eval_path}")
 
-    # Save evaluation results
-    if args.save_eval_results:
-        eval_path = Path(args.output_dir) / f"{args.model_prefix}_evaluation.json"
-        with open(eval_path, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"Evaluation results saved: {eval_path}")
+        return results
 
-    # Cleanup training manager
-    training_manager.cleanup()
+    finally:
+        agent.epsilon = original_epsilon
+        agent.set_training_mode(was_training)
+        agent.set_exploration_mode(was_exploring)
 
-    game_config.MAX_SCORE = original_max_score
+        # Cleanup training manager
+        training_manager.cleanup()
 
-    return results
+        game_config.MAX_SCORE = original_max_score
 
 
 def parse_arguments():

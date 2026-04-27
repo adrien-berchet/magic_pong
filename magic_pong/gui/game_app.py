@@ -498,8 +498,7 @@ class MagicPongApp:
             # Load the trained model
             agent.load_model(model_path)
 
-            # Set to evaluation mode (no exploration)
-            agent.epsilon = 0.0
+            # Set to evaluation mode; policy exploration is disabled there even if epsilon is saved.
             agent.set_training_mode(False)
 
             training_steps = model_info.get("training_step", "Unknown")

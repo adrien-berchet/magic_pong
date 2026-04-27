@@ -7,6 +7,9 @@ from typing import Any
 
 import pygame
 
+from magic_pong.ai.agent_adapter import adapt_action_for_agent
+from magic_pong.ai.agent_adapter import adapt_action_for_world
+from magic_pong.ai.agent_adapter import adapt_observation_for_agent
 from magic_pong.ai.interface import GameEnvironment
 from magic_pong.core.entities import Action
 from magic_pong.core.entities import Player
@@ -107,9 +110,12 @@ class GameEngine:
 
         # Notify AI players
         if self.player1 and hasattr(self.player1, "on_step"):
-            self.player1.on_step(obs1, action1, reward1, done, info)
+            agent_obs1 = adapt_observation_for_agent(obs1, 1, self.player1)
+            self.player1.on_step(agent_obs1, action1, reward1, done, info)
         if self.player2 and hasattr(self.player2, "on_step"):
-            self.player2.on_step(obs2, action2, reward2, done, info)
+            agent_obs2 = adapt_observation_for_agent(obs2, 2, self.player2)
+            agent_action2 = adapt_action_for_agent(action2, 2, self.player2)
+            self.player2.on_step(agent_obs2, agent_action2, reward2, done, info)
 
         # Check for game end
         if done:
@@ -139,8 +145,9 @@ class GameEngine:
             observation = self.ai_environment.observation_processor.process_game_state(
                 game_state, player_id
             )
-            action: Action = player.get_action(observation)
-            return action
+            agent_observation = adapt_observation_for_agent(observation, player_id, player)
+            action: Action = player.get_action(agent_observation)
+            return adapt_action_for_world(action, player_id, player)
         else:
             return None
 
@@ -265,6 +272,7 @@ class TrainingManager:
         """
         self.game_engine.set_players(player1, player2)
         self.game_engine.start_game()
+        self.game_engine.ai_environment.max_steps = max_steps
 
         # Set initial ball direction if specified
         if self.initial_ball_direction != 0 or self.initial_ball_angle is not None:

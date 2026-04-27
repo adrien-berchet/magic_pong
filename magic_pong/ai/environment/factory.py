@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from magic_pong.ai.agent_adapter import from_player1_dqn_action
 from magic_pong.ai.interfaces import DenseRewardCalculator
 from magic_pong.ai.interfaces import ObservationBuilder
 from magic_pong.ai.interfaces import RewardCalculator
@@ -213,11 +214,13 @@ class GameEnvironmentWrapper:
         # Opponent action (simple AI or random)
         opponent_action = GameAction(move_x=0.0, move_y=0.0)
 
+        world_action = from_player1_dqn_action(game_action, self.player_id)
+
         # Update physics
         events = self.physics.update(
             dt=1.0 / 60.0,  # 60 FPS
-            player1_action=game_action if self.player_id == 1 else opponent_action,
-            player2_action=opponent_action if self.player_id == 1 else game_action,
+            player1_action=world_action if self.player_id == 1 else opponent_action,
+            player2_action=opponent_action if self.player_id == 1 else world_action,
         )
 
         # Get new state

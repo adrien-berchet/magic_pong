@@ -8,6 +8,9 @@ from typing import Protocol
 import numpy as np
 import numpy.typing as npt
 
+from magic_pong.ai.agent_adapter import to_player1_frame_vx
+from magic_pong.ai.agent_adapter import to_player1_frame_x
+
 
 class ObservationBuilder(Protocol):
     """
@@ -89,9 +92,9 @@ class VectorObservationBuilder:
         p2_pos = game_state["player2_position"]
 
         # Normalize to [0, 1]
-        ball_x_norm = ball_pos[0] / self.field_width
+        ball_x_norm = to_player1_frame_x(ball_pos[0] / self.field_width, player_id, 1.0)
         ball_y_norm = ball_pos[1] / self.field_height
-        ball_vx_norm = ball_vel[0] / 1000.0  # Normalize velocity
+        ball_vx_norm = to_player1_frame_vx(ball_vel[0] / 1000.0, player_id)
         ball_vy_norm = ball_vel[1] / 1000.0
 
         # Player-relative observation
@@ -99,9 +102,6 @@ class VectorObservationBuilder:
             paddle_y_norm = p1_pos[1] / self.field_height
             opponent_y_norm = p2_pos[1] / self.field_height
         else:
-            # Mirror for player 2 (so they see from their perspective)
-            ball_x_norm = 1.0 - ball_x_norm
-            ball_vx_norm = -ball_vx_norm
             paddle_y_norm = p2_pos[1] / self.field_height
             opponent_y_norm = p1_pos[1] / self.field_height
 

@@ -17,6 +17,7 @@ import torch.optim as optim
 
 from magic_pong.ai.interface import AIPlayer
 from magic_pong.core.entities import Action
+from magic_pong.utils.config import game_config
 
 # Transition tuple for replay buffer
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
@@ -65,9 +66,24 @@ class HybridRewardCalculator:
         tactical_reward = 0.0
 
         # Extract key information
-        ball_pos = observation.get("ball_pos", [0.5, 0.5])
-        player_pos = observation.get("player_pos", [0.0, 0.5])
-        ball_vel = observation.get("ball_vel", [0.0, 0.0])
+        raw_ball_pos = observation.get("ball_pos", [0.5, 0.5])
+        raw_player_pos = observation.get("player_pos", [0.0, 0.5])
+        raw_ball_vel = observation.get("ball_vel", [0.0, 0.0])
+        field_width = float(observation.get("field_width", 1.0))
+        field_height = float(observation.get("field_height", 1.0))
+
+        ball_pos = [
+            self._normalize_position_axis(float(raw_ball_pos[0]), field_width),
+            self._normalize_position_axis(float(raw_ball_pos[1]), field_height),
+        ]
+        player_pos = [
+            self._normalize_position_axis(float(raw_player_pos[0]), field_width),
+            self._normalize_position_axis(float(raw_player_pos[1]), field_height),
+        ]
+        ball_vel = [
+            self._normalize_velocity_axis(float(raw_ball_vel[0])),
+            self._normalize_velocity_axis(float(raw_ball_vel[1])),
+        ]
 
         # 1. Ball tracking reward - core tactical skill
         if abs(ball_vel[0]) > 0.01:  # Ball is moving horizontally
@@ -76,14 +92,14 @@ class HybridRewardCalculator:
             predicted_ball_y = ball_pos[1] + ball_vel[1] * prediction_time
             predicted_ball_y = np.clip(predicted_ball_y, 0.0, 1.0)  # Clamp to valid range
 
-            # Reward moving towards predicted position when ball approaches
-            if ball_vel[0] > 0 and ball_pos[0] > 0.3:  # Ball coming towards player
+            # Reward positioning when the ball approaches the left-side canonical player.
+            if ball_vel[0] < 0 and ball_pos[0] < 0.7:  # Ball coming towards player
                 distance_to_predicted = abs(player_pos[1] - predicted_ball_y)
                 tracking_reward = max(0, 1.0 - distance_to_predicted * 3.0) * 0.15
                 tactical_reward += tracking_reward
 
         # 2. Optimal positioning reward for interception
-        if ball_vel[0] > 0 and ball_pos[0] > 0.5:  # Ball approaching player side
+        if ball_vel[0] < 0 and ball_pos[0] < 0.5:  # Ball approaching player side
             distance_to_ball_y = abs(ball_pos[1] - player_pos[1])
             if distance_to_ball_y < 0.15:  # Well positioned for interception
                 positioning_reward = (0.15 - distance_to_ball_y) / 0.15 * 0.1
@@ -93,24 +109,36 @@ class HybridRewardCalculator:
         movement_magnitude = abs(action.move_x) + abs(action.move_y)
 
         # Encourage stillness when well-positioned
-        if ball_vel[0] < 0 or abs(ball_pos[1] - player_pos[1]) < 0.08:  # Ball away or well-aligned
+        if ball_vel[0] > 0 or abs(ball_pos[1] - player_pos[1]) < 0.08:  # Ball away or aligned
             if movement_magnitude < 0.2:  # Minimal movement
                 efficiency_reward = 0.01
                 tactical_reward += efficiency_reward
 
         # 4. Immediate reaction bonus for ball contact situations
-        if ball_pos[0] > 0.8 and abs(ball_pos[1] - player_pos[1]) < 0.1:  # Close to contact
+        if (
+            ball_vel[0] < 0 and ball_pos[0] < 0.2 and abs(ball_pos[1] - player_pos[1]) < 0.1
+        ):  # Close to contact
             reaction_bonus = 0.08
             tactical_reward += reaction_bonus
 
         # 5. Defensive positioning when ball is distant
-        if ball_pos[0] < 0.3:  # Ball on opponent side
+        if ball_pos[0] > 0.7:  # Ball on opponent side
             center_distance = abs(player_pos[1] - 0.5)  # Distance from center
             if center_distance < 0.25:  # Stay reasonably centered
                 defensive_reward = (0.25 - center_distance) / 0.25 * 0.05
                 tactical_reward += defensive_reward
 
         return tactical_reward
+
+    def _normalize_position_axis(self, value: float, extent: float) -> float:
+        if extent > 1.0 and abs(value) > 1.0:
+            return value / extent
+        return value
+
+    def _normalize_velocity_axis(self, value: float) -> float:
+        if abs(value) > 1.0:
+            return value / game_config.MAX_BALL_SPEED
+        return value
 
     def calculate_strategic_reward(
         self,
@@ -188,10 +216,7 @@ class HybridRewardCalculator:
             events = obs.get("events", [])
 
             # Check for successful ball contact
-            if any(
-                "ball_hit" in str(event).lower() or "contact" in str(event).lower()
-                for event in events
-            ):
+            if self._has_successful_contact_event(events):
                 # Earlier actions in the sequence get progressively more credit
                 time_to_contact = future_step - step
                 if time_to_contact <= 15:  # Within reasonable sequence length
@@ -200,6 +225,21 @@ class HybridRewardCalculator:
                 break  # Only credit for first successful contact in sequence
 
         return rally_bonus
+
+    def _has_successful_contact_event(self, events: Any) -> bool:
+        """Return whether canonical or legacy event payloads include ball contact."""
+        if isinstance(events, dict):
+            return bool(events.get("paddle_hits") or events.get("rotating_paddle_hits"))
+
+        if isinstance(events, list):
+            return any(
+                "ball_hit" in str(event).lower()
+                or "contact" in str(event).lower()
+                or "paddle_hit" in str(event).lower()
+                for event in events
+            )
+
+        return False
 
     def _calculate_match_outcome_bonus(
         self, step: int, observations: list[dict[str, Any]], rewards: list[float]
@@ -243,12 +283,27 @@ class HybridRewardCalculator:
         total_defensive_situations = 0
 
         for obs in recent_obs:
-            ball_pos = obs.get("ball_pos", [0.5, 0.5])
-            player_pos = obs.get("player_pos", [0.0, 0.5])
-            ball_vel = obs.get("ball_vel", [0.0, 0.0])
+            raw_ball_pos = obs.get("ball_pos", [0.5, 0.5])
+            raw_player_pos = obs.get("player_pos", [0.0, 0.5])
+            raw_ball_vel = obs.get("ball_vel", [0.0, 0.0])
+            field_width = float(obs.get("field_width", 1.0))
+            field_height = float(obs.get("field_height", 1.0))
+
+            ball_pos = [
+                self._normalize_position_axis(float(raw_ball_pos[0]), field_width),
+                self._normalize_position_axis(float(raw_ball_pos[1]), field_height),
+            ]
+            player_pos = [
+                self._normalize_position_axis(float(raw_player_pos[0]), field_width),
+                self._normalize_position_axis(float(raw_player_pos[1]), field_height),
+            ]
+            ball_vel = [
+                self._normalize_velocity_axis(float(raw_ball_vel[0])),
+                self._normalize_velocity_axis(float(raw_ball_vel[1])),
+            ]
 
             # Identify defensive situations (ball far away or moving away)
-            if ball_pos[0] < 0.4 or ball_vel[0] < -0.1:
+            if ball_pos[0] > 0.6 or ball_vel[0] > 0.1:
                 total_defensive_situations += 1
 
                 # Good defensive position: stay reasonably centered
@@ -489,6 +544,8 @@ class ReplayBuffer:
 class DQNAgent(AIPlayer):
     """DQN Agent with stability improvements"""
 
+    uses_player1_dqn_frame = True
+
     def __init__(
         self,
         state_size: int = 32,
@@ -570,9 +627,11 @@ class DQNAgent(AIPlayer):
         self.episode_buffer: list[dict[str, Any]] = []
         self.episode_rewards: list[float] = []
 
-        # Previous state for learning
+        # Decision-time state/action waiting for the environment step result.
         self.last_state: np.ndarray | None = None
         self.last_action: int | None = None
+        self.training_enabled = True
+        self.exploration_enabled = True
 
         # Step counters for controlling training frequency
         self.step_count = 0
@@ -634,23 +693,27 @@ class DQNAgent(AIPlayer):
         self.loss_history: list[float] = []
         self.reward_history: list[float] = []
 
-    def get_action(self, observation: dict[str, Any] | None) -> Action:
+    def get_action(self, observation: dict[str, Any] | None, explore: bool | None = None) -> Action:
         """
         Required interface: converts observation to action
 
         Args:
             observation: Formatted game observation
+            explore: Whether to use epsilon-greedy exploration. Defaults to the agent's training mode.
 
         Returns:
             Action: Action to perform
         """
         if observation is None:
+            self._clear_pending_transition()
             return Action(move_x=0.0, move_y=0.0)
         # Convert observation to state vector
         state = self._observation_to_state(observation)
 
         # Get numeric action
-        action_idx = self.act(state, training=True)
+        action_idx = self.act(state, explore=explore)
+        self.last_state = state.copy()
+        self.last_action = action_idx
 
         # Convert to game Action
         return ACTION_MAPPING[action_idx]
@@ -679,6 +742,11 @@ class DQNAgent(AIPlayer):
         """
         current_state = self._observation_to_state(observation)
 
+        if not self.training_enabled:
+            self.current_episode_reward += reward
+            self._clear_pending_transition()
+            return
+
         # Route to appropriate training method
         if self.enable_dual_scale_training:
             self._on_step_dual_scale(current_state, action, reward, done, info, observation)
@@ -692,13 +760,7 @@ class DQNAgent(AIPlayer):
         # Update episode reward (common to all modes)
         self.current_episode_reward += reward
 
-        # Prepare for next step
-        if not done:
-            self.last_state = current_state
-            self.last_action = self._action_to_index(action)
-        else:
-            self.last_state = None
-            self.last_action = None
+        self._clear_pending_transition()
 
     def _on_step_dual_scale(
         self,
@@ -719,6 +781,9 @@ class DQNAgent(AIPlayer):
 
         # Always store experience for both training types
         if self.last_state is not None and self.last_action is not None:
+            strategic_observation = observation.copy()
+            strategic_observation["events"] = info.get("events", {})
+
             # Store for strategic episode-end training
             strategic_experience = {
                 "state": self.last_state.copy(),
@@ -726,7 +791,7 @@ class DQNAgent(AIPlayer):
                 "reward": reward,
                 "next_state": current_state.copy(),
                 "done": done,
-                "observation": observation.copy(),
+                "observation": strategic_observation,
             }
             self.episode_buffer.append(strategic_experience)
             self.episode_rewards.append(reward)
@@ -1049,8 +1114,8 @@ class DQNAgent(AIPlayer):
             if i < len(rotating_paddles):
                 rp = rotating_paddles[i]
                 if len(rp) >= 3:  # [x, y, angle]
-                    # Normalize angle: convert to radians if necessary then normalize
-                    angle_rad = np.radians(rp[2]) if abs(rp[2]) > 2 * np.pi else rp[2]
+                    # Physics stores radians and lets the value grow unwrapped.
+                    angle_rad = ((float(rp[2]) + np.pi) % (2 * np.pi)) - np.pi
                     normalized_angle = (angle_rad + np.pi) / (
                         2 * np.pi
                     )  # Normalize [-π, π] -> [0, 1]
@@ -1114,16 +1179,36 @@ class DQNAgent(AIPlayer):
         normalized_size = float(np.clip((size - 0.5) / (2.0 - 0.5), 0.0, 1.0))
         return normalized_size
 
+    def _clear_pending_transition(self) -> None:
+        """Clear the decision-time transition source after it has been consumed."""
+        self.last_state = None
+        self.last_action = None
+
+    def on_episode_start(self) -> None:
+        """Clear stale decision data when a new episode starts."""
+        super().on_episode_start()
+        self._clear_pending_transition()
+
+    def on_episode_end(self) -> None:
+        """Clear stale decision data when an episode ends."""
+        self._clear_pending_transition()
+        super().on_episode_end()
+
     def update_target_network(self) -> None:
         """Copy weights from main network to target network"""
         self.target_network.load_state_dict(self.q_network.state_dict())
 
     def set_training_mode(self, training: bool) -> None:
-        """Enable or disable training mode"""
+        """Enable or disable training behavior and module train/eval mode."""
+        self.training_enabled = training
+        self.exploration_enabled = training
         self.q_network.train(training)
         self.target_network.train(training)
-        """Copy weights from main network to target network"""
-        self.target_network.load_state_dict(self.q_network.state_dict())
+        self._clear_pending_transition()
+
+    def set_exploration_mode(self, explore: bool) -> None:
+        """Enable or disable epsilon-greedy policy exploration independently."""
+        self.exploration_enabled = explore
 
     def soft_update_target_network(self) -> None:
         """Soft update of target network"""
@@ -1265,24 +1350,42 @@ class DQNAgent(AIPlayer):
         """Store an experience in the replay memory"""
         self.memory.add(state, action, reward, next_state, done)
 
-    def act(self, state: np.ndarray, training: bool = True) -> int:
-        """Choose an action with epsilon-greedy policy"""
-        if training and random.random() < self.epsilon:
+    def act(
+        self,
+        state: np.ndarray,
+        explore: bool | None = None,
+        *,
+        training: bool | None = None,
+    ) -> int:
+        """Choose an action, optionally using epsilon-greedy exploration."""
+        if training is not None:
+            if explore is not None and explore != training:
+                raise ValueError("act() received conflicting explore and training flags")
+            explore = training
+
+        if explore is None:
+            explore = self.exploration_enabled
+
+        if explore and random.random() < self.epsilon:
             return random.randrange(self.action_size)
 
         # Convert to PyTorch tensor
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
 
         # Prediction with the network
+        was_training = self.q_network.training
         self.q_network.eval()
         with torch.no_grad():
             q_values = self.q_network(state_tensor)
-        self.q_network.train()
+        self.q_network.train(was_training)
 
         return int(q_values.cpu().data.numpy().argmax())
 
     def replay(self) -> float | None:
         """Train the network with experience replay"""
+        if not self.training_enabled:
+            return None
+
         # Quick check of buffer size
         if len(self.memory) < self.batch_size:
             return None
@@ -1422,6 +1525,7 @@ class DQNAgent(AIPlayer):
 
         # Reset episode buffer when loading (don't carry over partial episodes)
         self._reset_episode_buffer()
+        self._clear_pending_transition()
 
     def update_learning_rate(self, reward: float) -> None:
         """Update learning rate based on performance"""

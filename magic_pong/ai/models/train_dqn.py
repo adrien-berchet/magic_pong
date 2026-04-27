@@ -309,29 +309,35 @@ class DQNTrainer:
         Returns:
             float: Win rate
         """
+        was_training = agent.training_enabled
+        was_exploring = agent.exploration_enabled
+
         # Put agent in evaluation mode
         agent.set_training_mode(False)
 
-        # Create opponent
-        opponent = create_ai(opponent_type)
+        try:
+            # Create opponent
+            opponent = create_ai(opponent_type)
 
-        # Create evaluation manager
-        eval_manager = TrainingManager(headless=True)
+            # Create evaluation manager
+            eval_manager = TrainingManager(headless=True)
 
-        wins = 0
+            wins = 0
 
-        for _ in range(self.eval_episodes):
-            # Play a complete game
-            episode_stats = eval_manager.train_episode(agent, opponent, max_steps=1000)
+            for _ in range(self.eval_episodes):
+                # Play a complete game
+                episode_stats = eval_manager.train_episode(agent, opponent, max_steps=1000)
 
-            # Check who won (agent is always player 1)
-            if episode_stats["winner"] == 1:
-                wins += 1
+                # Check who won (agent is always player 1)
+                if episode_stats["winner"] == 1:
+                    wins += 1
 
-        # Put agent back in training mode
-        agent.set_training_mode(True)
+            return wins / self.eval_episodes
 
-        return wins / self.eval_episodes
+        finally:
+            # Put agent back in its previous mode
+            agent.set_training_mode(was_training)
+            agent.set_exploration_mode(was_exploring)
 
     def plot_training_metrics(self, save_path: str | None = None) -> None:
         """Display training metrics"""
