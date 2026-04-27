@@ -195,38 +195,92 @@ class PygameRenderer:
                 self.screen.blit(debug_surface, (10, y_offset))
                 y_offset += 25
 
-    def draw_game_over(self, winner: int, score: tuple[int, int]) -> None:
-        """Draw game over screen"""
+    def draw_game_over(
+        self,
+        winner: int,
+        score: tuple[int, int],
+        mode_label: str = "",
+        actions: list[dict[str, Any]] | None = None,
+        selected_action: int = 0,
+    ) -> None:
+        """Draw the game-over action menu overlay."""
         # Semi-transparent overlay
         overlay = pygame.Surface((self.width, self.height))
-        overlay.set_alpha(180)
+        overlay.set_alpha(176)
         overlay.fill((0, 0, 0))
         self.screen.blit(overlay, (0, 0))
 
-        # Winner text
         if winner == 0:
-            winner_text = "Draw!"
+            winner_text = "Draw"
         else:
-            winner_text = f"Player {winner} wins!"
+            winner_text = f"Player {winner} wins"
 
-        winner_surface = self.font_large.render(winner_text, True, self.text_color)
-        winner_rect = winner_surface.get_rect()
-        winner_rect.center = (self.width // 2, self.height // 2 - 50)
-        self.screen.blit(winner_surface, winner_rect)
+        panel_width = min(780, self.width - 48)
+        panel_height = min(450, self.height - 48)
+        panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
+        panel_rect.center = (self.width // 2, self.height // 2)
+        self._draw_panel(panel_rect, (9, 13, 20), (58, 70, 88))
 
-        # Final score
-        score_text = f"Final score: {score[0]} - {score[1]}"
-        score_surface = self.font_medium.render(score_text, True, self.text_color)
-        score_rect = score_surface.get_rect()
-        score_rect.center = (self.width // 2, self.height // 2 + 20)
-        self.screen.blit(score_surface, score_rect)
+        title_surface = self.font_config_title.render("Game Over", True, self.text_color)
+        self.screen.blit(title_surface, (panel_rect.x + 24, panel_rect.y + 20))
 
-        # Instructions
-        restart_text = "Press SPACE to play again or ESC to quit"
-        restart_surface = self.font_small.render(restart_text, True, self.text_color)
-        restart_rect = restart_surface.get_rect()
-        restart_rect.center = (self.width // 2, self.height // 2 + 80)
-        self.screen.blit(restart_surface, restart_rect)
+        badge_width = min(
+            max(118, self.font_config_micro.size(winner_text)[0] + 30),
+            panel_rect.width - 48,
+        )
+        winner_color = (92, 232, 146) if winner else (100, 170, 255)
+        self._draw_status_badge(
+            winner_text,
+            winner_color,
+            pygame.Rect(panel_rect.x + 24, panel_rect.y + 64, badge_width, 28),
+        )
+
+        score_text = f"Final score {score[0]} - {score[1]}"
+        if mode_label:
+            score_text = f"{score_text} - {mode_label}"
+        score_text = self._truncate_text(score_text, self.font_config_hint, panel_rect.width - 48)
+        score_surface = self.font_config_hint.render(score_text, True, (154, 166, 184))
+        self.screen.blit(score_surface, (panel_rect.x + 24, panel_rect.y + 98))
+
+        body_top = panel_rect.y + 132
+        footer_rect = pygame.Rect(
+            panel_rect.x + 18, panel_rect.bottom - 64, panel_rect.width - 36, 46
+        )
+        list_rect = pygame.Rect(panel_rect.x + 18, body_top, 220, footer_rect.y - body_top - 14)
+        detail_rect = pygame.Rect(
+            list_rect.right + 14,
+            body_top,
+            panel_rect.right - list_rect.right - 32,
+            list_rect.height,
+        )
+
+        self._draw_panel(list_rect, (14, 18, 27), (52, 63, 80))
+        self._draw_panel(detail_rect, (11, 15, 23), (48, 58, 74))
+
+        action_options = actions or [
+            {
+                "label": "Rematch",
+                "title": "Run It Back",
+                "description": "Start the same mode again with a fresh score and rally.",
+                "details": [
+                    {"label": "Shortcut", "value": "SPACE"},
+                    {"label": "Final score", "value": f"{score[0]} - {score[1]}"},
+                ],
+                "status": "Complete",
+                "available": True,
+            }
+        ]
+        self._draw_option_rows(action_options, selected_action, list_rect, "ACTIONS")
+        self._draw_menu_detail(action_options, selected_action, detail_rect)
+        self._draw_hint_bar(
+            footer_rect,
+            [
+                ("UP/DOWN", "Navigate"),
+                ("ENTER", "Select"),
+                ("SPACE", "Rematch"),
+                ("ESC", "Main menu"),
+            ],
+        )
 
     def draw_pause_screen(self, actions: list[dict[str, Any]], selected_action: int = 0) -> None:
         """Draw pause action menu overlay."""
@@ -761,56 +815,118 @@ class PygameRenderer:
             line_rect.center = (self.width // 2, box_y + 55 + i * 20)
             self.screen.blit(line_surface, line_rect)
 
-    def draw_controls_help(self) -> None:
-        """Draw controls help overlay"""
-        help_lines = [
-            "CONTROLS:",
-            "",
-            "Player 1 (Left):",
-            "  W/S - Up/Down",
-            "  A/D - Left/Right",
-            "",
-            "Player 2 (Right):",
-            "  ↑/↓ - Up/Down",
-            "  ←/→ - Left/Right",
-            "",
-            "General:",
-            "  P - Pause",
-            "  F1 - Show this help",
-            "  F2 - Show FPS",
-            "  F3 - Debug mode",
-            "  ESC - Main menu",
-        ]
+    def draw_controls_help(self, help_data: dict[str, Any] | None = None) -> None:
+        """Draw the contextual controls help overlay."""
+        overlay = pygame.Surface((self.width, self.height))
+        overlay.set_alpha(172)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
 
-        # Background
-        help_width = 400
-        help_height = len(help_lines) * 25 + 40
-        help_x = (self.width - help_width) // 2
-        help_y = (self.height - help_height) // 2
+        data = help_data or {
+            "title": "Help",
+            "subtitle": "Controls",
+            "sections": [
+                {
+                    "title": "Global",
+                    "rows": [
+                        {"key": "F1", "action": "Close help"},
+                        {"key": "F2", "action": "Toggle FPS"},
+                        {"key": "F3", "action": "Toggle debug"},
+                        {"key": "ESC", "action": "Back"},
+                    ],
+                }
+            ],
+        }
+        sections = data.get("sections", [])
+        if not isinstance(sections, list):
+            sections = []
 
-        help_bg = pygame.Surface((help_width, help_height))
-        help_bg.set_alpha(220)
-        help_bg.fill((20, 20, 20))
-        self.screen.blit(help_bg, (help_x, help_y))
+        panel_width = min(660, self.width - 32)
+        panel_height = min(540, self.height - 32)
+        panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
+        panel_rect.center = (self.width // 2, self.height // 2)
+        self._draw_panel(panel_rect, (9, 13, 20), (58, 70, 88))
 
-        # Border
-        pygame.draw.rect(self.screen, self.text_color, (help_x, help_y, help_width, help_height), 2)
+        title = str(data.get("title") or "Help")
+        title_surface = self.font_config_title.render(title, True, self.text_color)
+        self.screen.blit(title_surface, (panel_rect.x + 24, panel_rect.y + 20))
 
-        # Text
-        for i, line in enumerate(help_lines):
-            if line.startswith("CONTROLS:") or line.startswith("General:"):
-                color = (255, 255, 0)
-                font = self.font_medium
-            elif line.startswith("Player"):
-                color = (0, 255, 255)
-                font = self.font_small
-            else:
-                color = self.text_color
-                font = self.font_small
+        subtitle = str(data.get("subtitle") or "")
+        if subtitle:
+            subtitle = self._truncate_text(subtitle, self.font_config_hint, panel_rect.width - 48)
+            subtitle_surface = self.font_config_hint.render(subtitle, True, (154, 166, 184))
+            self.screen.blit(subtitle_surface, (panel_rect.x + 24, panel_rect.y + 62))
 
-            if line.strip():  # Skip empty lines
-                text_surface = font.render(line, True, color)
-                self.screen.blit(text_surface, (help_x + 20, help_y + 20 + i * 25))
+        footer_rect = pygame.Rect(
+            panel_rect.x + 18, panel_rect.bottom - 64, panel_rect.width - 36, 46
+        )
+        content_y = panel_rect.y + 96
+        content_rect = pygame.Rect(
+            panel_rect.x + 18,
+            content_y,
+            panel_rect.width - 36,
+            footer_rect.y - content_y - 12,
+        )
+        self._draw_panel(content_rect, (11, 15, 23), (48, 58, 74))
+
+        section_gap = 6
+        row_height = 26
+        row_gap = 4
+        y = content_rect.y + 16
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            title = str(section.get("title") or "Controls")
+            rows = section.get("rows", [])
+            if not isinstance(rows, list):
+                continue
+
+            heading_surface = self.font_config_micro.render(title.upper(), True, (126, 138, 156))
+            if y + heading_surface.get_height() > content_rect.bottom - 10:
+                break
+            self.screen.blit(heading_surface, (content_rect.x + 16, y))
+            y += 20
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if y + row_height > content_rect.bottom - 10:
+                    break
+                row_rect = pygame.Rect(
+                    content_rect.x + 16,
+                    y,
+                    content_rect.width - 32,
+                    row_height,
+                )
+                self._draw_help_row(row, row_rect)
+                y += row_height + row_gap
+            y += section_gap
+
+            if y > content_rect.bottom - 10:
+                break
+
+        self._draw_hint_bar(footer_rect, [("F1/ESC", "Close")])
+
+    def _draw_help_row(self, row: dict[str, Any], row_rect: pygame.Rect) -> None:
+        """Draw one compact help key/action row."""
+        pygame.draw.rect(self.screen, (18, 24, 34), row_rect, border_radius=7)
+        pygame.draw.rect(self.screen, (48, 58, 74), row_rect, 1, border_radius=7)
+
+        key = self._truncate_text(str(row.get("key", "")), self.font_config_hint, 128)
+        action = str(row.get("action", ""))
+        key_width = min(142, max(72, row_rect.width // 4))
+        action_width = max(1, row_rect.width - key_width - 32)
+        action = self._truncate_text(action, self.font_config_hint, action_width)
+
+        key_surface = self.font_config_hint.render(key, True, (255, 224, 118))
+        key_rect = key_surface.get_rect(midleft=(row_rect.x + 12, row_rect.centery))
+        self.screen.blit(key_surface, key_rect)
+
+        action_surface = self.font_config_hint.render(action, True, (220, 226, 236))
+        action_rect = action_surface.get_rect(
+            midleft=(row_rect.x + key_width + 18, row_rect.centery)
+        )
+        self.screen.blit(action_surface, action_rect)
 
     def render_game_state(
         self, game_state: dict[str, Any], additional_info: dict[str, Any] | None = None

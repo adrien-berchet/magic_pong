@@ -9,9 +9,11 @@ import pygame
 
 import magic_pong.gui.game_app as game_app_module
 from magic_pong.gui.game_app import GameMode
+from magic_pong.gui.game_app import GameOverAction
 from magic_pong.gui.game_app import GameState
 from magic_pong.gui.game_app import MagicPongApp
 from magic_pong.gui.game_app import PauseAction
+from magic_pong.utils.config import game_config
 from magic_pong.utils.config_manager import CONFIG_CATEGORIES
 
 
@@ -40,9 +42,19 @@ def pause_action_index(app: MagicPongApp, action: PauseAction) -> int:
     return next(index for index, item in enumerate(app.pause_actions) if item.action == action)
 
 
+def game_over_action_index(app: MagicPongApp, action: GameOverAction) -> int:
+    """Return the configured index for a game-over action."""
+    return next(index for index, item in enumerate(app.game_over_actions) if item.action == action)
+
+
 def menu_mode_index(app: MagicPongApp, mode: GameMode) -> int:
     """Return the configured index for a main menu mode."""
     return next(index for index, item in enumerate(app.menu_options) if item.mode == mode)
+
+
+def rows_by_section(help_data: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    """Index help rows by section title for concise assertions."""
+    return {section["title"]: section["rows"] for section in help_data["sections"]}
 
 
 def test_main_menu_data_flags_trained_model_without_models(monkeypatch: Any) -> None:
@@ -317,3 +329,115 @@ def test_pause_settings_returns_to_pause_from_category_screen(monkeypatch: Any) 
 
     assert app.state == GameState.PAUSED
     assert app.game_engine.paused is True
+
+
+def test_game_over_navigation_enter_selects_main_menu(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.GAME_OVER
+    app.current_mode = GameMode.ONE_VS_AI
+
+    app.handle_game_over_input(key_event(pygame.K_DOWN))
+    assert app.game_over_selected == game_over_action_index(app, GameOverAction.MAIN_MENU)
+
+    app.handle_game_over_input(key_event(pygame.K_RETURN))
+
+    assert app.state == GameState.MENU
+    assert app.current_mode == GameMode.MENU
+    assert app.game_over_selected == 0
+
+
+def test_game_over_space_rematches_even_when_selection_moved(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.GAME_OVER
+    app.current_mode = GameMode.ONE_VS_AI
+    app.game_over_selected = game_over_action_index(app, GameOverAction.QUIT)
+    started_modes: list[GameMode] = []
+
+    def fake_start_game_mode(mode: GameMode) -> None:
+        started_modes.append(mode)
+        app.state = GameState.PLAYING
+
+    monkeypatch.setattr(app, "start_game_mode", fake_start_game_mode)
+
+    app.handle_game_over_input(key_event(pygame.K_SPACE))
+
+    assert started_modes == [GameMode.ONE_VS_AI]
+    assert app.state == GameState.PLAYING
+
+
+def test_game_over_enter_quit_stops_running(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.GAME_OVER
+    app.game_over_selected = game_over_action_index(app, GameOverAction.QUIT)
+
+    app.handle_game_over_input(key_event(pygame.K_RETURN))
+
+    assert app.running is False
+
+
+def test_game_over_actions_data_includes_result_context(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.current_mode = GameMode.ONE_VS_AI
+
+    actions_data = app._build_game_over_actions_data(2, (9, 11))
+    rematch = actions_data[game_over_action_index(app, GameOverAction.REMATCH)]
+    details = {item["label"]: item["value"] for item in rematch["details"]}
+
+    assert rematch["action"] == GameOverAction.REMATCH.value
+    assert rematch["label"] == "Rematch"
+    assert details["Shortcut"] == "SPACE"
+    assert details["Winner"] == "Player 2"
+    assert details["Final score"] == "9 - 11"
+    assert details["Mode"] == "1 vs AI"
+
+
+def test_help_overlay_data_uses_keyboard_layout_for_playing_1v1(monkeypatch: Any) -> None:
+    monkeypatch.setattr(game_config, "KEYBOARD_LAYOUT", "qwerty")
+    app = create_app(monkeypatch)
+    app.state = GameState.PLAYING
+    app.current_mode = GameMode.ONE_VS_ONE
+
+    help_data = app._build_help_overlay_data()
+    sections = rows_by_section(help_data)
+
+    assert help_data["subtitle"] == "1 vs 1 - Playing - QWERTY"
+    assert {"key": "P/SPACE", "action": "Pause"} in sections["Playing"]
+    assert {"key": "W/S", "action": "Player 1 up/down"} in sections["Players"]
+    assert {"key": "A/D", "action": "Player 1 left/right"} in sections["Players"]
+    assert {"key": "UP/DOWN", "action": "Player 2 up/down"} in sections["Players"]
+    assert {"key": "F1/ESC", "action": "Close help"} in sections["Global"]
+
+
+def test_help_overlay_data_includes_game_over_shortcuts(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.GAME_OVER
+    app.current_mode = GameMode.ONE_VS_AI
+
+    help_data = app._build_help_overlay_data()
+    sections = rows_by_section(help_data)
+
+    assert {"key": "UP/DOWN", "action": "Navigate actions"} in sections["Game Over"]
+    assert {"key": "ENTER", "action": "Select action"} in sections["Game Over"]
+    assert {"key": "SPACE", "action": "Rematch"} in sections["Game Over"]
+    assert {"key": "F1/ESC", "action": "Close help"} in sections["Global"]
+
+
+def test_help_closes_with_f1_or_escape_from_game_over(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.GAME_OVER
+
+    app.handle_game_over_input(key_event(pygame.K_F1))
+    assert bool(app.show_help)
+
+    app.handle_help_input(key_event(pygame.K_F1))
+    assert not bool(app.show_help)
+
+    app_for_escape = create_app(monkeypatch)
+    app_for_escape.state = GameState.GAME_OVER
+
+    app_for_escape.handle_game_over_input(key_event(pygame.K_F1))
+    assert bool(app_for_escape.show_help)
+
+    app_for_escape.handle_help_input(key_event(pygame.K_ESCAPE))
+
+    assert not bool(app_for_escape.show_help)
