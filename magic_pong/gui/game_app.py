@@ -75,12 +75,31 @@ class PauseAction(Enum):
     QUIT = "quit"
 
 
+class GameOverAction(Enum):
+    """Actions available after a match ends."""
+
+    REMATCH = "rematch"
+    MAIN_MENU = "main_menu"
+    QUIT = "quit"
+
+
 @dataclass(frozen=True)
 class PauseMenuAction:
     """Pause menu action plus detail-panel copy."""
 
     label: str
     action: PauseAction
+    title: str
+    description: str
+    details: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class GameOverMenuAction:
+    """Game-over action plus detail-panel copy."""
+
+    label: str
+    action: GameOverAction
     title: str
     description: str
     details: tuple[tuple[str, str], ...]
@@ -206,6 +225,32 @@ class MagicPongApp:
             ),
         ]
 
+        # Game over menu state
+        self.game_over_selected = 0
+        self.game_over_actions = [
+            GameOverMenuAction(
+                "Rematch",
+                GameOverAction.REMATCH,
+                "Run It Back",
+                "Start the same mode again with a fresh score and rally.",
+                (("Shortcut", "SPACE"),),
+            ),
+            GameOverMenuAction(
+                "Main Menu",
+                GameOverAction.MAIN_MENU,
+                "Main Menu",
+                "Return to mode selection after the completed match.",
+                (("Shortcut", "ESC"),),
+            ),
+            GameOverMenuAction(
+                "Quit",
+                GameOverAction.QUIT,
+                "Quit Magic Pong",
+                "Close the application from the results screen.",
+                (("Effect", "Application exits"),),
+            ),
+        ]
+
         # Game state
         self.game_over_timer = 0.0
         self.show_help = False
@@ -291,6 +336,7 @@ class MagicPongApp:
 
         # Change state to playing
         self.state = GameState.PLAYING
+        self.game_over_selected = 0
 
         print(f"Game mode {mode.value} started!")
 
@@ -547,6 +593,8 @@ class MagicPongApp:
                 # Return to main menu
                 self.state = GameState.MENU
                 print("Returning to main menu")
+            elif event.key == pygame.K_F1:
+                self.show_help = True
 
     def handle_game_input(self, event: pygame.event.Event) -> None:
         """Handle input during gameplay"""
@@ -582,6 +630,8 @@ class MagicPongApp:
                 self.toggle_pause()
             elif event.key == pygame.K_ESCAPE:
                 self.return_to_menu()
+            elif event.key == pygame.K_F1:
+                self.show_help = True
 
     def _activate_pause_action(self, action: PauseAction) -> None:
         """Apply a selected pause menu action."""
@@ -599,10 +649,32 @@ class MagicPongApp:
     def handle_game_over_input(self, event: pygame.event.Event) -> None:
         """Handle input in game over state"""
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
+            if event.key == pygame.K_UP:
+                self.game_over_selected = (self.game_over_selected - 1) % len(
+                    self.game_over_actions
+                )
+            elif event.key == pygame.K_DOWN:
+                self.game_over_selected = (self.game_over_selected + 1) % len(
+                    self.game_over_actions
+                )
+            elif event.key == pygame.K_RETURN:
+                selected_action = self.game_over_actions[self.game_over_selected].action
+                self._activate_game_over_action(selected_action)
+            elif event.key == pygame.K_SPACE:
                 self.restart_game()
             elif event.key == pygame.K_ESCAPE:
                 self.return_to_menu()
+            elif event.key == pygame.K_F1:
+                self.show_help = True
+
+    def _activate_game_over_action(self, action: GameOverAction) -> None:
+        """Apply a selected game-over action."""
+        if action == GameOverAction.REMATCH:
+            self.restart_game()
+        elif action == GameOverAction.MAIN_MENU:
+            self.return_to_menu()
+        elif action == GameOverAction.QUIT:
+            self.running = False
 
     def handle_help_input(self, event: pygame.event.Event) -> None:
         """Handle input when help is shown"""
@@ -644,6 +716,8 @@ class MagicPongApp:
                     print("Returning to pause menu")
                 else:
                     print("Returning to main menu")
+            elif event.key == pygame.K_F1:
+                self.show_help = True
 
     def handle_config_options_input(self, event: pygame.event.Event) -> None:
         """Handle input in configuration options menu"""
@@ -683,6 +757,8 @@ class MagicPongApp:
                     self.state = GameState.CONFIG_CATEGORY
                     self.config_current_category = None
                     print("Returning to category menu")
+                elif event.key == pygame.K_F1:
+                    self.show_help = True
 
     def _handle_config_edit_input(self, event: pygame.event.Event) -> None:
         """Handle input while editing a configuration value"""
@@ -707,6 +783,9 @@ class MagicPongApp:
             self.config_is_editing = False
             self.config_edit_backup = None
             print(f"Cancelled editing {option.label}")
+
+        elif event.key == pygame.K_F1:
+            self.show_help = True
 
         elif option.field_type == ConfigFieldType.BOOLEAN:
             # Toggle boolean value (SPACE or LEFT/RIGHT)
@@ -755,6 +834,8 @@ class MagicPongApp:
                 self.config_confirm_action = None
                 self.config_confirm_return_state = GameState.CONFIG_CATEGORY
                 print("Cancelled action")
+            elif event.key == pygame.K_F1:
+                self.show_help = True
 
     def _save_configuration(self) -> None:
         """Save current configuration to file"""
@@ -794,6 +875,7 @@ class MagicPongApp:
         self.state = GameState.MENU
         self.current_mode = GameMode.MENU
         self.pause_selected = 0
+        self.game_over_selected = 0
         self.config_exit_state = GameState.MENU
         self.show_help = False
         print("Return to main menu")
@@ -816,6 +898,7 @@ class MagicPongApp:
             if result["done"]:
                 self.state = GameState.GAME_OVER
                 self.game_over_timer = 0.0
+                self.game_over_selected = 0
 
         elif self.state == GameState.GAME_OVER:
             self.game_over_timer += 1.0 / 60.0  # Assuming 60 FPS
@@ -886,6 +969,176 @@ class MagicPongApp:
             )
 
         return actions_data
+
+    def _build_game_over_actions_data(
+        self, winner: int, score: tuple[int, int]
+    ) -> list[dict[str, Any]]:
+        """Build renderer-friendly data for the game-over action menu."""
+        actions_data = []
+        outcome = self._format_winner(winner)
+        score_text = self._format_score(score)
+        mode_label = self._format_mode_label(self.current_mode)
+
+        for action in self.game_over_actions:
+            details = [{"label": label, "value": value} for label, value in action.details]
+            details.extend(
+                [
+                    {"label": "Winner", "value": outcome},
+                    {"label": "Final score", "value": score_text},
+                    {"label": "Mode", "value": mode_label},
+                ]
+            )
+
+            actions_data.append(
+                {
+                    "label": action.label,
+                    "action": action.action.value,
+                    "title": action.title,
+                    "description": action.description,
+                    "details": details,
+                    "status": "Complete",
+                    "available": True,
+                }
+            )
+
+        return actions_data
+
+    def _build_help_overlay_data(self) -> dict[str, Any]:
+        """Build compact, contextual help data for the current mode and state."""
+        sections = []
+        context_rows = self._build_context_help_rows()
+        if context_rows:
+            sections.append({"title": self._format_state_label(self.state), "rows": context_rows})
+
+        player_rows = self._build_player_help_rows()
+        if player_rows:
+            sections.append({"title": "Players", "rows": player_rows})
+
+        sections.append(
+            {
+                "title": "Global",
+                "rows": [
+                    {"key": "F1/ESC", "action": "Close help"},
+                ],
+            }
+        )
+
+        layout = game_config.get_keyboard_layout()
+        return {
+            "title": "Help",
+            "subtitle": (
+                f"{self._format_mode_label(self.current_mode)} "
+                f"- {self._format_state_label(self.state)} - {layout.name}"
+            ),
+            "sections": sections,
+        }
+
+    def _build_context_help_rows(self) -> list[dict[str, str]]:
+        """Return controls that are specific to the active state."""
+        if self.state == GameState.PLAYING:
+            return [
+                {"key": "P/SPACE", "action": "Pause"},
+            ]
+        if self.state == GameState.PAUSED:
+            return [
+                {"key": "UP/DOWN", "action": "Navigate actions"},
+                {"key": "ENTER", "action": "Select action"},
+                {"key": "P/SPACE", "action": "Resume"},
+            ]
+        if self.state == GameState.GAME_OVER:
+            return [
+                {"key": "UP/DOWN", "action": "Navigate actions"},
+                {"key": "ENTER", "action": "Select action"},
+                {"key": "SPACE", "action": "Rematch"},
+            ]
+        if self.state == GameState.MODEL_SELECTION:
+            return [
+                {"key": "UP/DOWN", "action": "Choose model"},
+                {"key": "ENTER/SPACE", "action": "Load model"},
+            ]
+        if self.state == GameState.CONFIG_CATEGORY:
+            return [
+                {"key": "UP/DOWN", "action": "Choose category"},
+                {"key": "ENTER/SPACE", "action": "Open category"},
+                {"key": "S/R", "action": "Save or reset"},
+            ]
+        if self.state == GameState.CONFIG_OPTIONS:
+            if self.config_is_editing:
+                return [
+                    {"key": "LEFT/RIGHT", "action": "Change value"},
+                    {"key": "ENTER", "action": "Confirm"},
+                    {"key": "ESC", "action": "Cancel edit"},
+                ]
+            return [
+                {"key": "UP/DOWN", "action": "Choose setting"},
+                {"key": "ENTER/SPACE", "action": "Edit setting"},
+                {"key": "S/R", "action": "Save or reset"},
+            ]
+        if self.state == GameState.CONFIG_CONFIRM:
+            return [
+                {"key": "ENTER/SPACE", "action": "Confirm"},
+                {"key": "ESC", "action": "Cancel"},
+            ]
+        return []
+
+    def _build_player_help_rows(self) -> list[dict[str, str]]:
+        """Return player movement controls for the active game mode."""
+        layout = game_config.get_keyboard_layout()
+        wasd_vertical = f"{layout.display_names['up']}/{layout.display_names['down']}"
+        wasd_horizontal = f"{layout.display_names['left']}/{layout.display_names['right']}"
+
+        if self.current_mode == GameMode.ONE_VS_ONE:
+            return [
+                {"key": wasd_vertical, "action": "Player 1 up/down"},
+                {"key": wasd_horizontal, "action": "Player 1 left/right"},
+                {"key": "UP/DOWN", "action": "Player 2 up/down"},
+                {"key": "LEFT/RIGHT", "action": "Player 2 left/right"},
+            ]
+        if self.current_mode in {GameMode.ONE_VS_AI, GameMode.LOAD_MODEL}:
+            return [
+                {"key": wasd_vertical, "action": "Player up/down"},
+                {"key": wasd_horizontal, "action": "Player left/right"},
+            ]
+        if self.current_mode == GameMode.AI_DEMO:
+            return [{"key": "-", "action": "Watch mode"}]
+        return []
+
+    def _format_winner(self, winner: int) -> str:
+        """Return display text for a winner id."""
+        if winner == 0:
+            return "Draw"
+        return f"Player {winner}"
+
+    def _format_score(self, score: tuple[int, int]) -> str:
+        """Return display text for a final score."""
+        return f"{score[0]} - {score[1]}"
+
+    def _format_mode_label(self, mode: GameMode) -> str:
+        """Return a display label for a game mode."""
+        labels = {
+            GameMode.MENU: "Menu",
+            GameMode.ONE_VS_ONE: "1 vs 1",
+            GameMode.ONE_VS_AI: "1 vs AI",
+            GameMode.LOAD_MODEL: "Trained Model",
+            GameMode.AI_DEMO: "AI Demo",
+            GameMode.CONFIG: "Settings",
+        }
+        return labels[mode]
+
+    def _format_state_label(self, state: GameState) -> str:
+        """Return a display label for an app state."""
+        labels = {
+            GameState.MENU: "Main Menu",
+            GameState.MODEL_SELECTION: "Model Browser",
+            GameState.CONFIG_CATEGORY: "Settings",
+            GameState.CONFIG_OPTIONS: "Settings",
+            GameState.CONFIG_CONFIRM: "Confirm",
+            GameState.PLAYING: "Playing",
+            GameState.PAUSED: "Paused",
+            GameState.GAME_OVER: "Game Over",
+            GameState.HELP: "Help",
+        }
+        return labels[state]
 
     def _build_model_selection_data(self) -> list[dict[str, Any]]:
         """Build renderer-friendly data for the trained model browser."""
@@ -1150,11 +1403,17 @@ class MagicPongApp:
             elif self.state == GameState.GAME_OVER:
                 winner = self.game_engine.get_winner()
                 score = game_state["score"]
-                self.renderer.draw_game_over(winner, score)
+                self.renderer.draw_game_over(
+                    winner,
+                    score,
+                    self._format_mode_label(self.current_mode),
+                    self._build_game_over_actions_data(winner, score),
+                    self.game_over_selected,
+                )
 
         # Show help overlay if requested
         if self.show_help and self.state != GameState.MENU:
-            self.renderer.draw_controls_help()
+            self.renderer.draw_controls_help(self._build_help_overlay_data())
 
         # Show error message overlay if active
         if self.error_message:
