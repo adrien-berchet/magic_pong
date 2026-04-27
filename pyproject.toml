@@ -68,6 +68,7 @@ magic-pong-tournament = "magic_pong.ai.models.ai_vs_ai:tournament"
 magic-pong-training = "magic_pong.ai.models.ai_vs_ai:training"
 magic-pong-gui = "magic_pong.gui.game_app:main"
 magic-pong = "magic_pong.gui.game_app:main"
+magic-pong-evaluate = "magic_pong.ai.evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["magic_pong*"]
