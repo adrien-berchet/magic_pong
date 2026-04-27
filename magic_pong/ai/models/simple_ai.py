@@ -5,11 +5,94 @@ Simple AI examples for Magic Pong
 import math
 import random
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from magic_pong.ai.interface import AIPlayer
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import game_config
+
+
+@dataclass(frozen=True)
+class UnitObservation:
+    """Observation values converted to unit-coordinate heuristic space."""
+
+    ball_pos: tuple[float, float]
+    player_pos: tuple[float, float]
+    ball_vel: tuple[float, float]
+    bonuses: tuple[tuple[Any, ...], ...]
+    field_width_extent: float
+    field_height_extent: float
+
+
+class UnitObservationMixin:
+    """Convert raw or normalized observation dictionaries into unit coordinates."""
+
+    def _unit_observation(self, observation: dict[str, Any]) -> UnitObservation:
+        field_width = _field_extent(observation.get("field_width"), game_config.FIELD_WIDTH)
+        field_height = _field_extent(observation.get("field_height"), game_config.FIELD_HEIGHT)
+
+        ball_pos = observation["ball_pos"]
+        player_pos = observation["player_pos"]
+        ball_vel = observation.get("ball_vel", [0.0, 0.0])
+
+        return UnitObservation(
+            ball_pos=_unit_xy_position(ball_pos, field_width, field_height),
+            player_pos=_unit_xy_position(player_pos, field_width, field_height),
+            ball_vel=(
+                _unit_velocity(float(ball_vel[0])),
+                _unit_velocity(float(ball_vel[1])),
+            ),
+            bonuses=_unit_bonuses(observation.get("bonuses", []), field_width, field_height),
+            field_width_extent=field_width,
+            field_height_extent=field_height,
+        )
+
+
+def _field_extent(value: Any, fallback: float) -> float:
+    try:
+        extent = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if extent <= 0:
+        return fallback
+    return extent
+
+
+def _unit_xy_position(value: Any, field_width: float, field_height: float) -> tuple[float, float]:
+    return (
+        _unit_position_axis(float(value[0]), field_width),
+        _unit_position_axis(float(value[1]), field_height),
+    )
+
+
+def _unit_position_axis(value: float, extent: float) -> float:
+    if extent > 1.0 and abs(value) > 1.0:
+        return value / extent
+    return value
+
+
+def _unit_velocity(value: float) -> float:
+    if abs(value) > 1.0:
+        return value / game_config.MAX_BALL_SPEED
+    return value
+
+
+def _unit_bonuses(
+    bonuses: Any, field_width: float, field_height: float
+) -> tuple[tuple[Any, ...], ...]:
+    unit_bonuses = []
+    for bonus in bonuses:
+        if not isinstance(bonus, list | tuple) or len(bonus) < 2:
+            continue
+        unit_bonuses.append(
+            (
+                _unit_position_axis(float(bonus[0]), field_width),
+                _unit_position_axis(float(bonus[1]), field_height),
+                *tuple(bonus[2:]),
+            )
+        )
+    return tuple(unit_bonuses)
 
 
 class RandomAI(AIPlayer):
@@ -56,7 +139,7 @@ class DummyAI(AIPlayer):
         self.current_episode_reward += reward
 
 
-class TrainingDummyAI(AIPlayer):
+class TrainingDummyAI(UnitObservationMixin, AIPlayer):
     """
     Specialized AI for Phase 1 training - moves very minimally and predictably
     to ensure the learning agent can focus purely on ball contact
@@ -71,20 +154,20 @@ class TrainingDummyAI(AIPlayer):
         """Very minimal movement around center position"""
         if observation is None:
             return Action(move_x=0.0, move_y=0.0)
-        # Get player info to determine which side we're on
-        field_width = observation.get("field_width", game_config.FIELD_WIDTH)
-        player_pos = observation["player_pos"]
-        if player_pos[0] > field_width / 2:  # Right side
-            self.center_x = field_width * 0.75
+
+        unit_observation = self._unit_observation(observation)
+        player_pos = unit_observation.player_pos
+        if player_pos[0] > 0.5:  # Right side
+            self.center_x = 0.75
         else:  # Left side
-            self.center_x = field_width * 0.25
+            self.center_x = 0.25
 
         # Very slow, predictable movement around center position
         time_factor = time.time() * 0.5  # Slow oscillation
-        target_x = self.center_x + 20 * math.sin(time_factor)  # Small horizontal movement
-        target_y = observation.get("field_height", 600) / 2 + 15 * math.cos(
-            time_factor * 0.7
-        )  # Small vertical movement
+        target_x = self.center_x + (20.0 / unit_observation.field_width_extent) * math.sin(
+            time_factor
+        )
+        target_y = 0.5 + (15.0 / unit_observation.field_height_extent) * math.cos(time_factor * 0.7)
 
         # Very gentle movement towards target
         dx = (target_x - player_pos[0]) * self.movement_factor
@@ -108,7 +191,7 @@ class TrainingDummyAI(AIPlayer):
         self.current_episode_reward += reward
 
 
-class FollowBallAI(AIPlayer):
+class FollowBallAI(UnitObservationMixin, AIPlayer):
     """Simple AI that follows the ball"""
 
     def __init__(self, name: str = "FollowBallAI", aggressiveness: float = 0.8, **kwargs: Any):
@@ -119,8 +202,9 @@ class FollowBallAI(AIPlayer):
         """Follows the ball with a certain aggressiveness"""
         if observation is None:
             return Action(move_x=0.0, move_y=0.0)
-        ball_pos = observation["ball_pos"]
-        player_pos = observation["player_pos"]
+        unit_observation = self._unit_observation(observation)
+        ball_pos = unit_observation.ball_pos
+        player_pos = unit_observation.player_pos
 
         # Calculate direction towards the ball
         dx = ball_pos[0] - player_pos[0]
@@ -149,7 +233,7 @@ class FollowBallAI(AIPlayer):
         self.current_episode_reward += reward
 
 
-class DefensiveAI(AIPlayer):
+class DefensiveAI(UnitObservationMixin, AIPlayer):
     """Defensive AI that stays near its goal"""
 
     def __init__(self, name: str = "DefensiveAI", **kwargs: Any):
@@ -159,15 +243,12 @@ class DefensiveAI(AIPlayer):
         """Defensive strategy"""
         if observation is None:
             return Action(move_x=0.0, move_y=0.0)
-        ball_pos = observation["ball_pos"]
-        ball_vel = observation.get("ball_vel", [0, 0])
-        player_pos = observation["player_pos"]
+        unit_observation = self._unit_observation(observation)
+        ball_pos = unit_observation.ball_pos
+        ball_vel = unit_observation.ball_vel
+        player_pos = unit_observation.player_pos
 
-        # Defensive position (near goal)
-        field_width = observation.get("field_width", game_config.FIELD_WIDTH)
-        player_pos = observation["player_pos"]
-
-        if player_pos[0] < field_width / 2:  # Left side
+        if player_pos[0] < 0.5:  # Left side
             target_x = 0.1  # Near left edge
         else:  # Right player
             target_x = 0.9  # Near right edge
@@ -203,7 +284,7 @@ class DefensiveAI(AIPlayer):
         self.current_episode_reward += reward
 
 
-class AggressiveAI(AIPlayer):
+class AggressiveAI(UnitObservationMixin, AIPlayer):
     """Aggressive AI that seeks bonuses and attacks"""
 
     def __init__(self, name: str = "AggressiveAI", **kwargs: Any):
@@ -214,9 +295,10 @@ class AggressiveAI(AIPlayer):
         """Aggressive strategy"""
         if observation is None:
             return Action(move_x=0.0, move_y=0.0)
-        ball_pos = observation["ball_pos"]
-        player_pos = observation["player_pos"]
-        bonuses = observation.get("bonuses", [])
+        unit_observation = self._unit_observation(observation)
+        ball_pos = unit_observation.ball_pos
+        player_pos = unit_observation.player_pos
+        bonuses = unit_observation.bonuses
 
         # Look for the closest bonus
         closest_bonus = None
@@ -263,7 +345,7 @@ class AggressiveAI(AIPlayer):
         self.current_episode_reward += reward
 
 
-class PredictiveAI(AIPlayer):
+class PredictiveAI(UnitObservationMixin, AIPlayer):
     """AI that tries to predict the ball's trajectory"""
 
     def __init__(self, name: str = "PredictiveAI", prediction_time: float = 1.0, **kwargs: Any):
@@ -274,9 +356,10 @@ class PredictiveAI(AIPlayer):
         """Predicts where the ball will be and positions accordingly"""
         if observation is None:
             return Action(move_x=0.0, move_y=0.0)
-        ball_pos = observation["ball_pos"]
-        ball_vel = observation.get("ball_vel", [0, 0])
-        player_pos = observation["player_pos"]
+        unit_observation = self._unit_observation(observation)
+        ball_pos = unit_observation.ball_pos
+        ball_vel = unit_observation.ball_vel
+        player_pos = unit_observation.player_pos
 
         # Predict ball's future position
         predicted_x = ball_pos[0] + ball_vel[0] * self.prediction_time

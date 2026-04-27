@@ -9,6 +9,7 @@ import pygame
 
 from magic_pong.ai.agent_adapter import adapt_action_for_agent
 from magic_pong.ai.agent_adapter import adapt_action_for_world
+from magic_pong.ai.agent_adapter import adapt_info_for_agent
 from magic_pong.ai.agent_adapter import adapt_observation_for_agent
 from magic_pong.ai.interface import GameEnvironment
 from magic_pong.core.entities import Action
@@ -17,6 +18,17 @@ from magic_pong.core.physics import PhysicsEngine
 from magic_pong.gui.human_player import HumanPlayer
 from magic_pong.gui.pygame_renderer import PygameRenderer
 from magic_pong.utils.config import game_config
+
+
+def _call_player_hook(player: Player | None, hook_name: str, *args: Any) -> Any:
+    """Call an optional player lifecycle hook if it exists and is callable."""
+    if player is None:
+        return None
+
+    hook = getattr(player, hook_name, None)
+    if callable(hook):
+        return hook(*args)
+    return None
 
 
 class GameEngine:
@@ -53,10 +65,8 @@ class GameEngine:
         self.player2 = player2
 
         # Notify AI players of episode start
-        if player1 and hasattr(player1, "on_episode_start"):
-            player1.on_episode_start()
-        if player2 and hasattr(player2, "on_episode_start"):
-            player2.on_episode_start()
+        _call_player_hook(player1, "on_episode_start")
+        _call_player_hook(player2, "on_episode_start")
 
     def start_game(self) -> None:
         """Starts a new game"""
@@ -73,10 +83,8 @@ class GameEngine:
         self.running = False
 
         # Notify AI players of episode end
-        if self.player1 and hasattr(self.player1, "on_episode_end"):
-            self.player1.on_episode_end()
-        if self.player2 and hasattr(self.player2, "on_episode_end"):
-            self.player2.on_episode_end()
+        _call_player_hook(self.player1, "on_episode_end")
+        _call_player_hook(self.player2, "on_episode_end")
 
     def pause_game(self) -> None:
         """Pauses / resumes the game"""
@@ -109,13 +117,19 @@ class GameEngine:
         obs1, obs2, reward1, reward2, done, info = self.ai_environment.step(action1, action2, dt=dt)
 
         # Notify AI players
-        if self.player1 and hasattr(self.player1, "on_step"):
+        if self.player1:
             agent_obs1 = adapt_observation_for_agent(obs1, 1, self.player1)
-            self.player1.on_step(agent_obs1, action1, reward1, done, info)
-        if self.player2 and hasattr(self.player2, "on_step"):
+            agent_info1 = adapt_info_for_agent(info, 1, self.player1)
+            _call_player_hook(
+                self.player1, "on_step", agent_obs1, action1, reward1, done, agent_info1
+            )
+        if self.player2:
             agent_obs2 = adapt_observation_for_agent(obs2, 2, self.player2)
             agent_action2 = adapt_action_for_agent(action2, 2, self.player2)
-            self.player2.on_step(agent_obs2, agent_action2, reward2, done, info)
+            agent_info2 = adapt_info_for_agent(info, 2, self.player2)
+            _call_player_hook(
+                self.player2, "on_step", agent_obs2, agent_action2, reward2, done, agent_info2
+            )
 
         # Check for game end
         if done:
@@ -166,10 +180,8 @@ class GameEngine:
         self.game_stats["average_game_length"] = self.game_stats["total_steps"] / self.total_games
 
         # Notify AI players
-        if self.player1 and hasattr(self.player1, "on_episode_end"):
-            self.player1.on_episode_end()
-        if self.player2 and hasattr(self.player2, "on_episode_end"):
-            self.player2.on_episode_end()
+        _call_player_hook(self.player1, "on_episode_end")
+        _call_player_hook(self.player2, "on_episode_end")
 
         # Stop the game²
         self.running = False
@@ -183,10 +195,12 @@ class GameEngine:
         stats: dict[str, Any] = self.game_stats.copy()
 
         # Add AI player stats
-        if self.player1 and hasattr(self.player1, "get_stats"):
-            stats["player1_ai_stats"] = self.player1.get_stats()
-        if self.player2 and hasattr(self.player2, "get_stats"):
-            stats["player2_ai_stats"] = self.player2.get_stats()
+        player1_stats = _call_player_hook(self.player1, "get_stats")
+        if player1_stats is not None:
+            stats["player1_ai_stats"] = player1_stats
+        player2_stats = _call_player_hook(self.player2, "get_stats")
+        if player2_stats is not None:
+            stats["player2_ai_stats"] = player2_stats
 
         return stats
 

@@ -1,6 +1,7 @@
 /models
 *.code-workspace
 test_models
+.codex
 
 # macOS users
 .DS_Store

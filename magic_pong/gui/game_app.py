@@ -12,6 +12,8 @@ from typing import Literal
 
 import pygame
 
+from magic_pong.ai.models.dqn_checkpoint import get_dqn_checkpoint_validation_info
+from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
 from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI as SimpleAI
 from magic_pong.core.entities import Player
@@ -367,91 +369,22 @@ class MagicPongApp:
     def _load_model_info(self, model_path: str | None) -> dict:
         """Load basic information about a model"""
         try:
-            import torch
-
             # Check if file exists
             if model_path is None or not os.path.isfile(model_path):
-                return {"path": model_path, "valid": False, "error": "File not found"}
+                return self._build_invalid_model_info(model_path, "File not found")
 
             # Check file size
             file_size = os.path.getsize(model_path)
             if file_size < 1024:  # Less than 1KB probably corrupted
-                return {
-                    "path": model_path,
-                    "valid": False,
-                    "error": "File too small, possibly corrupted",
-                }
+                return self._build_invalid_model_info(
+                    model_path, "File too small, possibly corrupted"
+                )
 
             # Try to load the checkpoint
-            checkpoint = torch.load(model_path, map_location="cpu")
-
-            # Validate checkpoint structure
-            required_keys = [
-                "q_network_state_dict",
-                "target_network_state_dict",
-                "optimizer_state_dict",
-                "epsilon",
-                "training_step",
-                "loss_history",
-                "reward_history",
-            ]
-            missing_keys = [key for key in required_keys if key not in checkpoint]
-
-            if missing_keys:
-                return {
-                    "path": model_path,
-                    "valid": False,
-                    "error": f"Missing required data: {', '.join(missing_keys)}",
-                }
-
-            # Get hyperparameters for compatibility check
-            hyperparams = checkpoint.get("hyperparameters", {})
-            required_hyperparams = [
-                "state_size",
-                "action_size",
-                "lr",
-                "gamma",
-                "epsilon_min",
-                "epsilon_decay",
-                "batch_size",
-                "tau",
-                "use_prioritized_replay",
-            ]
-            missing_hyperparams = [key for key in required_hyperparams if key not in hyperparams]
-
-            if missing_hyperparams:
-                return {
-                    "path": model_path,
-                    "valid": False,
-                    "error": f"Missing hyperparameters: {', '.join(missing_hyperparams)}",
-                }
-
-            expected_state_size = 32
-            expected_action_size = 9
-
-            actual_state_size = hyperparams.get("state_size", expected_state_size)
-            actual_action_size = hyperparams.get("action_size", expected_action_size)
-
-            if (
-                actual_state_size != expected_state_size
-                or actual_action_size != expected_action_size
-            ):
-                return {
-                    "path": model_path,
-                    "valid": False,
-                    "error": f"Incompatible model architecture: expected {expected_state_size}x{expected_action_size}, got {actual_state_size}x{actual_action_size}",
-                }
-
-            info = {
-                "path": model_path,
-                "training_step": checkpoint.get("training_step", "Unknown"),
-                "epsilon": checkpoint.get("epsilon", "Unknown"),
-                "hyperparameters": hyperparams,
-                "file_size_mb": round(file_size / (1024 * 1024), 2),
-                "valid": True,
-                "error": None,
-            }
-
+            checkpoint = safe_torch_load(model_path, map_location="cpu")
+            info = get_dqn_checkpoint_validation_info(checkpoint).as_dict()
+            info["path"] = model_path
+            info["file_size_mb"] = round(file_size / (1024 * 1024), 2)
             return info
 
         except Exception as e:
@@ -464,7 +397,20 @@ class MagicPongApp:
             elif "permission" in error_msg.lower():
                 error_msg = "Permission denied accessing file"
 
-            return {"path": model_path, "valid": False, "error": error_msg}
+            return self._build_invalid_model_info(model_path, error_msg)
+
+    def _build_invalid_model_info(self, model_path: str | None, error: str) -> dict[str, Any]:
+        """Return a structured invalid model-info payload."""
+        return {
+            "path": model_path,
+            "valid": False,
+            "error": error,
+            "warnings": [],
+            "metadata": None,
+            "hyperparameters": None,
+            "training_step": None,
+            "epsilon": None,
+        }
 
     def _load_and_cache_model_info(self, model_path: str | None) -> dict[str, Any]:
         """Load model metadata once for selection/load flows and cache it by path."""
@@ -1201,14 +1147,14 @@ class MagicPongApp:
                 if error:
                     details.append({"label": "Error", "value": str(error), "tone": "error"})
 
-                if "training_step" in model_info:
+                if model_info.get("training_step") is not None:
                     details.append(
                         {
                             "label": "Training step",
                             "value": self._format_model_value(model_info["training_step"]),
                         }
                     )
-                if "epsilon" in model_info:
+                if model_info.get("epsilon") is not None:
                     details.append(
                         {
                             "label": "Epsilon",

@@ -16,6 +16,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.ai.models.dqn_checkpoint import build_dqn_checkpoint_metadata
+from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
+from magic_pong.ai.models.dqn_checkpoint import validate_dqn_checkpoint
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import game_config
 
@@ -227,9 +230,11 @@ class HybridRewardCalculator:
         return rally_bonus
 
     def _has_successful_contact_event(self, events: Any) -> bool:
-        """Return whether canonical or legacy event payloads include ball contact."""
+        """Return whether canonical or legacy event payloads include this agent's contact."""
         if isinstance(events, dict):
-            return bool(events.get("paddle_hits") or events.get("rotating_paddle_hits"))
+            return self._has_player1_contact(
+                events.get("paddle_hits")
+            ) or self._has_player1_contact(events.get("rotating_paddle_hits"))
 
         if isinstance(events, list):
             return any(
@@ -240,6 +245,19 @@ class HybridRewardCalculator:
             )
 
         return False
+
+    def _has_player1_contact(self, bucket: Any) -> bool:
+        """Return whether a contact bucket contains canonical player-1 contact."""
+        if isinstance(bucket, list):
+            return any(self._is_player1_contact_event(event) for event in bucket)
+        if isinstance(bucket, dict):
+            return self._is_player1_contact_event(bucket)
+        return False
+
+    def _is_player1_contact_event(self, event: Any) -> bool:
+        if not isinstance(event, dict):
+            return False
+        return event.get("player") == 1
 
     def _calculate_match_outcome_bonus(
         self, step: int, observations: list[dict[str, Any]], rewards: list[float]
@@ -1470,6 +1488,10 @@ class DQNAgent(AIPlayer):
                 "step_count": self.step_count,
                 "loss_history": self.loss_history,
                 "reward_history": self.reward_history,
+                "metadata": build_dqn_checkpoint_metadata(
+                    state_size=self.state_size,
+                    action_size=self.action_size,
+                ),
                 "hyperparameters": {
                     "state_size": self.state_size,
                     "action_size": self.action_size,
@@ -1491,7 +1513,8 @@ class DQNAgent(AIPlayer):
 
     def load_model(self, filepath: str) -> None:
         """Load the model with hybrid training parameters"""
-        checkpoint = torch.load(filepath, map_location=device)
+        checkpoint = safe_torch_load(filepath, map_location=device)
+        validate_dqn_checkpoint(checkpoint)
 
         self.q_network.load_state_dict(checkpoint["q_network_state_dict"])
         self.target_network.load_state_dict(checkpoint["target_network_state_dict"])

@@ -6,8 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pygame
+import pytest
 
 import magic_pong.gui.game_app as game_app_module
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_PARAMETER_COUNT
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_STATE_DICT_SHAPES
+from magic_pong.ai.models.dqn_checkpoint import build_dqn_checkpoint_metadata
 from magic_pong.gui.game_app import GameMode
 from magic_pong.gui.game_app import GameOverAction
 from magic_pong.gui.game_app import GameState
@@ -55,6 +59,39 @@ def menu_mode_index(app: MagicPongApp, mode: GameMode) -> int:
 def rows_by_section(help_data: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     """Index help rows by section title for concise assertions."""
     return {section["title"]: section["rows"] for section in help_data["sections"]}
+
+
+def valid_dqn_state_dict() -> dict[str, Any]:
+    return {
+        key: SimpleNamespace(shape=shape) for key, shape in EXPECTED_DQN_STATE_DICT_SHAPES.items()
+    }
+
+
+def valid_dqn_checkpoint_payload() -> dict[str, Any]:
+    return {
+        "q_network_state_dict": valid_dqn_state_dict(),
+        "target_network_state_dict": valid_dqn_state_dict(),
+        "optimizer_state_dict": {
+            "state": {},
+            "param_groups": [{"params": list(range(EXPECTED_DQN_PARAMETER_COUNT))}],
+        },
+        "epsilon": 0.012345,
+        "training_step": 12000,
+        "loss_history": [],
+        "reward_history": [],
+        "metadata": build_dqn_checkpoint_metadata(),
+        "hyperparameters": {
+            "state_size": 32,
+            "action_size": 9,
+            "lr": 0.001,
+            "gamma": 0.99,
+            "epsilon_min": 0.01,
+            "epsilon_decay": 0.9995,
+            "batch_size": 64,
+            "tau": 0.005,
+            "use_prioritized_replay": False,
+        },
+    }
 
 
 def test_main_menu_data_flags_trained_model_without_models(monkeypatch: Any) -> None:
@@ -145,6 +182,177 @@ def test_model_info_rejects_checkpoint_missing_loader_hyperparameters(
 
     assert model_info["valid"] is False
     assert "lr" in model_info["error"]
+
+
+def test_model_info_uses_weights_only_loader_and_returns_structured_info(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "valid_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    load_kwargs: list[dict[str, Any]] = []
+
+    fake_torch = ModuleType("torch")
+
+    def fake_load(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        load_kwargs.append(kwargs)
+        return valid_dqn_checkpoint_payload()
+
+    fake_torch.load = fake_load
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert load_kwargs[0]["weights_only"] is True
+    assert model_info["valid"] is True
+    assert model_info["error"] is None
+    assert model_info["warnings"] == []
+    assert model_info["metadata"] == build_dqn_checkpoint_metadata()
+    assert model_info["training_step"] == 12000
+    assert model_info["epsilon"] == pytest.approx(0.012345)
+    assert model_info["hyperparameters"]["state_size"] == 32
+
+
+def test_model_info_rejects_legacy_checkpoint_missing_metadata(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "legacy_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint.pop("metadata")
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "Legacy DQN checkpoint without metadata" in model_info["error"]
+    assert model_info["training_step"] == 12000
+    assert model_info["epsilon"] == pytest.approx(0.012345)
+
+
+def test_model_info_rejects_empty_network_state_dicts(monkeypatch: Any, tmp_path: Path) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "empty_weights_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint["q_network_state_dict"] = {}
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "q_network_state_dict" in model_info["error"]
+    assert "empty" in model_info["error"]
+
+
+def test_model_info_rejects_extra_network_state_dict_key(monkeypatch: Any, tmp_path: Path) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "extra_weights_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint["q_network_state_dict"]["unexpected.weight"] = SimpleNamespace(shape=(1,))
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "q_network_state_dict" in model_info["error"]
+    assert "unexpected network weights" in model_info["error"]
+    assert "unexpected.weight" in model_info["error"]
+
+
+def test_model_info_rejects_malformed_optimizer_state_dict(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "bad_optimizer_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint["optimizer_state_dict"] = {}
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "optimizer_state_dict" in model_info["error"]
+    assert "param_groups" in model_info["error"]
+
+
+def test_model_info_rejects_empty_optimizer_param_groups(monkeypatch: Any, tmp_path: Path) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "empty_optimizer_groups_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint["optimizer_state_dict"] = {"state": {}, "param_groups": []}
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "optimizer_state_dict.param_groups" in model_info["error"]
+    assert "expected one parameter group" in model_info["error"]
+
+
+def test_model_info_rejects_optimizer_param_count_mismatch(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "wrong_optimizer_params_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    checkpoint = valid_dqn_checkpoint_payload()
+    checkpoint["optimizer_state_dict"] = {"state": {}, "param_groups": [{"params": [0]}]}
+
+    fake_torch = ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: checkpoint
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
+
+    model_info = app._load_model_info(str(model_path))
+
+    assert model_info["valid"] is False
+    assert "optimizer_state_dict.param_groups[0].params" in model_info["error"]
+    assert f"expected {EXPECTED_DQN_PARAMETER_COUNT} parameters" in model_info["error"]
+
+
+def test_create_trained_ai_returns_none_before_instantiating_invalid_metadata(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "invalid_agent.pth"
+    model_path.write_bytes(b"0" * 2048)
+    app.model_info_by_path[str(model_path)] = {
+        "path": str(model_path),
+        "valid": False,
+        "error": "Legacy DQN checkpoint without metadata is not supported by default.",
+        "warnings": [],
+        "metadata": None,
+        "hyperparameters": None,
+        "training_step": 12000,
+        "epsilon": 0.1,
+    }
+
+    trained_ai = app._create_trained_ai(str(model_path))
+
+    assert trained_ai is None
+    assert (
+        app.error_message
+        == "Cannot load model: Legacy DQN checkpoint without metadata is not supported by default."
+    )
 
 
 def test_model_selection_data_marks_pth_directory_unavailable(

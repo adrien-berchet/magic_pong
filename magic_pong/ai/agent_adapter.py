@@ -15,6 +15,7 @@ from magic_pong.utils.config import ai_config
 from magic_pong.utils.config import game_config
 
 DQN_PLAYER1_FRAME_ATTR = "uses_player1_dqn_frame"
+DQN_CONTACT_EVENT_KEYS = ("paddle_hits", "rotating_paddle_hits")
 
 
 def uses_player1_dqn_frame(agent: object | None) -> bool:
@@ -46,6 +47,21 @@ def adapt_action_for_agent(action: Action, player_id: int, agent: object | None)
         return action
 
     return from_player1_dqn_action(action, player_id)
+
+
+def adapt_info_for_agent(
+    info: dict[str, Any], player_id: int, agent: object | None
+) -> dict[str, Any]:
+    """Adapt step info before passing it to an opted-in DQN-like agent."""
+    if not uses_player1_dqn_frame(agent):
+        return info
+
+    adapted = info.copy()
+    events = info.get("events")
+    if isinstance(events, dict):
+        adapted["events"] = _filter_contact_events_for_agent(events, player_id)
+
+    return adapted
 
 
 def to_player1_dqn_observation(observation: dict[str, Any], player_id: int) -> dict[str, Any]:
@@ -107,6 +123,45 @@ def from_player1_dqn_action(action: Action, player_id: int) -> Action:
     if player_id == 1:
         return action
     return Action(move_x=-action.move_x, move_y=action.move_y)
+
+
+def _filter_contact_events_for_agent(events: dict[str, Any], player_id: int) -> dict[str, Any]:
+    filtered = deepcopy(events)
+    for key in DQN_CONTACT_EVENT_KEYS:
+        if key not in events:
+            continue
+        filtered[key] = _canonicalize_agent_contact_bucket(events[key], player_id)
+    return filtered
+
+
+def _canonicalize_agent_contact_bucket(bucket: Any, player_id: int) -> Any:
+    if isinstance(bucket, list):
+        return [
+            _canonicalize_contact_event(event)
+            for event in bucket
+            if _event_belongs_to_player(event, player_id)
+        ]
+    if isinstance(bucket, dict):
+        if _event_belongs_to_player(bucket, player_id):
+            return _canonicalize_contact_event(bucket)
+        return {}
+    return bucket
+
+
+def _canonicalize_contact_event(event: Any) -> Any:
+    if isinstance(event, dict):
+        canonical_event = deepcopy(event)
+        canonical_event["player"] = 1
+        return canonical_event
+    return event
+
+
+def _event_belongs_to_player(event: Any, player_id: int) -> bool:
+    if not isinstance(event, dict):
+        return True
+    if "player" not in event:
+        return True
+    return event["player"] == player_id
 
 
 def _validate_player_id(player_id: int) -> None:
