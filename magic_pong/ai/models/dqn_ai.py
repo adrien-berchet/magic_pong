@@ -6,6 +6,7 @@ Improved version with stabilization techniques
 import random
 from collections import deque
 from collections import namedtuple
+from contextlib import contextmanager
 from typing import Any
 from typing import cast
 
@@ -26,6 +27,19 @@ from magic_pong.utils.config import game_config
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+@contextmanager
+def _temporary_eval_mode(*modules: nn.Module) -> Any:
+    """Temporarily disable training-only module behavior while preserving gradients."""
+    was_training = [module.training for module in modules]
+    try:
+        for module in modules:
+            module.eval()
+        yield
+    finally:
+        for module, training in zip(modules, was_training, strict=False):
+            module.train(training)
 
 
 class HybridRewardCalculator:
@@ -399,14 +413,17 @@ class DQNNetwork(nn.Module):
         output_size: int = 9,
         layer_size: int = 3,
         use_normalization: bool = True,
+        dropout_rate: float = 0.0,
     ):
         """
         Args:
             input_size: Input state size
             hidden_size: Hidden layers size
             output_size: Number of possible actions
+            dropout_rate: Dropout probability for hidden layers. Defaults to disabled.
         """
         super().__init__()
+        self.dropout_rate = dropout_rate
 
         # More stable architecture with less aggressive progressive reduction
         layer_sizes = [hidden_size // (2**i) for i in range(layer_size)]
@@ -432,10 +449,9 @@ class DQNNetwork(nn.Module):
             # self.batch_norms = nn.ModuleList([nn.Identity() for _ in range(layer_size)])
             self.layer_norms = nn.ModuleList([nn.Identity() for _ in range(layer_size)])
 
-        # Dropout to prevent overfitting
+        # Dropout is configurable and disabled by default for deterministic DQN targets.
         self.dropouts = nn.ModuleList()
-        for i in range(layer_size):
-            dropout_rate = 0.2 if i < layer_size - 1 else 0.1
+        for _ in range(layer_size):
             self.dropouts.append(nn.Dropout(dropout_rate))
 
         # Xavier initialization for stability
@@ -455,7 +471,7 @@ class DQNNetwork(nn.Module):
 
         for fc, ln, dropout in zip(self.fc_layers, self.layer_norms, self.dropouts):
             x = fc(x)
-            if self.use_normalization and x.size(0) > 1:  # LayerNorm requires more than one sample
+            if self.use_normalization:
                 x = ln(x)
             x = F.relu(x)
             x = dropout(x)
@@ -463,6 +479,12 @@ class DQNNetwork(nn.Module):
         # Output layer
         x = self.output_layer(x)
         return x
+
+    def set_dropout_rate(self, dropout_rate: float) -> None:
+        """Update dropout probability without changing checkpoint state shape."""
+        self.dropout_rate = dropout_rate
+        for dropout in self.dropouts:
+            dropout.p = dropout_rate
 
 
 class PrioritizedReplayBuffer:
@@ -586,6 +608,7 @@ class DQNAgent(AIPlayer):
         tactical_train_frequency: int = 10,
         tactical_learning_rate: float | None = None,
         strategic_learning_rate: float | None = None,
+        dropout_rate: float = 0.0,
         name: str = "DQN AI",
     ):
         """
@@ -611,6 +634,7 @@ class DQNAgent(AIPlayer):
             tactical_train_frequency: How often to perform tactical training (default: every 10 steps)
             tactical_learning_rate: Learning rate for tactical training (default: lr * 0.3)
             strategic_learning_rate: Learning rate for strategic training (default: lr * 1.5)
+            dropout_rate: Dropout probability for DQN hidden layers. Defaults to disabled.
             name: Agent name
         """
         super().__init__(name)
@@ -626,6 +650,7 @@ class DQNAgent(AIPlayer):
         self.tau = tau
         self.train_frequency = train_frequency
         self.min_replay_size = min(memory_size, min_replay_size)
+        self.dropout_rate = dropout_rate
 
         # Hybrid training configuration
         self.training_mode = training_mode
@@ -656,8 +681,12 @@ class DQNAgent(AIPlayer):
         self.tactical_step_count = 0
 
         # Neural networks
-        self.q_network = DQNNetwork(state_size, 512, action_size).to(device)
-        self.target_network = DQNNetwork(state_size, 512, action_size).to(device)
+        self.q_network = DQNNetwork(state_size, 512, action_size, dropout_rate=dropout_rate).to(
+            device
+        )
+        self.target_network = DQNNetwork(
+            state_size, 512, action_size, dropout_rate=dropout_rate
+        ).to(device)
 
         # Initialize optimizers based on training mode
         if self.enable_dual_scale_training:
@@ -730,8 +759,9 @@ class DQNAgent(AIPlayer):
 
         # Get numeric action
         action_idx = self.act(state, explore=explore)
-        self.last_state = state.copy()
-        self.last_action = action_idx
+        if self.training_enabled:
+            self.last_state = state.copy()
+            self.last_action = action_idx
 
         # Convert to game Action
         return ACTION_MAPPING[action_idx]
@@ -974,18 +1004,19 @@ class DQNAgent(AIPlayer):
         next_states = torch.FloatTensor(np.array([e.next_state for e in experiences])).to(device)
         dones = torch.BoolTensor([e.done for e in experiences]).to(device)
 
-        # Current Q-values
-        current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
+        with _temporary_eval_mode(self.q_network, self.target_network):
+            # Current Q-values keep gradients, but dropout stays inactive.
+            current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
 
-        # Double DQN target values
-        with torch.no_grad():
-            # Action selection with main network
-            next_actions = self.q_network(next_states).argmax(1).unsqueeze(1)
-            # Value estimation with target network
-            next_q_values = self.target_network(next_states).gather(1, next_actions)
-            target_q_values = rewards.unsqueeze(1) + (
-                self.gamma * next_q_values * (~dones).unsqueeze(1)
-            )
+            # Double DQN target values
+            with torch.no_grad():
+                # Action selection with main network
+                next_actions = self.q_network(next_states).argmax(1).unsqueeze(1)
+                # Value estimation with target network
+                next_q_values = self.target_network(next_states).gather(1, next_actions)
+                target_q_values = rewards.unsqueeze(1) + (
+                    self.gamma * next_q_values * (~dones).unsqueeze(1)
+                )
 
         # Compute weighted MSE loss
         td_errors = target_q_values - current_q_values
@@ -1002,7 +1033,7 @@ class DQNAgent(AIPlayer):
         next_states = torch.FloatTensor(np.array([e.next_state for e in experiences])).to(device)
         dones = torch.BoolTensor([e.done for e in experiences]).to(device)
 
-        with torch.no_grad():
+        with _temporary_eval_mode(self.q_network, self.target_network), torch.no_grad():
             current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
             next_actions = self.q_network(next_states).argmax(1).unsqueeze(1)
             next_q_values = self.target_network(next_states).gather(1, next_actions)
@@ -1429,16 +1460,17 @@ class DQNAgent(AIPlayer):
         next_states = torch.FloatTensor(np.array([e.next_state for e in experiences])).to(device)
         dones = torch.BoolTensor([e.done for e in experiences]).to(device)
 
-        # Current Q-values
-        current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
+        with _temporary_eval_mode(self.q_network, self.target_network):
+            # Current Q-values keep gradients, but dropout stays inactive.
+            current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
 
-        # Double DQN: action selection with main network, evaluation with target network
-        with torch.no_grad():
-            next_actions = self.q_network(next_states).argmax(1).unsqueeze(1)
-            next_q_values = self.target_network(next_states).gather(1, next_actions)
-            target_q_values = rewards.unsqueeze(1) + (
-                self.gamma * next_q_values * (~dones).unsqueeze(1)
-            )
+            # Double DQN: action selection with main network, evaluation with target network
+            with torch.no_grad():
+                next_actions = self.q_network(next_states).argmax(1).unsqueeze(1)
+                next_q_values = self.target_network(next_states).gather(1, next_actions)
+                target_q_values = rewards.unsqueeze(1) + (
+                    self.gamma * next_q_values * (~dones).unsqueeze(1)
+                )
 
         # Calculate loss with importance weighting
         td_errors = target_q_values - current_q_values
@@ -1447,12 +1479,7 @@ class DQNAgent(AIPlayer):
         # Optimization with gradient clipping
         self.optimizer.zero_grad()
         loss.backward()
-        # grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=0.5)
-
-        # Stop optimization if gradients too large
-        # if grad_norm > 10.0:
-        #     print(f"⚠️ Gradient explosion detected: {grad_norm:.2f}")
-        #     return loss.item()  # Don't perform optimization step
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
 
         self.optimizer.step()
 
@@ -1545,6 +1572,9 @@ class DQNAgent(AIPlayer):
                 "reward_normalization", True
             )  # Default enabled
             self.use_prioritized_replay = hyperparams["use_prioritized_replay"]
+            self.dropout_rate = hyperparams.get("dropout_rate", self.dropout_rate)
+            self.q_network.set_dropout_rate(self.dropout_rate)
+            self.target_network.set_dropout_rate(self.dropout_rate)
 
         # Reset episode buffer when loading (don't carry over partial episodes)
         self._reset_episode_buffer()
