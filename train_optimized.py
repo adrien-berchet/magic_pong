@@ -15,14 +15,18 @@ import argparse
 import json
 import math
 import os
+import random
 import time
+from collections.abc import Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-# Import pour configuration des jeux
-import matplotlib.pyplot as plt
 import numpy as np
 
+from magic_pong.ai import evaluation as ai_evaluation
 from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
@@ -38,6 +42,49 @@ AI_TYPES = [
     "dummy",
     "training_dummy",
 ]
+
+DEFAULT_OPPONENT_MIX = {
+    "defensive": 0.35,
+    "follow_ball": 0.20,
+    "predictive": 0.20,
+    "random": 0.15,
+    "dummy": 0.10,
+}
+DEFAULT_OPPONENT_MIX_CLI = ",".join(
+    f"{name}:{weight:g}" for name, weight in DEFAULT_OPPONENT_MIX.items()
+)
+DEFAULT_TRAINING_SCORE_MIX = (3, 5, 11)
+DEFAULT_TRAINING_SCORE_MIX_CLI = ",".join(str(score) for score in DEFAULT_TRAINING_SCORE_MIX)
+DEFAULT_CHECKPOINT_EVAL_OPPONENTS = tuple(DEFAULT_OPPONENT_MIX)
+DEFAULT_CHECKPOINT_EVAL_EPISODES = 10
+MIXED_FINE_TUNING_MODES = frozenset({"continue", "single", "dual_scale"})
+
+
+@dataclass(frozen=True)
+class WeightedOpponent:
+    """Normalized opponent weight used for deterministic mixed fine-tuning."""
+
+    name: str
+    weight: float
+
+
+class OpponentSampler:
+    """Provide a fresh sampled opponent for each training episode."""
+
+    def __init__(self, opponent_mix: Sequence[WeightedOpponent], rng: random.Random):
+        self.opponent_mix = tuple(opponent_mix)
+        self.rng = rng
+
+    def next_opponent(self):
+        selected_opponent = sample_weighted_opponent(self.opponent_mix, self.rng)
+        return selected_opponent.name, get_opponent(selected_opponent.name)
+
+
+def get_pyplot():
+    """Import matplotlib only when a plotting path is used."""
+    import matplotlib.pyplot as plt
+
+    return plt
 
 
 def create_agent_from_args(args):
@@ -189,6 +236,312 @@ def get_opponent(opponent_type, player_id=2):
     return create_ai(opponent_type)
 
 
+def parse_opponent_mix(
+    mix_value: str | Sequence[tuple[str, float]],
+) -> tuple[WeightedOpponent, ...]:
+    """Parse and normalize a weighted opponent mix."""
+    if isinstance(mix_value, str):
+        raw_items: list[tuple[str, str | float]] = []
+        for item in mix_value.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if ":" not in item:
+                raise ValueError(
+                    f"Invalid opponent mix entry {item!r}; expected '<opponent>:<weight>'"
+                )
+            name, weight = item.split(":", 1)
+            raw_items.append((name.strip(), weight.strip()))
+    else:
+        raw_items = [(name, weight) for name, weight in mix_value]
+
+    if not raw_items:
+        raise ValueError("Opponent mix must contain at least one '<opponent>:<weight>' entry")
+
+    seen = set()
+    parsed: list[tuple[str, float]] = []
+    for name, raw_weight in raw_items:
+        if name not in AI_TYPES:
+            valid_names = ", ".join(AI_TYPES)
+            raise ValueError(f"Unknown opponent type {name!r}. Valid opponents: {valid_names}")
+        if name in seen:
+            raise ValueError(f"Duplicate opponent type {name!r} in opponent mix")
+        seen.add(name)
+
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid weight for opponent {name!r}: {raw_weight!r}") from exc
+        if not math.isfinite(weight) or weight <= 0:
+            raise ValueError(f"Weight for opponent {name!r} must be a positive finite number")
+        parsed.append((name, weight))
+
+    total_weight = sum(weight for _, weight in parsed)
+    return tuple(
+        WeightedOpponent(name=name, weight=weight / total_weight) for name, weight in parsed
+    )
+
+
+def parse_training_score_targets(score_value: str | Sequence[int]) -> tuple[int, ...]:
+    """Parse positive MAX_SCORE targets for mixed-opponent fine-tuning."""
+    if isinstance(score_value, str):
+        raw_scores: Sequence[Any] = [
+            item.strip() for item in score_value.split(",") if item.strip()
+        ]
+    else:
+        raw_scores = score_value
+
+    if not raw_scores:
+        raise ValueError("Training score mix must contain at least one positive integer")
+
+    scores: list[int] = []
+    for raw_score in raw_scores:
+        try:
+            score = int(raw_score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid training score target {raw_score!r}") from exc
+        if score <= 0:
+            raise ValueError("Training score targets must be positive integers")
+        scores.append(score)
+    return tuple(scores)
+
+
+def sample_weighted_opponent(
+    opponent_mix: Sequence[WeightedOpponent], rng: random.Random
+) -> WeightedOpponent:
+    """Sample one normalized weighted opponent using the provided deterministic RNG."""
+    return rng.choices(
+        list(opponent_mix),
+        weights=[opponent.weight for opponent in opponent_mix],
+        k=1,
+    )[0]
+
+
+def sample_training_score_target(score_targets: Sequence[int], rng: random.Random) -> int:
+    """Sample a training MAX_SCORE target using the provided deterministic RNG."""
+    return rng.choice(list(score_targets))
+
+
+def mixed_fine_tuning_enabled(args) -> bool:
+    """Return whether this phase should use mixed-opponent fine-tuning."""
+    return bool(getattr(args, "mixed_opponents", False)) and (
+        getattr(args, "mode", None) in MIXED_FINE_TUNING_MODES
+    )
+
+
+def validate_mixed_fine_tuning_args(args) -> None:
+    """Keep mixed-opponent training scoped to explicit fine-tuning runs."""
+    if not getattr(args, "mixed_opponents", False):
+        return
+
+    if args.mode not in MIXED_FINE_TUNING_MODES:
+        modes = ", ".join(sorted(MIXED_FINE_TUNING_MODES))
+        raise ValueError(f"--mixed_opponents can only be used with --mode in: {modes}")
+    if not (args.load_model or args.load_checkpoint):
+        raise ValueError(
+            "--mixed_opponents is a fine-tuning mode and requires --load_model or --load_checkpoint"
+        )
+
+
+def _opponent_mix_from_args(args) -> tuple[WeightedOpponent, ...]:
+    parsed_mix = getattr(args, "parsed_opponent_mix", None)
+    if parsed_mix is not None:
+        return tuple(parsed_mix)
+    return parse_opponent_mix(getattr(args, "opponent_mix", DEFAULT_OPPONENT_MIX_CLI))
+
+
+def _training_score_targets_from_args(args) -> tuple[int, ...]:
+    parsed_scores = getattr(args, "parsed_training_score_targets", None)
+    if parsed_scores is not None:
+        return tuple(parsed_scores)
+    return parse_training_score_targets(
+        getattr(args, "training_score_mix", DEFAULT_TRAINING_SCORE_MIX_CLI)
+    )
+
+
+@contextmanager
+def temporary_game_config_value(name: str, value: Any):
+    """Temporarily set a game_config value and always restore it."""
+    original_value = getattr(game_config, name)
+    setattr(game_config, name, value)
+    try:
+        yield
+    finally:
+        setattr(game_config, name, original_value)
+
+
+@contextmanager
+def preserve_global_rng_state():
+    """Preserve global RNG state around deterministic checkpoint evaluation."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_module = None
+    torch_state = None
+    cuda_states = None
+
+    try:
+        import torch
+
+        torch_module = torch
+        torch_state = torch.get_rng_state()
+        if torch.cuda.is_available():
+            cuda_states = torch.cuda.get_rng_state_all()
+    except ImportError:
+        pass
+
+    try:
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        if torch_module is not None and torch_state is not None:
+            torch_module.set_rng_state(torch_state)
+            if cuda_states is not None:
+                torch_module.cuda.set_rng_state_all(cuda_states)
+
+
+def _checkpoint_eval_opponents(args) -> tuple[str, ...]:
+    repeated_opponents = tuple(getattr(args, "checkpoint_eval_opponents", None) or ())
+    csv_opponents: tuple[str, ...] = ()
+    csv_value = getattr(args, "checkpoint_eval_opponents_csv", None)
+    if csv_value:
+        csv_opponents = tuple(item.strip() for item in csv_value.split(",") if item.strip())
+
+    opponents = repeated_opponents + csv_opponents
+    if not opponents:
+        return DEFAULT_CHECKPOINT_EVAL_OPPONENTS
+
+    invalid = sorted(set(opponents) - set(AI_TYPES))
+    if invalid:
+        raise ValueError(f"Unknown checkpoint evaluation opponent(s): {', '.join(invalid)}")
+    if "training_dummy" in opponents:
+        raise ValueError("training_dummy cannot be used for deterministic checkpoint evaluation")
+    return opponents
+
+
+def checkpoint_evaluation_enabled(args) -> bool:
+    return bool(getattr(args, "evaluate_checkpoints", False)) or (
+        getattr(args, "checkpoint_eval_episodes", 0) > 0
+    )
+
+
+def checkpoint_evaluation_config(args) -> ai_evaluation.EvaluationConfig:
+    """Build the reusable evaluation harness config for saved training checkpoints."""
+    bonuses_enabled = getattr(args, "checkpoint_eval_bonuses_enabled", None)
+    if bonuses_enabled is None and mixed_fine_tuning_enabled(args):
+        bonuses_enabled = bool(getattr(args, "fine_tune_bonuses", False))
+
+    checkpoint_eval_max_steps = getattr(args, "checkpoint_eval_max_steps", None)
+    if checkpoint_eval_max_steps is None:
+        checkpoint_eval_max_steps = getattr(args, "max_steps_per_episode", 1000)
+
+    return ai_evaluation.EvaluationConfig(
+        opponents=_checkpoint_eval_opponents(args),
+        episodes=(getattr(args, "checkpoint_eval_episodes", 0) or DEFAULT_CHECKPOINT_EVAL_EPISODES),
+        max_steps=checkpoint_eval_max_steps,
+        seed=getattr(args, "checkpoint_eval_seed", 0),
+        eval_epsilon=getattr(args, "checkpoint_eval_epsilon", 0.0),
+        max_score=getattr(args, "checkpoint_eval_max_score", None),
+        bonuses_enabled=bonuses_enabled,
+        include_episodes=getattr(args, "checkpoint_eval_include_episodes", False),
+    )
+
+
+def checkpoint_evaluation_path(checkpoint_path: str | Path) -> Path:
+    """Return the JSON path written next to a checkpoint candidate."""
+    checkpoint_path = Path(checkpoint_path)
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}.eval.json")
+
+
+def maybe_save_checkpoint_evaluation(
+    checkpoint_path: str | Path, args, training_context: dict[str, Any] | None = None
+) -> str | None:
+    """Evaluate a saved checkpoint and write JSON next to it when requested."""
+    if not checkpoint_evaluation_enabled(args):
+        return None
+
+    config = checkpoint_evaluation_config(args)
+    with preserve_global_rng_state():
+        result = ai_evaluation.evaluate_checkpoint(checkpoint_path, config)
+    output_path = checkpoint_evaluation_path(checkpoint_path)
+    payload = ai_evaluation.result_to_dict(result)
+    if training_context is not None:
+        payload["training_context"] = training_context
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"Checkpoint evaluation saved: {output_path}")
+    return str(output_path)
+
+
+def checkpoint_training_context(
+    *,
+    episode: int,
+    phase_num: int,
+    phase_name: str,
+    total_episodes: int,
+    use_mixed_fine_tuning: bool,
+    opponent,
+    opponent_mix: Sequence[WeightedOpponent],
+    score_targets: Sequence[int],
+    episode_max_score: int,
+    episode_opponent_name: str,
+) -> dict[str, Any]:
+    """Metadata that ties checkpoint evaluation output back to training curriculum state."""
+    context: dict[str, Any] = {
+        "episode": episode,
+        "phase": phase_num,
+        "phase_name": phase_name,
+        "phase_total_episodes": total_episodes,
+        "mixed_opponents": use_mixed_fine_tuning,
+        "episode_opponent": episode_opponent_name,
+        "episode_max_score": episode_max_score,
+        "bonuses_enabled": game_config.BONUSES_ENABLED,
+    }
+    if use_mixed_fine_tuning:
+        context["opponent_mix"] = [
+            {"opponent": entry.name, "weight": entry.weight} for entry in opponent_mix
+        ]
+        context["training_max_scores"] = list(score_targets)
+    else:
+        context["fixed_opponent"] = getattr(opponent, "name", str(opponent))
+        context["training_max_score"] = episode_max_score
+    return context
+
+
+def final_model_training_context(
+    args,
+    *,
+    label: str,
+    total_episodes: int,
+    rewards: Sequence[float],
+    wins: int,
+) -> dict[str, Any]:
+    """Metadata used when evaluating a final saved model candidate."""
+    recent_rewards = rewards[-100:] if len(rewards) >= 100 else rewards
+    context: dict[str, Any] = {
+        "candidate_type": "final_model",
+        "mode": getattr(args, "mode", None),
+        "label": label,
+        "total_episodes": total_episodes,
+        "wins": wins,
+        "win_rate": wins / total_episodes * 100 if total_episodes > 0 else 0,
+        "avg_reward": float(np.mean(recent_rewards)) if recent_rewards else 0.0,
+    }
+
+    if mixed_fine_tuning_enabled(args):
+        context["mixed_opponents"] = True
+        context["opponent_mix"] = [
+            {"opponent": entry.name, "weight": entry.weight}
+            for entry in _opponent_mix_from_args(args)
+        ]
+        context["training_max_scores"] = list(_training_score_targets_from_args(args))
+        context["bonuses_enabled"] = bool(getattr(args, "fine_tune_bonuses", False))
+    else:
+        context["mixed_opponents"] = False
+        context["training_max_score"] = getattr(args, "training_max_score", None)
+
+    return context
+
+
 def train_phase(
     agent,
     opponent,
@@ -203,13 +556,37 @@ def train_phase(
     """Train a single phase"""
     print(f"\n📚 PHASE {phase_num}: {phase_name} ({episodes} episodes)")
 
-    # Patch temporaire du MAX_SCORE pour l'entraînement
     original_max_score = game_config.MAX_SCORE
-    if args.training_max_score != original_max_score:
+    use_mixed_fine_tuning = mixed_fine_tuning_enabled(args)
+    opponent_source = opponent
+    opponent_mix: tuple[WeightedOpponent, ...] = ()
+    score_targets: tuple[int, ...] = ()
+    mix_rng: random.Random | None = None
+
+    if use_mixed_fine_tuning:
+        opponent_mix = _opponent_mix_from_args(args)
+        score_targets = _training_score_targets_from_args(args)
+        mix_rng = getattr(args, "opponent_mix_rng", None)
+        if mix_rng is None:
+            mix_rng = random.Random(getattr(args, "opponent_mix_seed", 0))
+            args.opponent_mix_rng = mix_rng
+        opponent_source = OpponentSampler(opponent_mix, mix_rng)
+
+        mix_summary = ", ".join(f"{item.name}:{item.weight:.2f}" for item in opponent_mix)
+        print(f"Mixed fine-tuning opponents: {mix_summary}")
+        print(f"Mixed fine-tuning MAX_SCORE targets: {', '.join(map(str, score_targets))}")
+        if getattr(args, "fine_tune_bonuses", False):
+            print("Mixed fine-tuning bonuses: ENABLED")
+        else:
+            print("Mixed fine-tuning bonuses: DISABLED")
+    elif args.training_max_score != original_max_score:
         print(
             f"Configuration temporaire: MAX_SCORE = {args.training_max_score} (au lieu de {original_max_score})"
         )
-        game_config.MAX_SCORE = args.training_max_score
+
+    original_bonuses_enabled = game_config.BONUSES_ENABLED
+    if use_mixed_fine_tuning:
+        game_config.BONUSES_ENABLED = bool(getattr(args, "fine_tune_bonuses", False))
 
     try:
         rewards = []
@@ -219,14 +596,31 @@ def train_phase(
         episodes_since_improvement = 0
 
         for episode in range(start_episode, start_episode + episodes):
+            if hasattr(opponent_source, "next_opponent"):
+                episode_opponent_name, episode_opponent = opponent_source.next_opponent()
+                if score_targets:
+                    assert mix_rng is not None
+                    episode_max_score = sample_training_score_target(score_targets, mix_rng)
+                else:
+                    episode_max_score = args.training_max_score
+                if args.verbose:
+                    print(
+                        f"    Episode {episode}: opponent={episode_opponent_name}, MAX_SCORE={episode_max_score}"
+                    )
+            else:
+                episode_opponent = opponent_source
+                episode_opponent_name = getattr(opponent_source, "name", str(opponent_source))
+                episode_max_score = args.training_max_score
+
             ball_direction, ball_angle = get_ball_config_from_args(args)
             training_manager.set_ball_initial_direction(ball_direction, ball_angle)
 
             agent.on_episode_start()
 
-            episode_stats = training_manager.train_episode(
-                agent, opponent, max_steps=args.max_steps_per_episode
-            )
+            with temporary_game_config_value("MAX_SCORE", episode_max_score):
+                episode_stats = training_manager.train_episode(
+                    agent, episode_opponent, max_steps=args.max_steps_per_episode
+                )
             episode_reward = episode_stats["total_reward_p1"]
             rewards.append(episode_reward)
 
@@ -299,7 +693,7 @@ def train_phase(
                 and episode % args.checkpoint_interval == 0
                 and episode > start_episode
             ):
-                save_checkpoint(
+                checkpoint_path, _metadata_path = save_checkpoint(
                     agent,
                     episode,
                     phase_num,
@@ -307,6 +701,22 @@ def train_phase(
                     rewards,
                     wins,
                     args.checkpoint_dir,
+                )
+                maybe_save_checkpoint_evaluation(
+                    checkpoint_path,
+                    args,
+                    checkpoint_training_context(
+                        episode=episode,
+                        phase_num=phase_num,
+                        phase_name=phase_name,
+                        total_episodes=start_episode + episodes,
+                        use_mixed_fine_tuning=use_mixed_fine_tuning,
+                        opponent=opponent,
+                        opponent_mix=opponent_mix,
+                        score_targets=score_targets,
+                        episode_max_score=episode_max_score,
+                        episode_opponent_name=episode_opponent_name,
+                    ),
                 )
 
             # Early stopping
@@ -336,6 +746,8 @@ def train_phase(
     finally:
         # Restaurer la configuration originale
         game_config.MAX_SCORE = original_max_score
+        if use_mixed_fine_tuning:
+            game_config.BONUSES_ENABLED = original_bonuses_enabled
 
 
 def create_optimized_agent():
@@ -433,6 +845,18 @@ def train_with_curriculum(agent, args):
     # Cleanup training manager
     training_manager.cleanup()
 
+    maybe_save_checkpoint_evaluation(
+        final_model_path,
+        args,
+        final_model_training_context(
+            args,
+            label="curriculum_final",
+            total_episodes=phase1_episodes + phase2_episodes,
+            rewards=phase1_rewards + phase2_rewards,
+            wins=phase1_wins + phase2_wins,
+        ),
+    )
+
     return agent, {
         "phase1_avg": np.mean(phase1_rewards[-100:])
         if len(phase1_rewards) >= 100
@@ -484,6 +908,18 @@ def train_single_phase(agent, args):
 
     # Cleanup training manager
     training_manager.cleanup()
+
+    maybe_save_checkpoint_evaluation(
+        final_model_path,
+        args,
+        final_model_training_context(
+            args,
+            label="single_phase_final",
+            total_episodes=episodes,
+            rewards=rewards,
+            wins=wins,
+        ),
+    )
 
     return agent, {
         "avg_reward": np.mean(rewards[-100:])
@@ -742,6 +1178,18 @@ def train_progressive_curriculum(agent, args):
     # Cleanup training manager
     training_manager.cleanup()
 
+    maybe_save_checkpoint_evaluation(
+        final_model_path,
+        args,
+        final_model_training_context(
+            args,
+            label="progressive_final",
+            total_episodes=total_episodes_count,
+            rewards=phase1_rewards + phase2_rewards + phase3_rewards + phase4_rewards,
+            wins=phase1_wins + phase2_wins + phase3_wins + phase4_wins,
+        ),
+    )
+
     # Calculate results
     final_avg = (
         np.mean(phase4_rewards[-100:])
@@ -856,6 +1304,18 @@ def train_dual_scale(agent, args):
     # Cleanup training manager
     training_manager.cleanup()
 
+    maybe_save_checkpoint_evaluation(
+        final_model_path,
+        args,
+        final_model_training_context(
+            args,
+            label="dual_scale_final",
+            total_episodes=final_episodes,
+            rewards=rewards,
+            wins=wins,
+        ),
+    )
+
     # Final statistics
     final_stats = agent.get_training_stats()
     print("\n✨ DUAL-SCALE TRAINING COMPLETED ✨")
@@ -884,6 +1344,7 @@ def train_dual_scale(agent, args):
 
 def create_dual_scale_plots(rewards, win_rate, agent, args):
     """Create specialized plots for dual-scale training analysis"""
+    plt = get_pyplot()
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
 
     # Plot 1: Reward progression with tactical annotations
@@ -1016,6 +1477,7 @@ def create_dual_scale_plots(rewards, win_rate, agent, args):
 
 def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2_winrate, args):
     """Create training progress plots"""
+    plt = get_pyplot()
 
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
 
@@ -1141,6 +1603,7 @@ def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2
 
 def create_progressive_training_plots(all_phase_data, args):
     """Create comprehensive training plots for 4-phase progressive learning"""
+    plt = get_pyplot()
 
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
 
@@ -1279,6 +1742,7 @@ def create_progressive_training_plots(all_phase_data, args):
 
 def create_phase_breakdown_plot(all_phase_data, args):
     """Create detailed breakdown plot for each phase"""
+    plt = get_pyplot()
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     axes = axes.flatten()
@@ -1336,6 +1800,7 @@ def create_phase_breakdown_plot(all_phase_data, args):
 
 def create_single_phase_plots(rewards, win_rate, args):
     """Create plots for single phase training"""
+    plt = get_pyplot()
 
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
 
@@ -1496,32 +1961,37 @@ def evaluate_final_performance(agent, args):
     print(f"\n🎯 FINAL EVALUATION ({args.eval_episodes} episodes)")
 
     original_max_score = game_config.MAX_SCORE
-    game_config.MAX_SCORE = args.eval_max_score
-
-    # Test against different opponents
-    opponents = {
-        "follow_ball": get_opponent("follow_ball"),
-        "defensive": get_opponent("defensive"),
-        "aggressive": get_opponent("aggressive"),
-        "random": get_opponent("random"),
-        "predictive": get_opponent("predictive"),
-    }
-
-    # Get ball configuration
-    ball_direction, ball_angle = get_ball_config_from_args(args)
-    training_manager = TrainingManager(
-        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
-    )
+    training_manager = None
 
     # Disable learning for evaluation while honoring explicit evaluation exploration.
     was_training = agent.training_enabled
     was_exploring = agent.exploration_enabled
     original_epsilon = agent.epsilon
-    agent.set_training_mode(False)
-    agent.epsilon = args.eval_epsilon
-    agent.set_exploration_mode(args.eval_epsilon > 0)
 
     try:
+        game_config.MAX_SCORE = args.eval_max_score
+
+        # Test against different opponents
+        opponents = {
+            "follow_ball": get_opponent("follow_ball"),
+            "defensive": get_opponent("defensive"),
+            "aggressive": get_opponent("aggressive"),
+            "random": get_opponent("random"),
+            "predictive": get_opponent("predictive"),
+        }
+
+        # Get ball configuration
+        ball_direction, ball_angle = get_ball_config_from_args(args)
+        training_manager = TrainingManager(
+            headless=args.headless,
+            initial_ball_direction=ball_direction,
+            initial_ball_angle=ball_angle,
+        )
+
+        agent.set_training_mode(False)
+        agent.epsilon = args.eval_epsilon
+        agent.set_exploration_mode(args.eval_epsilon > 0)
+
         results = {}
 
         for opponent_name, opponent in opponents.items():
@@ -1566,12 +2036,13 @@ def evaluate_final_performance(agent, args):
         agent.set_exploration_mode(was_exploring)
 
         # Cleanup training manager
-        training_manager.cleanup()
+        if training_manager is not None:
+            training_manager.cleanup()
 
         game_config.MAX_SCORE = original_max_score
 
 
-def parse_arguments():
+def parse_arguments(argv: list[str] | None = None):
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         description="Advanced DQN Training Script with Comprehensive Configuration",
@@ -1663,7 +2134,41 @@ def parse_arguments():
         "--training_max_score",
         type=int,
         default=1,
-        help="Score needed to win during training (default: 3, game default: 11)",
+        help="Score needed to win during training when mixed fine-tuning is disabled",
+    )
+    parser.add_argument(
+        "--mixed_opponents",
+        "--mixed_opponent_finetune",
+        dest="mixed_opponents",
+        action="store_true",
+        help="Enable mixed-opponent fine-tuning with weighted opponent and MAX_SCORE sampling",
+    )
+    parser.add_argument(
+        "--opponent_mix",
+        type=str,
+        default=DEFAULT_OPPONENT_MIX_CLI,
+        help="Comma-separated weighted opponent mix as '<name>:<weight>' entries",
+    )
+    parser.add_argument(
+        "--opponent_mix_seed",
+        type=int,
+        default=0,
+        help="Seed for deterministic mixed-opponent and training target sampling",
+    )
+    parser.add_argument(
+        "--training_score_mix",
+        "--training_max_scores",
+        dest="training_score_mix",
+        type=str,
+        default=DEFAULT_TRAINING_SCORE_MIX_CLI,
+        help="Comma-separated positive MAX_SCORE values sampled during mixed fine-tuning",
+    )
+    parser.add_argument(
+        "--fine_tune_bonuses",
+        "--enable_training_bonuses",
+        dest="fine_tune_bonuses",
+        action="store_true",
+        help="Enable bonuses during mixed-opponent fine-tuning; disabled by default for base-game fine-tuning",
     )
     parser.add_argument(
         "--early_stopping",
@@ -1749,6 +2254,73 @@ def parse_arguments():
         type=int,
         default=1,
         help="Score needed to win during evaluation (default: 1, game default: 11)",
+    )
+    parser.add_argument(
+        "--evaluate_checkpoints",
+        action="store_true",
+        help="Evaluate each saved training checkpoint and final model, writing JSON next to each .pth",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_opponent",
+        dest="checkpoint_eval_opponents",
+        action="append",
+        choices=[opponent for opponent in AI_TYPES if opponent != "training_dummy"],
+        help="Opponent for checkpoint evaluation. May be repeated.",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_opponents",
+        dest="checkpoint_eval_opponents_csv",
+        default=None,
+        help="Comma-separated checkpoint evaluation opponents",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_episodes",
+        type=int,
+        default=0,
+        help="Episodes per opponent for checkpoint evaluation (0 disables unless --evaluate_checkpoints is set)",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_max_steps",
+        type=int,
+        default=None,
+        help="Max steps per checkpoint evaluation episode (defaults to --max_steps_per_episode)",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_seed",
+        type=int,
+        default=0,
+        help="Seed for deterministic checkpoint evaluation",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_epsilon",
+        type=float,
+        default=0.0,
+        help="Exploration epsilon used only during checkpoint evaluation",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_max_score",
+        type=int,
+        default=None,
+        help="Optional MAX_SCORE override used only during checkpoint evaluation",
+    )
+    parser.add_argument(
+        "--checkpoint_eval_include_episodes",
+        action="store_true",
+        help="Include per-episode rows in checkpoint evaluation JSON",
+    )
+    checkpoint_bonus_group = parser.add_mutually_exclusive_group()
+    checkpoint_bonus_group.add_argument(
+        "--checkpoint_eval_bonuses",
+        dest="checkpoint_eval_bonuses_enabled",
+        action="store_true",
+        default=None,
+        help="Enable bonuses during checkpoint evaluation",
+    )
+    checkpoint_bonus_group.add_argument(
+        "--checkpoint_eval_no_bonuses",
+        dest="checkpoint_eval_bonuses_enabled",
+        action="store_false",
+        help="Disable bonuses during checkpoint evaluation",
     )
 
     # Output and logging
@@ -1867,11 +2439,25 @@ def parse_arguments():
         help="Run in normal speed GUI mode (lower FPS for better visualization)",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        validate_mixed_fine_tuning_args(args)
+        args.parsed_opponent_mix = parse_opponent_mix(args.opponent_mix)
+        args.parsed_training_score_targets = parse_training_score_targets(args.training_score_mix)
+        if args.checkpoint_eval_episodes < 0:
+            raise ValueError("--checkpoint_eval_episodes must be non-negative")
+        if args.checkpoint_eval_opponents_csv:
+            _checkpoint_eval_opponents(args)
+        if checkpoint_evaluation_enabled(args):
+            checkpoint_evaluation_config(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    return args
 
 
-def main():
-    args = parse_arguments()
+def main(argv: list[str] | None = None):
+    args = parse_arguments(argv)
 
     print("🚀 ADVANCED DQN TRAINING STARTED")
     print(f"Mode: {args.mode}")
@@ -1902,6 +2488,11 @@ def main():
         print("📊 Reward normalization: ENABLED")
     else:
         print("📊 Reward normalization: DISABLED")
+
+    if args.mixed_opponents:
+        print(f"Mixed-opponent fine-tuning: ENABLED (seed: {args.opponent_mix_seed})")
+        print(f"   Opponent mix: {args.opponent_mix}")
+        print(f"   Training MAX_SCORE mix: {args.training_score_mix}")
 
     # Create output directories
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
