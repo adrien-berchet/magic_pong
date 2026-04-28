@@ -2,6 +2,7 @@
 Magic Pong game configuration with Pydantic validation
 """
 
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -240,6 +241,18 @@ class AIConfig(BaseModel):
     PROXIMITY_REWARD_FACTOR: float = Field(default=0.001, ge=0, description="Proximity reward")
     PROXIMITY_PENALTY_FACTOR: float = Field(default=0.001, ge=0, description="Proximity penalty")
     MAX_PROXIMITY_REWARD: float = Field(default=0.01, ge=0, description="Max proximity reward")
+    REWARD_SHAPING_MODE: str = Field(
+        default="legacy", description="Reward shaping mode: legacy or phase3"
+    )
+    PHASE3_INTERCEPT_PROGRESS_REWARD: float = Field(
+        default=0.02, ge=0, description="Reward for moving toward predicted intercept"
+    )
+    PHASE3_INTERCEPT_DISTANCE_PENALTY: float = Field(
+        default=0.02, ge=0, description="Penalty for being far from predicted intercept"
+    )
+    PHASE3_SUCCESSFUL_RETURN_REWARD: float = Field(
+        default=0.05, ge=0, description="Reward for returning the ball toward opponent side"
+    )
     DEBUG_OPTIMAL_POINTS: bool = Field(default=False, description="Debug optimal points")
     SHOW_OPTIMAL_POINTS_GUI: bool = Field(default=False, description="Show optimal points in GUI")
 
@@ -256,6 +269,26 @@ class AIConfig(BaseModel):
         """Warn if fast mode multiplier is unreasonably high"""
         if v > 100:
             raise ValueError(f"FAST_MODE_MULTIPLIER ({v}) seems too high. Consider values <= 100.")
+        return v
+
+    @field_validator("REWARD_SHAPING_MODE")
+    @classmethod
+    def validate_reward_shaping_mode(cls, v: str) -> str:
+        """Validate known reward shaping modes."""
+        if v not in {"legacy", "phase3"}:
+            raise ValueError("REWARD_SHAPING_MODE must be 'legacy' or 'phase3'")
+        return v
+
+    @field_validator(
+        "PHASE3_INTERCEPT_PROGRESS_REWARD",
+        "PHASE3_INTERCEPT_DISTANCE_PENALTY",
+        "PHASE3_SUCCESSFUL_RETURN_REWARD",
+    )
+    @classmethod
+    def validate_phase3_reward_weight(cls, v: float) -> float:
+        """Reject non-finite reward weights."""
+        if not math.isfinite(v):
+            raise ValueError("Phase 3 reward weights must be finite")
         return v
 
 

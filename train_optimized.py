@@ -31,6 +31,7 @@ from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import ai_config_tmp
 from magic_pong.utils.config import game_config
 
 AI_TYPES = [
@@ -58,6 +59,13 @@ DEFAULT_TRAINING_SCORE_MIX_CLI = ",".join(str(score) for score in DEFAULT_TRAINI
 DEFAULT_CHECKPOINT_EVAL_OPPONENTS = tuple(DEFAULT_OPPONENT_MIX)
 DEFAULT_CHECKPOINT_EVAL_EPISODES = 10
 MIXED_FINE_TUNING_MODES = frozenset({"continue", "single", "dual_scale"})
+REWARD_SHAPING_MODES = ("legacy", "phase3")
+EVAL_GATE_METRICS = frozenset(
+    {
+        "win_rate",
+        "avg_goal_diff",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +74,15 @@ class WeightedOpponent:
 
     name: str
     weight: float
+
+
+@dataclass(frozen=True)
+class EvaluationGate:
+    """Minimum metric requirement for a checkpoint evaluation opponent."""
+
+    opponent: str
+    metric: str
+    threshold: float
 
 
 class OpponentSampler:
@@ -306,6 +323,77 @@ def parse_training_score_targets(score_value: str | Sequence[int]) -> tuple[int,
     return tuple(scores)
 
 
+def parse_eval_gate(gate_value: str) -> EvaluationGate:
+    """Parse '<opponent>:<metric>:<minimum>' checkpoint evaluation gate syntax."""
+    parts = [part.strip() for part in gate_value.split(":")]
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(
+            f"Invalid evaluation gate {gate_value!r}; expected '<opponent>:<metric>:<minimum>'"
+        )
+
+    opponent, metric, raw_threshold = parts
+    if opponent not in AI_TYPES or opponent == "training_dummy":
+        valid_opponents = ", ".join(
+            opponent for opponent in AI_TYPES if opponent != "training_dummy"
+        )
+        raise ValueError(
+            f"Unknown evaluation gate opponent {opponent!r}. Valid opponents: {valid_opponents}"
+        )
+    if metric not in EVAL_GATE_METRICS:
+        valid_metrics = ", ".join(sorted(EVAL_GATE_METRICS))
+        raise ValueError(
+            f"Unknown evaluation gate metric {metric!r}. Valid metrics: {valid_metrics}"
+        )
+
+    try:
+        threshold = float(raw_threshold)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid threshold for evaluation gate {gate_value!r}: {raw_threshold!r}"
+        ) from exc
+    if not math.isfinite(threshold):
+        raise ValueError("Evaluation gate thresholds must be finite")
+    if metric == "win_rate" and not 0.0 <= threshold <= 1.0:
+        raise ValueError("win_rate evaluation gates use a 0.0 to 1.0 fraction threshold")
+
+    return EvaluationGate(opponent=opponent, metric=metric, threshold=threshold)
+
+
+def parse_eval_gates(gate_values: Sequence[str] | None) -> tuple[EvaluationGate, ...]:
+    """Parse and deduplicate checkpoint evaluation gates."""
+    gates = tuple(parse_eval_gate(value) for value in (gate_values or ()))
+    seen: set[tuple[str, str]] = set()
+    for gate in gates:
+        key = (gate.opponent, gate.metric)
+        if key in seen:
+            raise ValueError(
+                f"Duplicate evaluation gate for opponent {gate.opponent!r} metric {gate.metric!r}"
+            )
+        seen.add(key)
+    return gates
+
+
+def validate_reward_shaping_args(args) -> None:
+    """Validate reward shaping CLI options before mutating global config."""
+    mode = getattr(args, "reward_shaping", "legacy")
+    if mode not in REWARD_SHAPING_MODES:
+        valid_modes = ", ".join(REWARD_SHAPING_MODES)
+        raise ValueError(f"--reward_shaping must be one of: {valid_modes}")
+
+    reward_weight_args = (
+        "phase3_intercept_progress_reward",
+        "phase3_intercept_distance_penalty",
+        "phase3_successful_return_reward",
+    )
+    for attr_name in reward_weight_args:
+        value = getattr(args, attr_name, None)
+        if value is None:
+            continue
+        if not math.isfinite(value) or value < 0:
+            cli_name = "--" + attr_name.replace("_", "-")
+            raise ValueError(f"{cli_name} must be a non-negative finite number")
+
+
 def sample_weighted_opponent(
     opponent_mix: Sequence[WeightedOpponent], rng: random.Random
 ) -> WeightedOpponent:
@@ -359,6 +447,51 @@ def _training_score_targets_from_args(args) -> tuple[int, ...]:
     )
 
 
+def _eval_gates_from_args(args) -> tuple[EvaluationGate, ...]:
+    parsed_gates = getattr(args, "parsed_eval_gates", None)
+    if parsed_gates is not None:
+        return tuple(parsed_gates)
+    return parse_eval_gates(getattr(args, "eval_gates", None))
+
+
+def reward_shaping_config_from_args(args) -> dict[str, Any]:
+    """Return temporary ai_config values requested by CLI args."""
+    mode = getattr(args, "reward_shaping", None)
+    if mode is None:
+        return {}
+
+    config_values: dict[str, Any] = {"REWARD_SHAPING_MODE": mode}
+    if mode == "phase3":
+        arg_to_config = {
+            "phase3_intercept_progress_reward": "PHASE3_INTERCEPT_PROGRESS_REWARD",
+            "phase3_intercept_distance_penalty": "PHASE3_INTERCEPT_DISTANCE_PENALTY",
+            "phase3_successful_return_reward": "PHASE3_SUCCESSFUL_RETURN_REWARD",
+        }
+        for arg_name, config_name in arg_to_config.items():
+            if hasattr(args, arg_name):
+                config_values[config_name] = getattr(args, arg_name)
+    return config_values
+
+
+@contextmanager
+def temporary_reward_shaping_config(args):
+    """Temporarily apply CLI reward shaping config and always restore it."""
+    config_values = reward_shaping_config_from_args(args)
+    if not config_values:
+        yield
+        return
+
+    with ai_config_tmp(**config_values):
+        yield
+
+
+@contextmanager
+def temporary_legacy_reward_evaluation():
+    """Run evaluation with deployment-style reward metrics, not training shaping."""
+    with ai_config_tmp(REWARD_SHAPING_MODE="legacy", USE_PROXIMITY_REWARD=False):
+        yield
+
+
 @contextmanager
 def temporary_game_config_value(name: str, value: Any):
     """Temporarily set a game_config value and always restore it."""
@@ -407,9 +540,14 @@ def _checkpoint_eval_opponents(args) -> tuple[str, ...]:
     if csv_value:
         csv_opponents = tuple(item.strip() for item in csv_value.split(",") if item.strip())
 
+    gate_opponents = tuple(gate.opponent for gate in _eval_gates_from_args(args))
     opponents = repeated_opponents + csv_opponents
     if not opponents:
-        return DEFAULT_CHECKPOINT_EVAL_OPPONENTS
+        opponents = DEFAULT_CHECKPOINT_EVAL_OPPONENTS
+
+    for gate_opponent in gate_opponents:
+        if gate_opponent not in opponents:
+            opponents = opponents + (gate_opponent,)
 
     invalid = sorted(set(opponents) - set(AI_TYPES))
     if invalid:
@@ -420,8 +558,10 @@ def _checkpoint_eval_opponents(args) -> tuple[str, ...]:
 
 
 def checkpoint_evaluation_enabled(args) -> bool:
-    return bool(getattr(args, "evaluate_checkpoints", False)) or (
-        getattr(args, "checkpoint_eval_episodes", 0) > 0
+    return (
+        bool(getattr(args, "evaluate_checkpoints", False))
+        or (getattr(args, "checkpoint_eval_episodes", 0) > 0)
+        or bool(_eval_gates_from_args(args))
     )
 
 
@@ -453,6 +593,57 @@ def checkpoint_evaluation_path(checkpoint_path: str | Path) -> Path:
     return checkpoint_path.with_name(f"{checkpoint_path.stem}.eval.json")
 
 
+def evaluation_gate_results(
+    evaluation_payload: dict[str, Any], gates: Sequence[EvaluationGate]
+) -> dict[str, Any]:
+    """Evaluate gate requirements against an existing evaluation JSON payload."""
+    opponents = {
+        opponent.get("opponent"): opponent
+        for opponent in evaluation_payload.get("opponents", [])
+        if isinstance(opponent, dict)
+    }
+    gate_results = []
+
+    for gate in gates:
+        opponent_result = opponents.get(gate.opponent)
+        actual_value = None
+        error = None
+        if opponent_result is None:
+            error = f"Opponent {gate.opponent!r} was not evaluated"
+        elif gate.metric not in opponent_result:
+            error = f"Metric {gate.metric!r} is missing for opponent {gate.opponent!r}"
+        else:
+            try:
+                actual_value = float(opponent_result[gate.metric])
+            except (TypeError, ValueError):
+                error = f"Metric {gate.metric!r} is not numeric for opponent {gate.opponent!r}"
+
+        passed = actual_value is not None and actual_value >= gate.threshold
+        gate_results.append(
+            {
+                "opponent": gate.opponent,
+                "metric": gate.metric,
+                "comparison": ">=",
+                "threshold": gate.threshold,
+                "actual": actual_value,
+                "passed": passed,
+                "error": error,
+            }
+        )
+
+    return {
+        "passed": all(result["passed"] for result in gate_results),
+        "gates": gate_results,
+    }
+
+
+def checkpoint_evaluation_gates_passed(eval_json_path: str | Path) -> bool:
+    """Return True when a written checkpoint evaluation payload passed all gates."""
+    payload = json.loads(Path(eval_json_path).read_text(encoding="utf-8"))
+    gate_results = payload.get("eval_gates")
+    return bool(gate_results and gate_results.get("passed"))
+
+
 def maybe_save_checkpoint_evaluation(
     checkpoint_path: str | Path, args, training_context: dict[str, Any] | None = None
 ) -> str | None:
@@ -461,12 +652,19 @@ def maybe_save_checkpoint_evaluation(
         return None
 
     config = checkpoint_evaluation_config(args)
-    with preserve_global_rng_state():
+    with temporary_legacy_reward_evaluation(), preserve_global_rng_state():
         result = ai_evaluation.evaluate_checkpoint(checkpoint_path, config)
     output_path = checkpoint_evaluation_path(checkpoint_path)
     payload = ai_evaluation.result_to_dict(result)
+    payload["reward_shaping"] = {
+        "evaluation_mode": "legacy",
+        "training_mode": getattr(args, "reward_shaping", "legacy"),
+    }
     if training_context is not None:
         payload["training_context"] = training_context
+    gates = _eval_gates_from_args(args)
+    if gates:
+        payload["eval_gates"] = evaluation_gate_results(payload, gates)
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"Checkpoint evaluation saved: {output_path}")
     return str(output_path)
@@ -595,136 +793,146 @@ def train_phase(
         best_avg_reward = float("-inf")
         episodes_since_improvement = 0
 
-        for episode in range(start_episode, start_episode + episodes):
-            if hasattr(opponent_source, "next_opponent"):
-                episode_opponent_name, episode_opponent = opponent_source.next_opponent()
-                if score_targets:
-                    assert mix_rng is not None
-                    episode_max_score = sample_training_score_target(score_targets, mix_rng)
+        with temporary_reward_shaping_config(args):
+            for episode in range(start_episode, start_episode + episodes):
+                if hasattr(opponent_source, "next_opponent"):
+                    episode_opponent_name, episode_opponent = opponent_source.next_opponent()
+                    if score_targets:
+                        assert mix_rng is not None
+                        episode_max_score = sample_training_score_target(score_targets, mix_rng)
+                    else:
+                        episode_max_score = args.training_max_score
+                    if args.verbose:
+                        print(
+                            f"    Episode {episode}: opponent={episode_opponent_name}, MAX_SCORE={episode_max_score}"
+                        )
                 else:
+                    episode_opponent = opponent_source
+                    episode_opponent_name = getattr(opponent_source, "name", str(opponent_source))
                     episode_max_score = args.training_max_score
+
+                ball_direction, ball_angle = get_ball_config_from_args(args)
+                training_manager.set_ball_initial_direction(ball_direction, ball_angle)
+
+                agent.on_episode_start()
+
+                with temporary_game_config_value("MAX_SCORE", episode_max_score):
+                    episode_stats = training_manager.train_episode(
+                        agent, episode_opponent, max_steps=args.max_steps_per_episode
+                    )
+                episode_reward = episode_stats["total_reward_p1"]
+                rewards.append(episode_reward)
+
+                winner = episode_stats.get("winner", 0)
+                episode_won = 1 if winner == 1 else 0
+                wins_history.append(episode_won)
+                if winner == 1:
+                    wins += 1
+
+                # Debug info for troubleshooting
                 if args.verbose:
                     print(
-                        f"    Episode {episode}: opponent={episode_opponent_name}, MAX_SCORE={episode_max_score}"
+                        f"    Episode {episode}: reward={episode_reward:.2f}, winner={winner}, agent_wins={wins}"
                     )
-            else:
-                episode_opponent = opponent_source
-                episode_opponent_name = getattr(opponent_source, "name", str(opponent_source))
-                episode_max_score = args.training_max_score
 
-            ball_direction, ball_angle = get_ball_config_from_args(args)
-            training_manager.set_ball_initial_direction(ball_direction, ball_angle)
+                # Progress reporting
+                if (episode + 1) % args.log_interval == 0 and episode > start_episode:
+                    recent_rewards = rewards[-args.log_interval :]
+                    avg_reward = np.mean(recent_rewards)
 
-            agent.on_episode_start()
+                    # Calculate recent win rate (same window as recent rewards)
+                    recent_wins = wins_history[-args.log_interval :]
+                    recent_win_rate = np.mean(recent_wins) * 100  # Convert to percentage
 
-            with temporary_game_config_value("MAX_SCORE", episode_max_score):
-                episode_stats = training_manager.train_episode(
-                    agent, episode_opponent, max_steps=args.max_steps_per_episode
-                )
-            episode_reward = episode_stats["total_reward_p1"]
-            rewards.append(episode_reward)
+                    # Global win rate for comparison
+                    global_win_rate = wins / (episode - start_episode + 1) * 100
 
-            winner = episode_stats.get("winner", 0)
-            episode_won = 1 if winner == 1 else 0
-            wins_history.append(episode_won)
-            if winner == 1:
-                wins += 1
+                    # Get detailed training statistics
+                    training_stats = agent.get_training_stats()
 
-            # Debug info for troubleshooting
-            if args.verbose:
-                print(
-                    f"    Episode {episode}: reward={episode_reward:.2f}, winner={winner}, agent_wins={wins}"
-                )
-
-            # Progress reporting
-            if (episode + 1) % args.log_interval == 0 and episode > start_episode:
-                recent_rewards = rewards[-args.log_interval :]
-                avg_reward = np.mean(recent_rewards)
-
-                # Calculate recent win rate (same window as recent rewards)
-                recent_wins = wins_history[-args.log_interval :]
-                recent_win_rate = np.mean(recent_wins) * 100  # Convert to percentage
-
-                # Global win rate for comparison
-                global_win_rate = wins / (episode - start_episode + 1) * 100
-
-                # Get detailed training statistics
-                training_stats = agent.get_training_stats()
-
-                base_info = (
-                    f"  Episode {episode}: avg reward = {avg_reward:.2f}, "
-                    f"win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
-                )
-
-                # Add dual-scale specific information if enabled
-                if training_stats.get("dual_scale_training", False):
-                    dual_scale_info = (
-                        f", tactical steps = {training_stats['tactical_step_count']}, "
-                        f"memory = {training_stats['memory_size']}"
+                    base_info = (
+                        f"  Episode {episode}: avg reward = {avg_reward:.2f}, "
+                        f"win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
                     )
-                    print(base_info + dual_scale_info)
 
-                    # Verbose dual-scale statistics
-                    if args.verbose:
-                        print(f"    🎯 Tactical LR: {training_stats['tactical_optimizer_lr']:.6f}")
-                        print(
-                            f"    🧠 Strategic LR: {training_stats['strategic_optimizer_lr']:.6f}"
+                    # Add dual-scale specific information if enabled
+                    if training_stats.get("dual_scale_training", False):
+                        dual_scale_info = (
+                            f", tactical steps = {training_stats['tactical_step_count']}, "
+                            f"memory = {training_stats['memory_size']}"
                         )
-                        print(f"    📚 Training mode: {training_stats['training_mode']}")
-                        print(
-                            f"    📊 Episode buffer: {training_stats['episode_buffer_size']} experiences"
-                        )
-                else:
-                    print(base_info)
-                    if args.verbose:
-                        print(f"    📚 Training mode: {training_stats['training_mode']}")
-                        print(f"    📊 Memory: {training_stats['memory_size']} experiences")
+                        print(base_info + dual_scale_info)
 
-                # Check for improvement
-                if avg_reward > best_avg_reward:
-                    best_avg_reward = avg_reward
-                    episodes_since_improvement = 0
-                else:
-                    episodes_since_improvement += args.log_interval
+                        # Verbose dual-scale statistics
+                        if args.verbose:
+                            print(
+                                f"    🎯 Tactical LR: {training_stats['tactical_optimizer_lr']:.6f}"
+                            )
+                            print(
+                                f"    🧠 Strategic LR: {training_stats['strategic_optimizer_lr']:.6f}"
+                            )
+                            print(f"    📚 Training mode: {training_stats['training_mode']}")
+                            print(
+                                f"    📊 Episode buffer: {training_stats['episode_buffer_size']} experiences"
+                            )
+                    else:
+                        print(base_info)
+                        if args.verbose:
+                            print(f"    📚 Training mode: {training_stats['training_mode']}")
+                            print(f"    📊 Memory: {training_stats['memory_size']} experiences")
 
-            # Save checkpoint
-            if (
-                args.checkpoint_interval > 0
-                and episode % args.checkpoint_interval == 0
-                and episode > start_episode
-            ):
-                checkpoint_path, _metadata_path = save_checkpoint(
-                    agent,
-                    episode,
-                    phase_num,
-                    start_episode + episodes,
-                    rewards,
-                    wins,
-                    args.checkpoint_dir,
-                )
-                maybe_save_checkpoint_evaluation(
-                    checkpoint_path,
-                    args,
-                    checkpoint_training_context(
-                        episode=episode,
-                        phase_num=phase_num,
-                        phase_name=phase_name,
-                        total_episodes=start_episode + episodes,
-                        use_mixed_fine_tuning=use_mixed_fine_tuning,
-                        opponent=opponent,
-                        opponent_mix=opponent_mix,
-                        score_targets=score_targets,
-                        episode_max_score=episode_max_score,
-                        episode_opponent_name=episode_opponent_name,
-                    ),
-                )
+                    # Check for improvement
+                    if avg_reward > best_avg_reward:
+                        best_avg_reward = avg_reward
+                        episodes_since_improvement = 0
+                    else:
+                        episodes_since_improvement += args.log_interval
 
-            # Early stopping
-            if args.early_stopping > 0 and episodes_since_improvement >= args.early_stopping:
-                print(
-                    f"Early stopping triggered after {episodes_since_improvement} episodes without improvement"
-                )
-                break
+                # Save checkpoint
+                if (
+                    args.checkpoint_interval > 0
+                    and episode % args.checkpoint_interval == 0
+                    and episode > start_episode
+                ):
+                    checkpoint_path, _metadata_path = save_checkpoint(
+                        agent,
+                        episode,
+                        phase_num,
+                        start_episode + episodes,
+                        rewards,
+                        wins,
+                        args.checkpoint_dir,
+                    )
+                    eval_path = maybe_save_checkpoint_evaluation(
+                        checkpoint_path,
+                        args,
+                        checkpoint_training_context(
+                            episode=episode,
+                            phase_num=phase_num,
+                            phase_name=phase_name,
+                            total_episodes=start_episode + episodes,
+                            use_mixed_fine_tuning=use_mixed_fine_tuning,
+                            opponent=opponent,
+                            opponent_mix=opponent_mix,
+                            score_targets=score_targets,
+                            episode_max_score=episode_max_score,
+                            episode_opponent_name=episode_opponent_name,
+                        ),
+                    )
+                    if (
+                        eval_path
+                        and getattr(args, "stop_when_eval_gates_pass", False)
+                        and checkpoint_evaluation_gates_passed(eval_path)
+                    ):
+                        print(f"Evaluation gates passed at checkpoint {checkpoint_path}")
+                        break
+
+                # Early stopping
+                if args.early_stopping > 0 and episodes_since_improvement >= args.early_stopping:
+                    print(
+                        f"Early stopping triggered after {episodes_since_improvement} episodes without improvement"
+                    )
+                    break
 
         final_episodes = len(rewards)
         avg_reward = np.mean(rewards[-100:]) if len(rewards) >= 100 else np.mean(rewards)
@@ -1969,66 +2177,67 @@ def evaluate_final_performance(agent, args):
     original_epsilon = agent.epsilon
 
     try:
-        game_config.MAX_SCORE = args.eval_max_score
+        with temporary_legacy_reward_evaluation():
+            game_config.MAX_SCORE = args.eval_max_score
 
-        # Test against different opponents
-        opponents = {
-            "follow_ball": get_opponent("follow_ball"),
-            "defensive": get_opponent("defensive"),
-            "aggressive": get_opponent("aggressive"),
-            "random": get_opponent("random"),
-            "predictive": get_opponent("predictive"),
-        }
-
-        # Get ball configuration
-        ball_direction, ball_angle = get_ball_config_from_args(args)
-        training_manager = TrainingManager(
-            headless=args.headless,
-            initial_ball_direction=ball_direction,
-            initial_ball_angle=ball_angle,
-        )
-
-        agent.set_training_mode(False)
-        agent.epsilon = args.eval_epsilon
-        agent.set_exploration_mode(args.eval_epsilon > 0)
-
-        results = {}
-
-        for opponent_name, opponent in opponents.items():
-            print(f"\nAgainst {opponent_name}:")
-            wins = 0
-            rewards = []
-
-            for _ in range(args.eval_episodes):
-                agent.on_episode_start()
-                episode_stats = training_manager.train_episode(
-                    agent, opponent, max_steps=args.max_steps_per_episode
-                )
-
-                if episode_stats.get("winner") == 1:
-                    wins += 1
-                rewards.append(episode_stats["total_reward_p1"])
-
-            win_rate = wins / args.eval_episodes * 100
-            avg_reward = np.mean(rewards)
-
-            results[opponent_name] = {
-                "win_rate": win_rate,
-                "avg_reward": avg_reward,
-                "std_reward": np.std(rewards),
+            # Test against different opponents
+            opponents = {
+                "follow_ball": get_opponent("follow_ball"),
+                "defensive": get_opponent("defensive"),
+                "aggressive": get_opponent("aggressive"),
+                "random": get_opponent("random"),
+                "predictive": get_opponent("predictive"),
             }
 
-            print(f"  Win rate: {win_rate:.1f}%")
-            print(f"  Average reward: {avg_reward:.2f} ± {np.std(rewards):.2f}")
+            # Get ball configuration
+            ball_direction, ball_angle = get_ball_config_from_args(args)
+            training_manager = TrainingManager(
+                headless=args.headless,
+                initial_ball_direction=ball_direction,
+                initial_ball_angle=ball_angle,
+            )
 
-        # Save evaluation results
-        if args.save_eval_results:
-            eval_path = Path(args.output_dir) / f"{args.model_prefix}_evaluation.json"
-            with open(eval_path, "w") as f:
-                json.dump(results, f, indent=2)
-            print(f"Evaluation results saved: {eval_path}")
+            agent.set_training_mode(False)
+            agent.epsilon = args.eval_epsilon
+            agent.set_exploration_mode(args.eval_epsilon > 0)
 
-        return results
+            results = {}
+
+            for opponent_name, opponent in opponents.items():
+                print(f"\nAgainst {opponent_name}:")
+                wins = 0
+                rewards = []
+
+                for _ in range(args.eval_episodes):
+                    agent.on_episode_start()
+                    episode_stats = training_manager.train_episode(
+                        agent, opponent, max_steps=args.max_steps_per_episode
+                    )
+
+                    if episode_stats.get("winner") == 1:
+                        wins += 1
+                    rewards.append(episode_stats["total_reward_p1"])
+
+                win_rate = wins / args.eval_episodes * 100
+                avg_reward = np.mean(rewards)
+
+                results[opponent_name] = {
+                    "win_rate": win_rate,
+                    "avg_reward": avg_reward,
+                    "std_reward": np.std(rewards),
+                }
+
+                print(f"  Win rate: {win_rate:.1f}%")
+                print(f"  Average reward: {avg_reward:.2f} ± {np.std(rewards):.2f}")
+
+            # Save evaluation results
+            if args.save_eval_results:
+                eval_path = Path(args.output_dir) / f"{args.model_prefix}_evaluation.json"
+                with open(eval_path, "w") as f:
+                    json.dump(results, f, indent=2)
+                print(f"Evaluation results saved: {eval_path}")
+
+            return results
 
     finally:
         agent.epsilon = original_epsilon
@@ -2169,6 +2378,38 @@ def parse_arguments(argv: list[str] | None = None):
         dest="fine_tune_bonuses",
         action="store_true",
         help="Enable bonuses during mixed-opponent fine-tuning; disabled by default for base-game fine-tuning",
+    )
+    reward_shaping_group = parser.add_mutually_exclusive_group()
+    reward_shaping_group.add_argument(
+        "--reward_shaping",
+        choices=REWARD_SHAPING_MODES,
+        default="legacy",
+        help="Reward shaping mode used temporarily for training and evaluation",
+    )
+    reward_shaping_group.add_argument(
+        "--phase3_reward_shaping",
+        dest="reward_shaping",
+        action="store_const",
+        const="phase3",
+        help="Enable Phase 3 reward shaping with conservative default weights",
+    )
+    parser.add_argument(
+        "--phase3_intercept_progress_reward",
+        type=float,
+        default=ai_config.PHASE3_INTERCEPT_PROGRESS_REWARD,
+        help="Phase 3 reward weight for moving toward the predicted intercept",
+    )
+    parser.add_argument(
+        "--phase3_intercept_distance_penalty",
+        type=float,
+        default=ai_config.PHASE3_INTERCEPT_DISTANCE_PENALTY,
+        help="Phase 3 penalty weight for being far from the predicted intercept",
+    )
+    parser.add_argument(
+        "--phase3_successful_return_reward",
+        type=float,
+        default=ai_config.PHASE3_SUCCESSFUL_RETURN_REWARD,
+        help="Phase 3 reward for a paddle hit that returns the ball toward the opponent",
     )
     parser.add_argument(
         "--early_stopping",
@@ -2322,6 +2563,21 @@ def parse_arguments(argv: list[str] | None = None):
         action="store_false",
         help="Disable bonuses during checkpoint evaluation",
     )
+    parser.add_argument(
+        "--eval_gate",
+        dest="eval_gates",
+        action="append",
+        default=[],
+        help=(
+            "Checkpoint evaluation gate as '<opponent>:<metric>:<minimum>', "
+            "for example defensive:win_rate:0.50. May be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--stop_when_eval_gates_pass",
+        action="store_true",
+        help="Stop the current training phase when a saved checkpoint passes all eval gates",
+    )
 
     # Output and logging
     parser.add_argument(
@@ -2442,8 +2698,12 @@ def parse_arguments(argv: list[str] | None = None):
     args = parser.parse_args(argv)
     try:
         validate_mixed_fine_tuning_args(args)
+        validate_reward_shaping_args(args)
         args.parsed_opponent_mix = parse_opponent_mix(args.opponent_mix)
         args.parsed_training_score_targets = parse_training_score_targets(args.training_score_mix)
+        args.parsed_eval_gates = parse_eval_gates(args.eval_gates)
+        if args.stop_when_eval_gates_pass and not args.parsed_eval_gates:
+            raise ValueError("--stop_when_eval_gates_pass requires at least one --eval_gate")
         if args.checkpoint_eval_episodes < 0:
             raise ValueError("--checkpoint_eval_episodes must be non-negative")
         if args.checkpoint_eval_opponents_csv:
@@ -2489,10 +2749,25 @@ def main(argv: list[str] | None = None):
     else:
         print("📊 Reward normalization: DISABLED")
 
+    if args.reward_shaping == "phase3":
+        print("Reward shaping: Phase 3 ENABLED")
+        print(
+            "   Weights: "
+            f"progress={args.phase3_intercept_progress_reward:g}, "
+            f"distance_penalty={args.phase3_intercept_distance_penalty:g}, "
+            f"successful_return={args.phase3_successful_return_reward:g}"
+        )
+
     if args.mixed_opponents:
         print(f"Mixed-opponent fine-tuning: ENABLED (seed: {args.opponent_mix_seed})")
         print(f"   Opponent mix: {args.opponent_mix}")
         print(f"   Training MAX_SCORE mix: {args.training_score_mix}")
+
+    if args.parsed_eval_gates:
+        gate_summary = ", ".join(
+            f"{gate.opponent}:{gate.metric}>={gate.threshold:g}" for gate in args.parsed_eval_gates
+        )
+        print(f"Checkpoint evaluation gates: {gate_summary}")
 
     # Create output directories
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)

@@ -221,13 +221,150 @@ class RewardCalculator:
             if hit["player"] == player_id:
                 reward += ai_config.WALL_HIT_REWARD * 2  # Bonus for using rotating paddle
 
-        # PROXIMITY-BASED REWARD SHAPING
-        # Reward/penalize based on distance change to the ball
-        if ai_config.USE_PROXIMITY_REWARD:
+        if events.get("goals"):
+            return reward
+
+        if ai_config.REWARD_SHAPING_MODE == "phase3":
+            reward += self._calculate_phase3_reward(game_state, events, player_id)
+        elif ai_config.USE_PROXIMITY_REWARD:
             proximity_reward = self._calculate_proximity_reward(game_state, player_id)
             reward += proximity_reward
 
         return reward
+
+    def _calculate_phase3_reward(
+        self, game_state: dict[str, Any], events: dict[str, list], player_id: int
+    ) -> float:
+        """Calculate opt-in Phase 3 shaping without changing terminal rewards."""
+        return self._calculate_phase3_intercept_reward(
+            game_state, player_id
+        ) + self._calculate_phase3_successful_return_reward(game_state, events, player_id)
+
+    def _calculate_phase3_intercept_reward(
+        self, game_state: dict[str, Any], player_id: int
+    ) -> float:
+        ball_pos = game_state.get("ball_position", (0.0, 0.0))
+        ball_vel = game_state.get("ball_velocity", (0.0, 0.0))
+        if not self._ball_is_approaching_player(ball_vel, player_id):
+            self.optimal_points.pop(player_id, None)
+            return 0.0
+
+        field_bounds = game_state.get(
+            "field_bounds", (0.0, game_config.FIELD_WIDTH, 0.0, game_config.FIELD_HEIGHT)
+        )
+        paddle_center_x, paddle_center_y, previous_center_y, paddle_height = (
+            self._phase3_paddle_geometry(game_state, player_id)
+        )
+        intercept_x = self._phase3_intercept_x(game_state, player_id)
+        intercept_y = self._predict_ball_y_at_x(ball_pos, ball_vel, intercept_x, field_bounds)
+        if intercept_y is None:
+            self.optimal_points.pop(player_id, None)
+            return 0.0
+
+        optimal_point = (paddle_center_x, intercept_y)
+        self.optimal_points[player_id] = {
+            "position": optimal_point,
+            "ball_position": ball_pos,
+            "ball_velocity": ball_vel,
+            "paddle_position": (paddle_center_x, paddle_center_y),
+        }
+
+        if ai_config.DEBUG_OPTIMAL_POINTS:
+            self._debug_optimal_point(
+                player_id, ball_pos, ball_vel, (paddle_center_x, paddle_center_y), optimal_point
+            )
+
+        current_distance = abs(intercept_y - paddle_center_y)
+        previous_distance = abs(intercept_y - previous_center_y)
+        movement_scale = max(paddle_height, 1.0)
+        field_height = max(float(field_bounds[3]) - float(field_bounds[2]), 1.0)
+
+        reward = 0.0
+        distance_delta = previous_distance - current_distance
+        if distance_delta > 1e-6:
+            progress = min(distance_delta / movement_scale, 1.0)
+            reward += ai_config.PHASE3_INTERCEPT_PROGRESS_REWARD * progress
+        elif distance_delta < -1e-6:
+            regress = min(abs(distance_delta) / movement_scale, 1.0)
+            reward -= ai_config.PHASE3_INTERCEPT_DISTANCE_PENALTY * 0.5 * regress
+
+        distance_deadband = paddle_height / 2
+        excess_distance = max(current_distance - distance_deadband, 0.0)
+        far_from_intercept = min(excess_distance / max(field_height / 2, 1.0), 1.0)
+        reward -= ai_config.PHASE3_INTERCEPT_DISTANCE_PENALTY * far_from_intercept
+        return reward
+
+    def _calculate_phase3_successful_return_reward(
+        self, game_state: dict[str, Any], events: dict[str, list], player_id: int
+    ) -> float:
+        ball_vel = game_state.get("ball_velocity", (0.0, 0.0))
+        if not self._ball_is_moving_toward_opponent(ball_vel, player_id):
+            return 0.0
+
+        for hit in events.get("paddle_hits", []):
+            if hit.get("player") == player_id:
+                return ai_config.PHASE3_SUCCESSFUL_RETURN_REWARD
+        return 0.0
+
+    def _phase3_paddle_geometry(
+        self, game_state: dict[str, Any], player_id: int
+    ) -> tuple[float, float, float, float]:
+        player_pos = game_state.get(f"player{player_id}_position", (0.0, 0.0))
+        previous_pos = game_state.get(
+            f"player{player_id}_prev_position",
+            game_state.get(f"player{player_id}_last_position", player_pos),
+        )
+        paddle_height = float(
+            game_state.get(f"player{player_id}_paddle_size", game_config.PADDLE_HEIGHT)
+        )
+        paddle_center_x = float(player_pos[0]) + game_config.PADDLE_WIDTH / 2
+        paddle_center_y = float(player_pos[1]) + paddle_height / 2
+        previous_center_y = float(previous_pos[1]) + paddle_height / 2
+        return paddle_center_x, paddle_center_y, previous_center_y, paddle_height
+
+    def _phase3_intercept_x(self, game_state: dict[str, Any], player_id: int) -> float:
+        player_pos = game_state.get(f"player{player_id}_position", (0.0, 0.0))
+        if player_id == 1:
+            return float(player_pos[0]) + game_config.PADDLE_WIDTH + game_config.BALL_RADIUS
+        return float(player_pos[0]) - game_config.BALL_RADIUS
+
+    def _predict_ball_y_at_x(
+        self,
+        ball_pos: tuple[float, float],
+        ball_vel: tuple[float, float],
+        target_x: float,
+        field_bounds: tuple[float, float, float, float],
+    ) -> float | None:
+        vel_x = float(ball_vel[0])
+        if abs(vel_x) < 1e-9:
+            return None
+
+        time_to_target = (target_x - float(ball_pos[0])) / vel_x
+        if time_to_target < 0:
+            return None
+
+        raw_y = float(ball_pos[1]) + float(ball_vel[1]) * time_to_target
+        min_y = float(field_bounds[2]) + game_config.BALL_RADIUS
+        max_y = float(field_bounds[3]) - game_config.BALL_RADIUS
+        return self._reflect_y_within_bounds(raw_y, min_y, max_y)
+
+    def _reflect_y_within_bounds(self, y: float, min_y: float, max_y: float) -> float:
+        if max_y <= min_y:
+            return min_y
+
+        height = max_y - min_y
+        offset = (y - min_y) % (height * 2)
+        if offset > height:
+            offset = height * 2 - offset
+        return min_y + offset
+
+    def _ball_is_approaching_player(self, ball_vel: tuple[float, float], player_id: int) -> bool:
+        return (player_id == 1 and ball_vel[0] < -1e-9) or (player_id == 2 and ball_vel[0] > 1e-9)
+
+    def _ball_is_moving_toward_opponent(
+        self, ball_vel: tuple[float, float], player_id: int
+    ) -> bool:
+        return (player_id == 1 and ball_vel[0] > 1e-9) or (player_id == 2 and ball_vel[0] < -1e-9)
 
     def _calculate_proximity_reward(self, game_state: dict[str, Any], player_id: int) -> float:
         """
