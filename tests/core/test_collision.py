@@ -516,3 +516,45 @@ class TestZeroLengthLine:
 
         collision = circle_line_collision(ball, line_start, line_end)
         assert collision is False, "Should not detect collision with distant point"
+
+
+class TestRotatingPaddleCollision:
+    """Tests for rotating paddle collision normal direction."""
+
+    def _make_rp_with_vertical_segment(self):
+        """Return a RotatingPaddle whose get_line_segments is overridden to a single
+        known vertical segment at x=200, y=[130, 170], independent of angle."""
+        from magic_pong.core.entities import RotatingPaddle
+
+        rp = RotatingPaddle(200, 150, player_id=1)
+        # Override instance method so the test geometry is fully predictable
+        rp.get_line_segments = lambda: [(Vector2D(200, 130), Vector2D(200, 170))]  # type: ignore[method-assign]
+        return rp
+
+    def test_ball_hitting_from_left_reflected_leftward(self) -> None:
+        """Ball moving right into a vertical segment is reflected back to the left."""
+        detector = CollisionDetector()
+        rp = self._make_rp_with_vertical_segment()
+
+        ball = Ball(190, 150, 300, 0)
+        ball.radius = 10
+        ball.position = Vector2D(195, 150)  # 5px left of segment, within radius
+
+        detector.check_ball_rotating_paddle(ball, rp)
+
+        assert ball.velocity.x < 0, "Ball should be reflected leftward after hitting from left side"
+
+    def test_ball_hitting_from_right_reflected_rightward(self) -> None:
+        """Ball moving left into a vertical segment is reflected back to the right."""
+        detector = CollisionDetector()
+        rp = self._make_rp_with_vertical_segment()
+
+        ball = Ball(210, 150, -300, 0)
+        ball.radius = 10
+        ball.position = Vector2D(205, 150)  # 5px right of segment, within radius
+
+        detector.check_ball_rotating_paddle(ball, rp)
+
+        assert ball.velocity.x > 0, (
+            "Ball should be reflected rightward after hitting from right side"
+        )

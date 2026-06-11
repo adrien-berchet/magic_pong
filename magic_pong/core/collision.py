@@ -462,9 +462,13 @@ class CollisionDetector:
 
         for start, end in segments:
             if circle_line_collision(ball, start, end):
-                # Calculate collision normal
+                # Calculate collision normal pointing from the segment toward the ball
                 line_vec = end - start
-                normal = Vector2D(-line_vec.y, line_vec.x).normalize()
+                raw_normal = Vector2D(-line_vec.y, line_vec.x)
+                to_ball = ball.position - start
+                if raw_normal.x * to_ball.x + raw_normal.y * to_ball.y < 0:
+                    raw_normal = -raw_normal
+                normal = raw_normal.normalize()
 
                 # Reflect velocity
                 dot_product = ball.velocity.x * normal.x + ball.velocity.y * normal.y

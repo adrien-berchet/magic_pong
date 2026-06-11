@@ -14,7 +14,6 @@ from magic_pong.ai.interface import GameEnvironment
 from magic_pong.core.entities import Action
 from magic_pong.core.entities import Player
 from magic_pong.core.physics import PhysicsEngine
-from magic_pong.gui.human_player import HumanPlayer
 from magic_pong.gui.pygame_renderer import PygameRenderer
 from magic_pong.utils.config import game_config
 
@@ -140,21 +139,13 @@ class GameEngine:
         if player is None:
             return None
 
-        if isinstance(player, HumanPlayer):
-            # Human player (check this first!)
-            human_action: Action | None = player.get_action(None)
-            return human_action
-        elif hasattr(player, "get_action"):
-            # AI player
-            game_state = self.physics_engine.get_game_state()
-            observation = self.ai_environment.observation_processor.process_game_state(
-                game_state, player_id
-            )
-            agent_observation = adapt_observation_for_agent(observation, player_id, player)
-            action: Action = player.get_action(agent_observation)
-            return adapt_action_for_world(action, player_id, player)
-        else:
-            return None
+        game_state = self.physics_engine.get_game_state()
+        observation = self.ai_environment.observation_processor.process_game_state(
+            game_state, player_id
+        )
+        agent_observation = adapt_observation_for_agent(observation, player_id, player)
+        action: Action = player.get_action(agent_observation)
+        return adapt_action_for_world(action, player_id, player)
 
     def _handle_game_end(self, info: dict[str, Any]) -> None:
         """Handles the end of a game"""

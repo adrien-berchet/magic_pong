@@ -229,14 +229,20 @@ class PhysicsEngine:
 
         elif bonus_type == BonusType.ROTATING_PADDLE:
             # Add a rotating paddle
+            x_margin = (
+                game_config.PADDLE_MARGIN
+                + game_config.PADDLE_WIDTH
+                + game_config.ROTATING_PADDLE_RADIUS
+            )
+            y_margin = game_config.ROTATING_PADDLE_RADIUS
             if player == 1:
                 # Position in left half
-                x = random.uniform(100, self.field_width / 2 - 100)
+                x = random.uniform(x_margin, self.field_width / 2 - x_margin)
             else:
                 # Position in right half
-                x = random.uniform(self.field_width / 2 + 100, self.field_width - 100)
+                x = random.uniform(self.field_width / 2 + x_margin, self.field_width - x_margin)
 
-            y = random.uniform(100, self.field_height - 100)
+            y = random.uniform(y_margin, self.field_height - y_margin)
 
             rotating_paddle = RotatingPaddle(x, y, player)
             self.rotating_paddles.append(rotating_paddle)
