@@ -2,7 +2,6 @@
 Magic Pong main game engine
 """
 
-import time
 from typing import Any
 
 import pygame
@@ -44,7 +43,6 @@ class GameEngine:
         # Game state
         self.running = False
         self.paused = False
-        self.last_update_time = 0.0
 
         # Players (can be human or AI)
         self.player1: Player | None = None
@@ -73,7 +71,6 @@ class GameEngine:
         self.running = True
         self.paused = False
         self.physics_engine.reset_game()
-        self.last_update_time = time.time()
 
         # Reset AI environment
         self.ai_environment.reset()
@@ -89,8 +86,6 @@ class GameEngine:
     def pause_game(self) -> None:
         """Pauses / resumes the game"""
         self.paused = not self.paused
-        if not self.paused:
-            self.last_update_time = time.time()
 
     def update(self, dt: float | None = None) -> dict[str, Any]:
         """
@@ -104,10 +99,6 @@ class GameEngine:
         """
         if not self.running or self.paused:
             return {"events": {}, "game_state": self.physics_engine.get_game_state()}
-
-        # Calculate delta time
-        if dt is None:
-            self.last_update_time = time.time()
 
         # Get player actions
         action1 = self._get_player_action(self.player1, 1) or Action(move_x=0.0, move_y=0.0)
@@ -183,7 +174,7 @@ class GameEngine:
         _call_player_hook(self.player1, "on_episode_end")
         _call_player_hook(self.player2, "on_episode_end")
 
-        # Stop the game²
+        # Stop the game
         self.running = False
 
     def get_game_state(self) -> dict[str, Any]:

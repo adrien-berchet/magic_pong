@@ -10,12 +10,14 @@ from magic_pong.ai.agent_adapter import adapt_action_for_world
 from magic_pong.ai.agent_adapter import adapt_info_for_agent
 from magic_pong.ai.agent_adapter import to_player1_dqn_observation
 from magic_pong.ai.environment.factory import EnvironmentFactory
+from magic_pong.ai.interface import ObservationProcessor
 from magic_pong.ai.interfaces.observation import VectorObservationBuilder
 from magic_pong.ai.models.simple_ai import AggressiveAI
 from magic_pong.ai.models.simple_ai import DefensiveAI
 from magic_pong.ai.models.simple_ai import FollowBallAI
 from magic_pong.ai.models.simple_ai import PredictiveAI
 from magic_pong.ai.models.simple_ai import TrainingDummyAI
+from magic_pong.ai.pretraining import create_pretrainer
 from magic_pong.core.entities import Action
 from magic_pong.core.entities import Player
 from magic_pong.core.game_engine import GameEngine
@@ -58,6 +60,42 @@ def _mirrored_player2_observation() -> dict[str, Any]:
         "rotating_paddles": [[500.0, 320.0, math.pi - (4 * math.pi + 0.25)]],
         "score_diff": 2,
         "time_elapsed": 12.0,
+    }
+
+
+def _canonical_game_state() -> dict[str, Any]:
+    return {
+        "ball_position": (160.0, 240.0),
+        "ball_velocity": (-300.0, 50.0),
+        "player1_position": (20.0, 250.0),
+        "player2_position": (765.0, 260.0),
+        "player1_last_position": (20.0, 250.0),
+        "player2_last_position": (760.0, 260.0),
+        "player1_paddle_size": 80.0,
+        "player2_paddle_size": 90.0,
+        "active_bonuses": [(220.0, 200.0, "enlarge_paddle")],
+        "rotating_paddles": [(300.0, 320.0, 0.25)],
+        "score": [4, 2],
+        "time_elapsed": 12.0,
+        "field_bounds": (0.0, 800.0, 0.0, 600.0),
+    }
+
+
+def _mirrored_player2_game_state() -> dict[str, Any]:
+    return {
+        "ball_position": (640.0, 240.0),
+        "ball_velocity": (300.0, 50.0),
+        "player1_position": (20.0, 260.0),
+        "player2_position": (765.0, 250.0),
+        "player1_last_position": (25.0, 260.0),
+        "player2_last_position": (765.0, 250.0),
+        "player1_paddle_size": 90.0,
+        "player2_paddle_size": 80.0,
+        "active_bonuses": [(580.0, 200.0, "enlarge_paddle")],
+        "rotating_paddles": [(500.0, 320.0, math.pi - 0.25)],
+        "score": [2, 4],
+        "time_elapsed": 12.0,
+        "field_bounds": (0.0, 800.0, 0.0, 600.0),
     }
 
 
@@ -125,6 +163,40 @@ class RecordingDQNLikePlayer(Player):
         self.step_infos.append(info)
 
 
+class RecordingPretrainingAgent:
+    def __init__(self) -> None:
+        self.observations: list[dict[str, Any]] = []
+        self.memory: list[Any] = []
+        self.batch_size = 8
+        self.epsilon = 0.0
+        self.training_step = 0
+
+    def set_training_mode(self, training: bool) -> None:
+        self.training = training
+
+    def _observation_to_state(self, observation: dict[str, Any]) -> np.ndarray:
+        self.observations.append(observation)
+        return np.array(
+            [
+                observation["ball_pos"][0],
+                observation["ball_vel"][0],
+                observation["player_pos"][0],
+            ],
+            dtype=np.float32,
+        )
+
+    def act(self, state: np.ndarray, training: bool = True) -> int:
+        return 4
+
+    def remember(
+        self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool
+    ) -> None:
+        self.memory.append((state, action, reward, next_state, done))
+
+    def replay(self) -> None:
+        return None
+
+
 def _raw_heuristic_observation() -> dict[str, Any]:
     return {
         "ball_pos": [480.0, 180.0],
@@ -182,6 +254,28 @@ def test_player2_dqn_adapter_matches_equivalent_player1_observation(
     assert mirrored_action.move_y == pytest.approx(0.5)
 
 
+def test_player2_dqn_adapter_matches_equivalent_player1_normalized_observation(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", True)
+    processor = ObservationProcessor(field_width=800.0, field_height=600.0)
+
+    canonical = processor.process_game_state(_canonical_game_state(), player_id=1)
+    mirrored_player2 = processor.process_game_state(_mirrored_player2_game_state(), player_id=2)
+    adapted = to_player1_dqn_observation(mirrored_player2, player_id=2)
+
+    assert adapted["ball_pos"] == pytest.approx(canonical["ball_pos"])
+    assert adapted["player_pos"] == pytest.approx(canonical["player_pos"])
+    assert adapted["opponent_pos"] == pytest.approx(canonical["opponent_pos"])
+    assert adapted["opponent_previous_pos"] == pytest.approx(canonical["opponent_previous_pos"])
+    assert adapted["ball_vel"] == pytest.approx(canonical["ball_vel"])
+    assert adapted["bonuses"][0] == pytest.approx(canonical["bonuses"][0])
+    assert adapted["rotating_paddles"][0] == pytest.approx(canonical["rotating_paddles"][0])
+    assert adapted["score_diff"] == canonical["score_diff"]
+    assert adapted["field_width"] == canonical["field_width"]
+    assert adapted["field_height"] == canonical["field_height"]
+
+
 def test_game_engine_player2_dqn_mount_uses_canonical_hook_frame(monkeypatch: Any) -> None:
     monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", False)
     engine = GameEngine(headless=True)
@@ -206,6 +300,27 @@ def test_game_engine_player2_dqn_mount_uses_canonical_hook_frame(monkeypatch: An
     ]
     assert player2.step_actions[0].move_x == pytest.approx(1.0)
     assert player2.step_actions[0].move_y == pytest.approx(0.0)
+
+
+def test_game_engine_player2_real_dqn_mount_mirrors_action_to_world() -> None:
+    torch = pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNAgent
+
+    agent = DQNAgent(epsilon=0.0)
+    with torch.no_grad():
+        for parameter in agent.q_network.parameters():
+            parameter.zero_()
+        agent.q_network.output_layer.bias[4] = 1.0
+    agent.set_training_mode(False)
+
+    engine = GameEngine(headless=True)
+    engine.set_players(None, agent)
+    engine.start_game()
+    start_x = engine.physics_engine.player2.position.x
+
+    engine.update(dt=1.0 / 60.0)
+
+    assert engine.physics_engine.player2.position.x < start_x
 
 
 def test_player2_dqn_info_filters_contacts_to_canonical_agent_frame() -> None:
@@ -295,6 +410,22 @@ def test_environment_wrapper_mirrors_player2_agent_action_to_world() -> None:
     env.step(Action(move_x=1.0, move_y=0.0))
 
     assert physics.player2.position.x < start_x
+
+
+def test_pretraining_player2_uses_canonical_dqn_observation_and_world_action(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", False)
+    pretrainer = create_pretrainer()
+    agent = RecordingPretrainingAgent()
+
+    pretrainer.pretraining_step(agent, player_id=2, num_steps=1)
+
+    initial_observation, next_observation = agent.observations
+    assert initial_observation["ball_vel"][0] < 0.0
+    assert initial_observation["player_pos"][0] < 400.0
+    assert next_observation["player_pos"][0] > initial_observation["player_pos"][0]
+    assert agent.memory[0][1] == 4
 
 
 def test_dqn_transition_uses_decision_time_state_and_stores_terminal(

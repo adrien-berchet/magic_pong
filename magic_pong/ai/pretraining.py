@@ -11,6 +11,8 @@ from typing import Any
 
 import numpy as np
 
+from magic_pong.ai.agent_adapter import from_player1_dqn_action
+from magic_pong.ai.agent_adapter import to_player1_dqn_observation
 from magic_pong.ai.interface import ObservationProcessor
 from magic_pong.ai.interface import RewardCalculator
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
@@ -240,6 +242,7 @@ class OptimalPointPretrainer:
         self,
         current_paddle_pos: tuple[float, float],
         action: Action,
+        player_id: int = 1,
         dt: float = 1.0 / 60.0,
         paddle_speed: float = 500.0,
     ) -> tuple[float, float]:
@@ -249,6 +252,7 @@ class OptimalPointPretrainer:
         Args:
             current_paddle_pos: Current paddle position (x, y)
             action: Action chosen by the neural network
+            player_id: Player ID
             dt: Time step
             paddle_speed: Paddle speed
 
@@ -262,8 +266,9 @@ class OptimalPointPretrainer:
             PADDLE_HEIGHT=self.paddle_height,
             PADDLE_MARGIN=self.margin,
         ):
-            paddle_tmp = Paddle(*current_paddle_pos, player_id=1)
-            paddle_tmp.move(action.move_x, action.move_y, dt)
+            paddle_tmp = Paddle(*current_paddle_pos, player_id=player_id)
+            world_action = from_player1_dqn_action(action, player_id)
+            paddle_tmp.move(world_action.move_x, world_action.move_y, dt)
             return paddle_tmp.position.x, paddle_tmp.position.y
 
     def pretraining_step(
@@ -306,9 +311,13 @@ class OptimalPointPretrainer:
             action = self._index_to_action(action_index)
 
             # Simulate paddle movement
-            new_paddle_pos = self.simulate_paddle_movement(initial_paddle_pos, action, dt=dt)
+            new_paddle_pos = self.simulate_paddle_movement(
+                initial_paddle_pos, action, player_id=player_id, dt=dt
+            )
 
             # Update game state with new position
+            game_state[f"player{player_id}_prev_position"] = initial_paddle_pos
+            game_state[f"player{player_id}_last_position"] = initial_paddle_pos
             game_state[f"player{player_id}_position"] = new_paddle_pos
 
             # Calculate proximity reward
@@ -352,9 +361,11 @@ class OptimalPointPretrainer:
     ) -> dict[str, Any]:
         """
         Convert a game state to observation for the agent.
-        Uses the same logic as ObservationProcessor.
+        Uses the same logic as ObservationProcessor, then converts the result to
+        the canonical left-side DQN frame.
         """
-        return self.observation_processor.process_game_state(game_state, player_id)
+        observation = self.observation_processor.process_game_state(game_state, player_id)
+        return to_player1_dqn_observation(observation, player_id)
 
     def _index_to_action(self, action_index: int) -> Action:
         """

@@ -88,7 +88,9 @@ class Ball:
         self.velocity = Vector2D(vx, vy)
         # Initialize prev_position slightly behind current position based on velocity
         # This ensures consistent state for first-frame collision detection
-        self.prev_position = Vector2D(x - vx * (1 / 60), y - vy * (1 / 60))
+        self.prev_position = Vector2D(
+            x - vx * (1 / game_config.FPS), y - vy * (1 / game_config.FPS)
+        )
         self.radius = game_config.BALL_RADIUS
         self.last_paddle_hit: int | None = None  # To avoid multiple bounces
 
