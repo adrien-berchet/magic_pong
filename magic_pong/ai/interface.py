@@ -104,9 +104,10 @@ class ObservationProcessor:
         ball_x, ball_y = game_state["ball_position"]
         player_x, player_y = game_state[f"player{player_id}_position"]
         opponent_x, opponent_y = game_state[f"player{3 - player_id}_position"]
-        opponent_previous_x, opponent_previous_y = game_state[
-            f"player{3 - player_id}_last_position"
-        ]
+        opponent_previous_x, opponent_previous_y = game_state.get(
+            f"player{3 - player_id}_last_position",
+            game_state[f"player{3 - player_id}_position"],
+        )
 
         # Normalized positions
         if ai_config.NORMALIZE_POSITIONS:
@@ -214,12 +215,12 @@ class RewardCalculator:
         # Rewards for hitting the ball
         for hit in events.get("paddle_hits", []):
             if hit["player"] == player_id:
-                reward += ai_config.WALL_HIT_REWARD
+                reward += ai_config.PADDLE_HIT_REWARD
 
         # Reward for rotating paddles
         for hit in events.get("rotating_paddle_hits", []):
             if hit["player"] == player_id:
-                reward += ai_config.WALL_HIT_REWARD * 2  # Bonus for using rotating paddle
+                reward += ai_config.PADDLE_HIT_REWARD * 2  # Bonus for using rotating paddle
 
         if events.get("goals"):
             return reward

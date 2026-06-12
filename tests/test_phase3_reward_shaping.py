@@ -38,7 +38,7 @@ def test_phase3_reward_shaping_disabled_preserves_legacy_reward_values() -> None
     with ai_config_tmp(REWARD_SHAPING_MODE="legacy", USE_PROXIMITY_REWARD=False):
         reward = calculator.calculate_reward(state, events, player_id=1)
 
-    assert reward == pytest.approx(ai_config.WALL_HIT_REWARD)
+    assert reward == pytest.approx(ai_config.PADDLE_HIT_REWARD)
 
 
 def test_phase3_reward_improves_when_paddle_moves_toward_predicted_intercept() -> None:
@@ -73,7 +73,7 @@ def test_phase3_successful_return_reward_requires_ball_moving_to_opponent_side()
         )
         failed_reward = RewardCalculator().calculate_reward(failed_return, events, player_id=1)
 
-    assert successful_reward == pytest.approx(ai_config.WALL_HIT_REWARD + 0.05)
+    assert successful_reward == pytest.approx(ai_config.PADDLE_HIT_REWARD + 0.05)
     assert successful_reward > failed_reward
 
 

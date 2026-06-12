@@ -236,7 +236,9 @@ class AIConfig(BaseModel):
     SCORE_REWARD: float = Field(default=1.0, description="Reward for scoring")
     LOSE_PENALTY: float = Field(default=-1.0, description="Penalty for losing point")
     BONUS_REWARD: float = Field(default=0.1, description="Reward for collecting bonus")
-    WALL_HIT_REWARD: float = Field(default=0.1, description="Reward for ball hitting wall")
+    PADDLE_HIT_REWARD: float = Field(
+        default=0.1, description="Reward for hitting the ball with a paddle"
+    )
     USE_PROXIMITY_REWARD: bool = Field(default=False, description="Enable proximity rewards")
     PROXIMITY_REWARD_FACTOR: float = Field(default=0.001, ge=0, description="Proximity reward")
     PROXIMITY_PENALTY_FACTOR: float = Field(default=0.001, ge=0, description="Proximity penalty")
