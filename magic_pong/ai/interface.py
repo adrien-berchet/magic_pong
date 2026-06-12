@@ -423,7 +423,7 @@ class RewardCalculator:
 
         # Calculate current distance to optimal interception point
         if self.y_only:
-            current_distance = np.linalg.norm(optimal_point[1] - (paddle_center_y))
+            current_distance = abs(optimal_point[1] - paddle_center_y)
         else:
             current_distance = np.linalg.norm(
                 optimal_point - np.array((paddle_center_x, paddle_center_y))

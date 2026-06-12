@@ -314,30 +314,36 @@ def load_config_from_file(filepath: str = "magic_pong_config.json") -> bool:
         return False
 
 
-def _change_values(obj: BaseModel, **kwargs: Any) -> dict[str, Any]:
-    """Helper to change config values temporarily"""
-    old_values: dict[str, Any] = {}
-    for name, new_value in kwargs.items():
-        old_values[name] = getattr(obj, name)
-        setattr(obj, name, new_value)
-    return old_values
+def _restore_config(obj: BaseModel, snapshot: BaseModel) -> None:
+    """Restore a Pydantic model from a snapshot, bypassing per-field validators.
+
+    Restoring a previously-valid snapshot never needs re-validation; using
+    object.__setattr__ avoids spurious cross-field validator failures that
+    can occur when fields are written back one at a time.
+    """
+    for field_name in snapshot.model_fields:
+        object.__setattr__(obj, field_name, getattr(snapshot, field_name))
 
 
 @contextmanager
 def game_config_tmp(**kwargs: Any) -> Iterator[None]:
-    """Temporarily modify game config (with validation)"""
+    """Temporarily modify game config values, restoring the original on exit."""
+    snapshot = game_config.model_copy()
     try:
-        old_values = _change_values(game_config, **kwargs)
+        for name, value in kwargs.items():
+            setattr(game_config, name, value)
         yield
     finally:
-        _change_values(game_config, **old_values)
+        _restore_config(game_config, snapshot)
 
 
 @contextmanager
 def ai_config_tmp(**kwargs: Any) -> Iterator[None]:
-    """Temporarily modify AI config (with validation)"""
+    """Temporarily modify AI config values, restoring the original on exit."""
+    snapshot = ai_config.model_copy()
     try:
-        old_values = _change_values(ai_config, **kwargs)
+        for name, value in kwargs.items():
+            setattr(ai_config, name, value)
         yield
     finally:
-        _change_values(ai_config, **old_values)
+        _restore_config(ai_config, snapshot)

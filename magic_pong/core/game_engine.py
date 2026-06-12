@@ -6,7 +6,6 @@ from typing import Any
 
 import pygame
 
-from magic_pong.ai.agent_adapter import adapt_action_for_agent
 from magic_pong.ai.agent_adapter import adapt_action_for_world
 from magic_pong.ai.agent_adapter import adapt_info_for_agent
 from magic_pong.ai.agent_adapter import adapt_observation_for_agent
@@ -109,13 +108,14 @@ class GameEngine:
         # Notify AI players
         if self.player1:
             agent_obs1 = adapt_observation_for_agent(obs1, 1, self.player1)
+            agent_action1 = adapt_action_for_world(action1, 1, self.player1)
             agent_info1 = adapt_info_for_agent(info, 1, self.player1)
             _call_player_hook(
-                self.player1, "on_step", agent_obs1, action1, reward1, done, agent_info1
+                self.player1, "on_step", agent_obs1, agent_action1, reward1, done, agent_info1
             )
         if self.player2:
             agent_obs2 = adapt_observation_for_agent(obs2, 2, self.player2)
-            agent_action2 = adapt_action_for_agent(action2, 2, self.player2)
+            agent_action2 = adapt_action_for_world(action2, 2, self.player2)
             agent_info2 = adapt_info_for_agent(info, 2, self.player2)
             _call_player_hook(
                 self.player2, "on_step", agent_obs2, agent_action2, reward2, done, agent_info2

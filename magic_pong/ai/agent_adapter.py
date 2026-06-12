@@ -34,15 +34,11 @@ def adapt_observation_for_agent(
 
 
 def adapt_action_for_world(action: Action, player_id: int, agent: object | None) -> Action:
-    """Adapt an opted-in DQN-like agent action back to world/physics space."""
-    if not uses_player1_dqn_frame(agent):
-        return action
+    """Adapt an action between world/physics space and DQN canonical frame.
 
-    return from_player1_dqn_action(action, player_id)
-
-
-def adapt_action_for_agent(action: Action, player_id: int, agent: object | None) -> Action:
-    """Adapt a world/physics action back to an opted-in DQN-like agent frame."""
+    The transform is its own inverse (flipping move_x for player 2 is symmetric),
+    so this function serves both directions for opted-in DQN-like agents.
+    """
     if not uses_player1_dqn_frame(agent):
         return action
 
