@@ -194,6 +194,8 @@ class OptimalPointPretrainer:
         optimal_point = self.reward_calculator._find_optimal_interception_point(
             ball_pos, ball_vel, (paddle_center_x, paddle_center_y), field_bounds, player_id
         )
+        if optimal_point is None:
+            return
         current_distance = float(
             np.linalg.norm(optimal_point - np.array((paddle_center_x, paddle_center_y)))
         )

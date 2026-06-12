@@ -1224,8 +1224,7 @@ class DQNAgent(AIPlayer):
         else:
             size = 1.0  # Default value
 
-        # Normalize size (assume min size=0.5, max=2.0)
-        normalized_size = float(np.clip((size - 0.5) / (2.0 - 0.5), 0.0, 1.0))
+        normalized_size = float(np.clip(size / game_config.PADDLE_HEIGHT, 0.0, 4.0))
         return normalized_size
 
     def _clear_pending_transition(self) -> None:
