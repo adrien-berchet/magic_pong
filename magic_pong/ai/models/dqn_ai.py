@@ -42,6 +42,19 @@ def _temporary_eval_mode(*modules: nn.Module) -> Any:
             module.train(training)
 
 
+def _discounted_returns(rewards: list[float], gamma: float) -> list[float]:
+    """Compute discounted cumulative returns in chronological order."""
+    if not rewards:
+        return []
+    result: list[float] = []
+    cumulative = 0.0
+    for r in reversed(rewards):
+        cumulative = r + gamma * cumulative
+        result.append(cumulative)
+    result.reverse()
+    return result
+
+
 class HybridRewardCalculator:
     """
     Professional reward calculator for dual-scale training.
@@ -162,6 +175,7 @@ class HybridRewardCalculator:
         episode_rewards: list[float],
         episode_observations: list[dict[str, Any]],
         episode_actions: list[Action],
+        winner: int = 0,
     ) -> list[float]:
         """
         Calculate strategic rewards for episode-end learning.
@@ -176,6 +190,7 @@ class HybridRewardCalculator:
             episode_rewards: List of immediate rewards for each step
             episode_observations: List of observations for each step
             episode_actions: List of actions for each step
+            winner: Canonical match winner (1 = this agent won, 2 = this agent lost, 0 = unknown)
 
         Returns:
             List of strategic rewards with proper credit assignment
@@ -196,9 +211,7 @@ class HybridRewardCalculator:
             strategic_reward += rally_bonus
 
             # 2. Match outcome influence - how actions affected final result
-            outcome_bonus = self._calculate_match_outcome_bonus(
-                i, episode_observations, episode_rewards
-            )
+            outcome_bonus = self._calculate_match_outcome_bonus(i, episode_observations, winner)
             strategic_reward += outcome_bonus
 
             # 3. Defensive strategy bonus - maintaining good court positioning
@@ -238,7 +251,7 @@ class HybridRewardCalculator:
                 time_to_contact = future_step - step
                 if time_to_contact <= 15:  # Within reasonable sequence length
                     credit_factor = max(0.1, 1.0 - (time_to_contact / 15.0))
-                    rally_bonus += 2.5 * credit_factor
+                    rally_bonus += 0.05 * credit_factor
                 break  # Only credit for first successful contact in sequence
 
         return rally_bonus
@@ -274,27 +287,22 @@ class HybridRewardCalculator:
         return event.get("player") == 1
 
     def _calculate_match_outcome_bonus(
-        self, step: int, observations: list[dict[str, Any]], rewards: list[float]
+        self, step: int, observations: list[dict[str, Any]], winner: int = 0
     ) -> float:
         """Calculate bonus based on contribution to match outcome."""
         if len(observations) < 20:  # Too short to evaluate match outcome
             return 0.0
 
-        # Analyze final observations for match outcome
-        total_final_reward = sum(rewards[-10:])  # Sum of final rewards
-
-        # Determine if match was won or lost based on reward patterns
+        # winner == 1 means this agent won; winner == 2 means this agent lost (canonical frame)
         match_outcome = 0.0
-        if total_final_reward > 20:  # Likely won the match
+        if winner == 1:
             match_outcome = 1.5
-        elif total_final_reward < -20:  # Likely lost the match
+        elif winner == 2:
             match_outcome = -0.8
 
         if abs(match_outcome) > 0.1:
-            # Distribute outcome influence across the episode
-            # Later actions have more influence on the outcome
             episode_length = len(observations)
-            time_factor = (step / episode_length) ** 1.5  # Exponential weighting towards end
+            time_factor = (step / episode_length) ** 1.5  # Later actions have more influence
             influence_bonus = match_outcome * time_factor * 0.7
             return float(influence_bonus)
 
@@ -386,21 +394,7 @@ class HybridRewardCalculator:
 
     def _calculate_discounted_rewards(self, rewards: list[float]) -> list[float]:
         """Calculate discounted cumulative rewards for proper credit assignment."""
-        if not rewards:
-            return []
-
-        discounted_rewards = []
-        cumulative_reward = 0.0
-
-        # Calculate in reverse order (from end to beginning)
-        for reward in reversed(rewards):
-            cumulative_reward = reward + self.gamma * cumulative_reward
-            discounted_rewards.append(cumulative_reward)
-
-        # Reverse to get chronological order
-        discounted_rewards.reverse()
-
-        return discounted_rewards
+        return _discounted_returns(rewards, self.gamma)
 
 
 class DQNNetwork(nn.Module):
@@ -488,19 +482,25 @@ class DQNNetwork(nn.Module):
 
 
 class PrioritizedReplayBuffer:
-    """Replay buffer with prioritized sampling based on TD error"""
+    """Replay buffer with prioritized sampling based on TD error.
+
+    Uses a fixed-size circular array so that priority updates are O(1) via numpy
+    indexing rather than O(n) deque traversal.
+    """
 
     def __init__(
         self, capacity: int, alpha: float = 0.6, beta: float = 0.4, beta_increment: float = 0.001
     ):
         self.capacity = capacity
-        self.alpha = alpha  # priority
-        self.beta = beta  # importance correction
+        self.alpha = alpha
+        self.beta = beta
         self.beta_increment = beta_increment
+        self.epsilon: float = 1e-6
 
-        self.buffer: deque[Transition] = deque(maxlen=capacity)
-        self.priorities: deque[float] = deque(maxlen=capacity)
-        self.epsilon: float = 1e-6  # to avoid zero priorities
+        self._buffer: list[Transition | None] = [None] * capacity
+        self._priorities: np.ndarray = np.zeros(capacity, dtype=np.float64)
+        self._pos: int = 0
+        self._size: int = 0
 
     def add(
         self,
@@ -511,47 +511,42 @@ class PrioritizedReplayBuffer:
         done: bool,
         td_error: float | None = None,
     ) -> None:
-        """Add a transition with priority based on TD error"""
+        """Add a transition with priority based on TD error."""
         if td_error is None:
-            # If no TD error provided, use maximum priority
-            priority = max(self.priorities) if self.priorities else 1.0
+            priority = float(self._priorities[: self._size].max()) if self._size > 0 else 1.0
         else:
             priority = abs(td_error) + self.epsilon
 
-        transition = Transition(state, action, reward, next_state, done)
-        self.buffer.append(transition)
-        self.priorities.append(priority**self.alpha)
+        self._buffer[self._pos] = Transition(state, action, reward, next_state, done)
+        self._priorities[self._pos] = priority**self.alpha
+        self._pos = (self._pos + 1) % self.capacity
+        self._size = min(self._size + 1, self.capacity)
 
     def sample(self, batch_size: int) -> tuple[list[Transition], np.ndarray, np.ndarray]:
-        """Prioritized sampling"""
-        if len(self.buffer) < batch_size:
-            batch_size = len(self.buffer)
+        """Prioritized sampling."""
+        if self._size < batch_size:
+            batch_size = self._size
 
-        # Calculate probabilities
-        priorities = np.array(self.priorities)
-        probabilities = priorities / priorities.sum()
+        active_priorities = self._priorities[: self._size]
+        probabilities = active_priorities / active_priorities.sum()
 
-        # Sampling
-        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
-        samples = [self.buffer[i] for i in indices]
+        indices = np.random.choice(self._size, batch_size, p=probabilities)
+        samples = [cast(Transition, self._buffer[i]) for i in indices]
 
-        # Importance weights
-        weights = (len(self.buffer) * probabilities[indices]) ** (-self.beta)
-        weights = weights / weights.max()  # normalization
+        weights = (self._size * probabilities[indices]) ** (-self.beta)
+        weights = weights / weights.max()
 
-        # Increment beta
         self.beta = min(1.0, self.beta + self.beta_increment)
 
         return samples, weights, indices
 
     def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
-        """Update priorities with new TD errors"""
+        """Update priorities with new TD errors (O(1) per entry via numpy indexing)."""
         for idx, td_error in zip(indices, td_errors, strict=False):
-            priority = (abs(td_error) + self.epsilon) ** self.alpha
-            self.priorities[idx] = priority
+            self._priorities[int(idx)] = (abs(td_error) + self.epsilon) ** self.alpha
 
     def __len__(self) -> int:
-        return len(self.buffer)
+        return self._size
 
 
 class ReplayBuffer:
@@ -588,7 +583,7 @@ class DQNAgent(AIPlayer):
 
     def __init__(
         self,
-        state_size: int = 32,
+        state_size: int = 30,
         action_size: int = 9,
         lr: float = 0.001,
         gamma: float = 0.99,
@@ -865,7 +860,8 @@ class DQNAgent(AIPlayer):
 
         # Strategic training at episode end (less frequent, aggressive learning rate)
         if done and len(self.episode_buffer) > 0:
-            strategic_loss = self._train_strategic_on_episode()
+            winner = int(info.get("winner", 0))
+            strategic_loss = self._train_strategic_on_episode(winner)
             if strategic_loss is not None:
                 self.strategic_loss_history.append(strategic_loss)
             self._reset_episode_buffer()
@@ -917,7 +913,7 @@ class DQNAgent(AIPlayer):
 
         return float(loss.item())
 
-    def _train_strategic_on_episode(self) -> float | None:
+    def _train_strategic_on_episode(self, winner: int = 0) -> float | None:
         """
         Perform strategic training with aggressive learning rate at episode end.
 
@@ -933,7 +929,7 @@ class DQNAgent(AIPlayer):
         episode_actions = [ACTION_MAPPING[exp["action"]] for exp in self.episode_buffer]
 
         strategic_rewards = self.reward_calculator.calculate_strategic_reward(
-            self.episode_rewards, episode_observations, episode_actions
+            self.episode_rewards, episode_observations, episode_actions, winner
         )
 
         # Create strategic training experiences
@@ -1104,7 +1100,7 @@ class DQNAgent(AIPlayer):
         Returns:
             Normalized state vector of variable dimension depending on active bonuses
         """
-        # Base state (8 dimensions)
+        # Base state (10 dimensions)
         base_state = [
             observation["ball_pos"][0],  # Ball X position
             observation["ball_pos"][1],  # Ball Y position
@@ -1116,8 +1112,6 @@ class DQNAgent(AIPlayer):
             observation["opponent_pos"][1],  # Opponent Y position
             observation["opponent_previous_pos"][0],  # Opponent previous X position
             observation["opponent_previous_pos"][1],  # Opponent previous Y position
-            observation["field_width"],  # Field width
-            observation["field_height"],  # Field height
         ]
 
         # Additional important information (5 dimensions)
@@ -1181,7 +1175,7 @@ class DQNAgent(AIPlayer):
                 rotating_paddle_state.extend([0.0, 0.0, 0.0])
 
         # Combine all states
-        # Total: 12 (base) + 5 (extra) + 9 (bonus) + 6 (rotating) = 32 dimensions
+        # Total: 10 (base) + 5 (extra) + 9 (bonus) + 6 (rotating) = 30 dimensions
         full_state = base_state + extra_state + bonus_state + rotating_paddle_state
 
         return np.array(full_state, dtype=np.float32)
@@ -1251,7 +1245,7 @@ class DQNAgent(AIPlayer):
         self.training_enabled = training
         self.exploration_enabled = training
         self.q_network.train(training)
-        self.target_network.train(training)
+        self.target_network.eval()  # target network is always in eval mode
         self._clear_pending_transition()
 
     def set_exploration_mode(self, explore: bool) -> None:
@@ -1268,42 +1262,15 @@ class DQNAgent(AIPlayer):
             )
 
     def _calculate_discounted_rewards(self, rewards: list[float]) -> list[float]:
-        """
-        Calculate discounted cumulative rewards for episode-end training.
-
-        This method implements proper credit assignment by calculating the discounted
-        cumulative reward for each action in the episode, helping the agent understand
-        which actions contributed to the final outcome.
-
-        Args:
-            rewards: List of immediate rewards for each step in the episode
-
-        Returns:
-            List of discounted cumulative rewards for each step
-        """
-        if not rewards:
-            return []
-
-        discounted_rewards = []
-        cumulative_reward = 0.0
-
-        # Calculate discounted rewards in reverse order (from end to beginning)
-        for reward in reversed(rewards):
-            cumulative_reward = reward + self.gamma * cumulative_reward
-            discounted_rewards.append(cumulative_reward)
-
-        # Reverse to get chronological order
-        discounted_rewards.reverse()
-
-        # Normalize rewards if enabled (improves training stability)
+        """Calculate discounted cumulative rewards for episode-end training with optional normalization."""
+        discounted_rewards = _discounted_returns(rewards, self.gamma)
         if self.reward_normalization and len(discounted_rewards) > 1:
             mean_reward = np.mean(discounted_rewards)
             std_reward = np.std(discounted_rewards)
-            if std_reward > 1e-8:  # Avoid division by zero
+            if std_reward > 1e-8:
                 discounted_rewards = [
                     float((r - mean_reward) / std_reward) for r in discounted_rewards
                 ]
-
         return discounted_rewards
 
     def set_training_mode_hybrid(self, mode: str) -> None:

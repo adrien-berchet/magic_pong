@@ -57,6 +57,11 @@ def adapt_info_for_agent(
     if isinstance(events, dict):
         adapted["events"] = _filter_contact_events_for_agent(events, player_id)
 
+    # Translate world winner to canonical frame: 1 = this agent won, 2 = this agent lost
+    winner = info.get("winner", 0)
+    if winner != 0:
+        adapted["winner"] = 1 if winner == player_id else 2
+
     return adapted
 
 

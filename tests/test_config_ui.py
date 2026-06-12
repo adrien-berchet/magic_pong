@@ -11,6 +11,7 @@ import pytest
 import magic_pong.gui.game_app as game_app_module
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_PARAMETER_COUNT
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_STATE_DICT_SHAPES
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
 from magic_pong.ai.models.dqn_checkpoint import build_dqn_checkpoint_metadata
 from magic_pong.gui.game_app import GameMode
 from magic_pong.gui.game_app import GameOverAction
@@ -81,7 +82,7 @@ def valid_dqn_checkpoint_payload() -> dict[str, Any]:
         "reward_history": [],
         "metadata": build_dqn_checkpoint_metadata(),
         "hyperparameters": {
-            "state_size": 32,
+            "state_size": EXPECTED_STATE_SIZE,
             "action_size": 9,
             "lr": 0.001,
             "gamma": 0.99,
@@ -210,7 +211,7 @@ def test_model_info_uses_weights_only_loader_and_returns_structured_info(
     assert model_info["metadata"] == build_dqn_checkpoint_metadata()
     assert model_info["training_step"] == 12000
     assert model_info["epsilon"] == pytest.approx(0.012345)
-    assert model_info["hyperparameters"]["state_size"] == 32
+    assert model_info["hyperparameters"]["state_size"] == EXPECTED_STATE_SIZE
 
 
 def test_model_info_rejects_legacy_checkpoint_missing_metadata(
@@ -410,7 +411,7 @@ def test_model_selection_data_includes_cached_training_metadata(
         "valid": True,
         "training_step": 12000,
         "epsilon": 0.012345,
-        "hyperparameters": {"state_size": 32, "action_size": 9, "lr": 0.001},
+        "hyperparameters": {"state_size": EXPECTED_STATE_SIZE, "action_size": 9, "lr": 0.001},
     }
 
     model_data = app._build_model_selection_data()
@@ -421,7 +422,7 @@ def test_model_selection_data_includes_cached_training_metadata(
     assert details["Validity"] == "Valid checkpoint"
     assert details["Training step"] == "12000"
     assert details["Epsilon"] == "0.01235"
-    assert "state=32" in details["Hyperparameters"]
+    assert f"state={EXPECTED_STATE_SIZE}" in details["Hyperparameters"]
     assert "actions=9" in details["Hyperparameters"]
     assert "lr=0.001" in details["Hyperparameters"]
 

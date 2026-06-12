@@ -450,10 +450,19 @@ def _snapshot_replay_memory(agent: Any) -> dict[str, Any]:
         return {}
 
     snapshot: dict[str, Any] = {"memory": memory}
+
+    # New-style circular buffer (PrioritizedReplayBuffer with _buffer/_priorities)
+    if hasattr(memory, "_buffer") and hasattr(memory, "_priorities"):
+        snapshot["_buffer"] = list(memory._buffer)
+        snapshot["_priorities"] = memory._priorities.copy()
+        snapshot["_pos"] = memory._pos
+        snapshot["_size"] = memory._size
+        return snapshot
+
+    # Legacy-style (deque buffer + optional deque priorities)
     buffer = getattr(memory, "buffer", None)
     if buffer is not None and hasattr(buffer, "__iter__"):
         snapshot["buffer"] = list(buffer)
-
     priorities = getattr(memory, "priorities", None)
     if priorities is not None and hasattr(priorities, "__iter__"):
         snapshot["priorities"] = list(priorities)
@@ -466,6 +475,17 @@ def _restore_replay_memory(agent: Any, snapshot: dict[str, Any]) -> None:
     if memory is None or getattr(agent, "memory", None) is not memory:
         return
 
+    # New-style circular buffer
+    if "_buffer" in snapshot and "_priorities" in snapshot:
+        buf = snapshot["_buffer"]
+        for i, val in enumerate(buf):
+            memory._buffer[i] = val
+        memory._priorities[:] = snapshot["_priorities"]
+        memory._pos = snapshot.get("_pos", 0)
+        memory._size = snapshot.get("_size", 0)
+        return
+
+    # Legacy-style (deque or FakeReplayMemory)
     if "buffer" in snapshot:
         _replace_mutable_sequence(getattr(memory, "buffer", None), snapshot["buffer"])
     if "priorities" in snapshot:

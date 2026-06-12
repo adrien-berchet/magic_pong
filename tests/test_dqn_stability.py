@@ -5,9 +5,11 @@ from typing import Any
 import numpy as np
 import pytest
 
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
+
 
 def _transition(index: int) -> tuple[np.ndarray, int, float, np.ndarray, bool]:
-    state = np.full(32, index / 10.0, dtype=np.float32)
+    state = np.full(EXPECTED_STATE_SIZE, index / 10.0, dtype=np.float32)
     next_state = state + 0.05
     return state, index % 9, float(index), next_state, index % 3 == 0
 
