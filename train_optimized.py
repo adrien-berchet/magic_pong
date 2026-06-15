@@ -28,6 +28,8 @@ import numpy as np
 
 from magic_pong.ai import evaluation as ai_evaluation
 from magic_pong.ai.models.dqn_ai import DQNAgent
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_ACTION_SIZE
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.utils.config import ai_config
@@ -111,8 +113,8 @@ def create_agent_from_args(args):
     enable_dual_scale = getattr(args, "enable_dual_scale_training", False)
 
     return DQNAgent(
-        state_size=args.state_size,
-        action_size=args.action_size,
+        state_size=EXPECTED_STATE_SIZE,
+        action_size=EXPECTED_ACTION_SIZE,
         lr=args.learning_rate,
         gamma=args.gamma,
         epsilon=args.epsilon_start,
@@ -961,8 +963,8 @@ def train_phase(
 def create_optimized_agent():
     """Create a DQN agent with optimized hyperparameters and advanced dual-scale training"""
     return DQNAgent(
-        state_size=32,
-        action_size=9,
+        state_size=EXPECTED_STATE_SIZE,
+        action_size=EXPECTED_ACTION_SIZE,
         lr=0.001,  # Base learning rate
         gamma=0.99,
         epsilon=1.0,
@@ -2304,8 +2306,6 @@ def parse_arguments(argv: list[str] | None = None):
     )
 
     # DQN hyperparameters
-    parser.add_argument("--state_size", type=int, default=32, help="Size of the state space")
-    parser.add_argument("--action_size", type=int, default=9, help="Size of the action space")
     parser.add_argument(
         "--learning_rate", type=float, default=0.0003, help="Learning rate for the neural network"
     )

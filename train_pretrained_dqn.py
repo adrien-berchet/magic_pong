@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from magic_pong.ai.models.dqn_ai import DQNAgent
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
 from magic_pong.ai.models.simple_ai import create_ai
 from magic_pong.ai.pretraining import create_pretrainer
 from magic_pong.core.game_engine import TrainingManager
@@ -168,7 +169,7 @@ class DQNPretrainer:
 
         # Add correct state size if not specified
         if "state_size" not in agent_kwargs:
-            agent_kwargs["state_size"] = 32  # Correct size for extended state
+            agent_kwargs["state_size"] = EXPECTED_STATE_SIZE
 
         # Create DQN agent
         dqn_agent = DQNAgent(name="DQN_Pretrained", **agent_kwargs)
