@@ -438,51 +438,12 @@ class RewardCalculator:
         if previous_distance is None:
             return 0.0
 
-        # Calculate distance change (negative means getting closer)
+        # Reward proportional to distance improvement: positive when getting
+        # closer, negative when moving away.  Magnitude reflects how much
+        # better/worse the action was, so Q-learning can distinguish a large
+        # stride toward the target from a tiny one.
         distance_change = current_distance - previous_distance
-
-        # Calculate proximity reward
-        proximity_reward = 0.0
-        if distance_change < 0:  # Getting closer to optimal interception point
-            dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
-            previous_position = game_state.get(
-                f"player{player_id}_prev_position",
-                game_state.get(f"player{player_id}_last_position", (0, 0)),
-            )
-            previous_x_dist = previous_position[0] - ball_vel[0] * dt
-            new_x_dist = ball_pos[0] - paddle_center_x
-            ball_player_direction = (player_id == 1 and ball_vel[0] < 0) or (
-                player_id == 2 and ball_vel[0] > 0
-            )
-            if player_id == 2:
-                previous_x_dist = -previous_x_dist  # Invert for right player
-                new_x_dist = -new_x_dist  # Invert for right player
-
-            ball_step = np.linalg.norm(ball_vel) * dt
-            if (
-                previous_distance < ball_step + game_config.PADDLE_HEIGHT / 2
-                and previous_x_dist < ball_step
-                and new_x_dist < previous_x_dist
-                and ball_player_direction
-            ):
-                # Bonus for being very close to optimal point
-                proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR / 10
-            else:
-                # Reward for getting closer, scaled by how much closer
-                proximity_reward = ai_config.PROXIMITY_REWARD_FACTOR
-            # proximity_reward = min(
-            #     abs(distance_change) * ai_config.PROXIMITY_REWARD_FACTOR,
-            #     ai_config.MAX_PROXIMITY_REWARD,
-            # )
-        else:  # Moving away from optimal interception point
-            # Small penalty for moving away
-            proximity_reward = -ai_config.PROXIMITY_PENALTY_FACTOR
-            # proximity_reward = -min(
-            #     distance_change * ai_config.PROXIMITY_PENALTY_FACTOR + ai_config.MAX_PROXIMITY_REWARD / 4,
-            #     ai_config.MAX_PROXIMITY_REWARD,
-            # )
-
-        return proximity_reward
+        return -distance_change * ai_config.PROXIMITY_REWARD_FACTOR
 
     def _find_optimal_interception_point(
         self,

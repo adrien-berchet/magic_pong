@@ -66,7 +66,7 @@ class DQNPretrainer:
         player_id: int = 1,
         steps_per_batch: int = 1000,
         save_pretrained_model: bool = True,
-        y_only: bool = True,
+        y_only: bool = False,
     ) -> dict[str, Any]:
         """
         Execute the pretraining phase on optimal point proximity.
@@ -76,7 +76,7 @@ class DQNPretrainer:
             player_id: Player ID (1 for left, 2 for right)
             steps_per_batch: Number of steps per batch
             save_pretrained_model: Save model after pretraining
-            y_only: If True, only consider vertical distance for reward
+            y_only: If True, only consider vertical distance for reward (legacy, creates degenerate rewards)
 
         Returns:
             Pretraining statistics
@@ -171,8 +171,10 @@ class DQNPretrainer:
         if "state_size" not in agent_kwargs:
             agent_kwargs["state_size"] = EXPECTED_STATE_SIZE
 
-        # Create DQN agent
-        dqn_agent = DQNAgent(name="DQN_Pretrained", **agent_kwargs)
+        # Create DQN agent (v2 architecture: prev-action one-hot in state)
+        dqn_agent = DQNAgent(
+            name="DQN_Pretrained", include_prev_action_in_state=True, **agent_kwargs
+        )
 
         # Phase 1: Pretraining (unless skipped)
         if not skip_pretraining:

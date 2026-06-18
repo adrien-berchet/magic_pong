@@ -12,6 +12,8 @@ from typing import Literal
 
 import pygame
 
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_ACTION_SIZE
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
 from magic_pong.ai.models.dqn_checkpoint import get_dqn_checkpoint_validation_info
 from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
 from magic_pong.ai.models.simple_ai import DefensiveAI
@@ -433,19 +435,28 @@ class MagicPongApp:
 
             # Get hyperparameters from model if available
             hyperparams = model_info.get("hyperparameters", {})
-            state_size = hyperparams.get("state_size", 32)
-            action_size = hyperparams.get("action_size", 9)
+            state_size = hyperparams.get("state_size", EXPECTED_STATE_SIZE)
+            action_size = hyperparams.get("action_size", EXPECTED_ACTION_SIZE)
+            include_prev_action = hyperparams.get("include_prev_action_in_state", False)
 
             # Create DQN agent with correct parameters
             from magic_pong.ai.models.dqn_ai import DQNAgent
 
-            agent = DQNAgent(state_size=state_size, action_size=action_size, name="Trained DQN AI")
+            agent = DQNAgent(
+                state_size=state_size,
+                action_size=action_size,
+                include_prev_action_in_state=include_prev_action,
+                name="Trained DQN AI",
+            )
 
             # Load the trained model
             agent.load_model(model_path)
 
             # Set to evaluation mode; policy exploration is disabled there even if epsilon is saved.
             agent.set_training_mode(False)
+            # Damp frame-to-frame Q-value flicker that otherwise looks like rapid
+            # back-and-forth paddle jitter during live play.
+            agent.set_action_hysteresis(0.1)
 
             training_steps = model_info.get("training_step", "Unknown")
             file_size = model_info.get("file_size_mb", "Unknown")

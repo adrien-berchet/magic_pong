@@ -170,6 +170,7 @@ class RecordingPretrainingAgent:
         self.batch_size = 8
         self.epsilon = 0.0
         self.training_step = 0
+        self._last_chosen_action: int | None = None
 
     def set_training_mode(self, training: bool) -> None:
         self.training = training
@@ -185,8 +186,13 @@ class RecordingPretrainingAgent:
             dtype=np.float32,
         )
 
+    def _extend_state(self, state: np.ndarray, prev_action: int | None) -> np.ndarray:
+        return state
+
     def act(self, state: np.ndarray, training: bool = True) -> int:
-        return 4
+        action = 4
+        self._last_chosen_action = action
+        return action
 
     def remember(
         self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool
@@ -447,12 +453,19 @@ def test_dqn_transition_uses_decision_time_state_and_stores_terminal(
     decision_state = agent._observation_to_state(decision_obs)
     post_step_state = agent._observation_to_state(post_step_obs)
 
+    # With include_prev_action_in_state=True (the default), the replay buffer holds
+    # states extended with the previous-action one-hot.  On the first ever step the
+    # previous action is None → one-hot is all zeros.  On the next-state side the
+    # "previous action" is the action that was just taken (5).
+    expected_first_state = agent._extend_state(decision_state, None)
+    expected_first_next_state = agent._extend_state(post_step_state, 5)
+
     action = agent.get_action(decision_obs, explore=False)
     agent.on_step(post_step_obs, action, reward=1.25, done=False, info={})
 
     first_transition = agent.memory.buffer[0]
-    np.testing.assert_array_equal(first_transition.state, decision_state)
-    np.testing.assert_array_equal(first_transition.next_state, post_step_state)
+    np.testing.assert_array_equal(first_transition.state, expected_first_state)
+    np.testing.assert_array_equal(first_transition.next_state, expected_first_next_state)
     assert first_transition.action == 5
     assert first_transition.done is False
 

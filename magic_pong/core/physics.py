@@ -168,7 +168,20 @@ class PhysicsEngine:
             "rotating_paddle_hits": [],
         }
 
-        # Wall collisions
+        # Paddle collisions first — at high dt a ball can cross the paddle and the goal
+        # line in the same step; checking paddle first ensures a valid hit takes precedence
+        # over a spurious goal event.
+        if self.collision_detector.check_ball_paddle(self.ball, self.player1, effective_dt):
+            events["paddle_hits"].append({"player": 1})
+        if self.collision_detector.check_ball_paddle(self.ball, self.player2, effective_dt):
+            events["paddle_hits"].append({"player": 2})
+
+        # Rotating paddle collisions
+        for rp in self.rotating_paddles:
+            if self.collision_detector.check_ball_rotating_paddle(self.ball, rp):
+                events["rotating_paddle_hits"].append({"player": rp.player_id})
+
+        # Wall collisions (top/bottom bounce and left/right goal)
         wall_collision = self.collision_detector.check_ball_walls(
             self.ball, self.field_width, self.field_height
         )
@@ -188,17 +201,6 @@ class PhysicsEngine:
             events["goals"].append({"player": 1, "score": self.score.copy()})
             self.reset_paddles()
             self.reset_ball(-1)  # Restart towards the left
-
-        # Paddle collisions with continuous detection
-        if self.collision_detector.check_ball_paddle(self.ball, self.player1, effective_dt):
-            events["paddle_hits"].append({"player": 1})
-        if self.collision_detector.check_ball_paddle(self.ball, self.player2, effective_dt):
-            events["paddle_hits"].append({"player": 2})
-
-        # Rotating paddle collisions
-        for rp in self.rotating_paddles:
-            if self.collision_detector.check_ball_rotating_paddle(self.ball, rp):
-                events["rotating_paddle_hits"].append({"player": rp.player_id})
 
         # Player-bonus collisions
         for player, paddle in [(1, self.player1), (2, self.player2)]:

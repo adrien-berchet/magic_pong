@@ -5,11 +5,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
+from magic_pong.ai.models.dqn_checkpoint import EXPECTED_NETWORK_INPUT_SIZE
 
 
 def _transition(index: int) -> tuple[np.ndarray, int, float, np.ndarray, bool]:
-    state = np.full(EXPECTED_STATE_SIZE, index / 10.0, dtype=np.float32)
+    # States fed to the replay buffer are the network-facing extended states
+    # (observation + prev-action one-hot = EXPECTED_NETWORK_INPUT_SIZE = 39 dims).
+    state = np.full(EXPECTED_NETWORK_INPUT_SIZE, index / 10.0, dtype=np.float32)
     next_state = state + 0.05
     return state, index % 9, float(index), next_state, index % 3 == 0
 

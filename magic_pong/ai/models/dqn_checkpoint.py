@@ -6,13 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 3
 EXPECTED_MODEL_TYPE = "magic_pong.dqn"
-EXPECTED_STATE_SCHEMA = "magic_pong.dqn_state.v1"
+EXPECTED_STATE_SCHEMA = "magic_pong.dqn_state.v3"
 EXPECTED_OBSERVATION_FRAME = "player1_dqn_frame"
 EXPECTED_ACTION_FRAME = "player1_dqn_frame"
 EXPECTED_STATE_SIZE = 30
 EXPECTED_ACTION_SIZE = 9
+# Network first-layer input = observation (30) + previous-action one-hot (9)
+EXPECTED_NETWORK_INPUT_SIZE = EXPECTED_STATE_SIZE + EXPECTED_ACTION_SIZE
 
 METADATA_KEY = "metadata"
 
@@ -37,6 +39,7 @@ REQUIRED_HYPERPARAMETER_KEYS = (
     "batch_size",
     "tau",
     "use_prioritized_replay",
+    "include_prev_action_in_state",
 )
 
 REQUIRED_METADATA_KEYS = (
@@ -50,19 +53,15 @@ REQUIRED_METADATA_KEYS = (
 )
 
 EXPECTED_DQN_STATE_DICT_SHAPES = {
-    "fc_layers.0.weight": (512, EXPECTED_STATE_SIZE),
+    "fc_layers.0.weight": (512, EXPECTED_NETWORK_INPUT_SIZE),
     "fc_layers.0.bias": (512,),
     "fc_layers.1.weight": (256, 512),
     "fc_layers.1.bias": (256,),
-    "fc_layers.2.weight": (128, 256),
-    "fc_layers.2.bias": (128,),
     "layer_norms.0.weight": (512,),
     "layer_norms.0.bias": (512,),
     "layer_norms.1.weight": (256,),
     "layer_norms.1.bias": (256,),
-    "layer_norms.2.weight": (128,),
-    "layer_norms.2.bias": (128,),
-    "output_layer.weight": (EXPECTED_ACTION_SIZE, 128),
+    "output_layer.weight": (EXPECTED_ACTION_SIZE, 256),
     "output_layer.bias": (EXPECTED_ACTION_SIZE,),
 }
 EXPECTED_DQN_PARAMETER_COUNT = len(EXPECTED_DQN_STATE_DICT_SHAPES)
@@ -237,6 +236,11 @@ def _validate_hyperparameters(hyperparameters: Any) -> Mapping[str, Any]:
     _validate_expected_value(
         "hyperparameters.action_size", hyperparameters["action_size"], EXPECTED_ACTION_SIZE
     )
+    _validate_expected_value(
+        "hyperparameters.include_prev_action_in_state",
+        hyperparameters["include_prev_action_in_state"],
+        True,
+    )
 
     return hyperparameters
 
@@ -246,6 +250,15 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
         raise DQNCheckpointError(f"Invalid DQN checkpoint {name}: expected a mapping")
     if not state_dict:
         raise DQNCheckpointError(f"Invalid DQN checkpoint {name}: state dict is empty")
+
+    # Old 3-layer checkpoints (schema v1/v2) have fc_layers.2.* which no longer exist.
+    # Inputs were also unnormalized then, so weights are incompatible regardless of shape.
+    if "fc_layers.2.weight" in state_dict:
+        raise DQNCheckpointError(
+            f"Incompatible DQN checkpoint {name}: contains a 3-layer network "
+            "(fc_layers.2.*) from schema v1/v2. The architecture is now 2 layers and "
+            "inputs are normalized. Retrain from scratch."
+        )
 
     missing_keys = [key for key in EXPECTED_DQN_STATE_DICT_SHAPES if key not in state_dict]
     if missing_keys:

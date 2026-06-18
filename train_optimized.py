@@ -31,6 +31,7 @@ from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_ACTION_SIZE
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
 from magic_pong.ai.models.simple_ai import create_ai
+from magic_pong.ai.pretraining import create_pretrainer
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.utils.config import ai_config
 from magic_pong.utils.config import ai_config_tmp
@@ -133,6 +134,7 @@ def create_agent_from_args(args):
         train_frequency=getattr(args, "train_frequency", 10),
         min_replay_size=getattr(args, "min_replay_size", 1000),
         reward_normalization=getattr(args, "reward_normalization", True),
+        include_prev_action_in_state=True,
     )
 
 
@@ -244,6 +246,65 @@ def load_existing_model(agent, model_path):
 
     agent.load_model(model_path)
     print(f"✅ Existing model loaded from: {model_path}")
+
+
+def warm_start_from_v1_checkpoint(
+    agent: DQNAgent, checkpoint_path: str, noise_scale: float = 0.01
+) -> None:
+    """Transfer hidden+output weights from a schema-v1 (30-input) checkpoint into a v2 agent.
+
+    The v1 first layer is (512, 30).  The v2 first layer is (512, 39) — 9 extra columns for
+    the previous-action one-hot.  We copy the existing 30 columns and initialise the 9 new
+    ones with small Gaussian noise so the network starts with a neutral prior on the new
+    inputs while keeping all learned feature detectors intact.  The optimizer is NOT
+    restored (start fresh) because the parameter space changed.
+    """
+    import torch  # local import — torch may not be available globally
+
+    from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
+
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Warm-start checkpoint not found: {checkpoint_path}")
+
+    checkpoint = safe_torch_load(checkpoint_path)
+
+    for net, old_sd_key in [
+        (agent.q_network, "q_network_state_dict"),
+        (agent.target_network, "target_network_state_dict"),
+    ]:
+        old_sd = checkpoint[old_sd_key]
+        new_sd = net.state_dict()
+
+        # First layer: expand from (512, 30) to (512, 39)
+        old_w0 = old_sd["fc_layers.0.weight"]
+        new_w0 = new_sd["fc_layers.0.weight"].clone()
+        obs_cols = old_w0.shape[1]  # = 30
+        new_w0[:, :obs_cols] = old_w0
+        new_w0[:, obs_cols:] = (
+            torch.randn(new_w0.shape[0], new_w0.shape[1] - obs_cols) * noise_scale
+        )
+        new_sd["fc_layers.0.weight"] = new_w0
+        new_sd["fc_layers.0.bias"] = old_sd["fc_layers.0.bias"]
+
+        # All other layers have identical shapes — copy directly
+        for key in new_sd:
+            if key not in ("fc_layers.0.weight", "fc_layers.0.bias") and key in old_sd:
+                new_sd[key] = old_sd[key]
+
+        net.load_state_dict(new_sd)
+
+    agent.epsilon = float(checkpoint.get("epsilon", agent.epsilon))
+    agent.training_step = int(checkpoint.get("training_step", 0))
+    agent.step_count = int(checkpoint.get("step_count", 0))
+    agent.loss_history = list(checkpoint.get("loss_history", []))
+    agent.reward_history = list(checkpoint.get("reward_history", []))
+
+    print(
+        f"Warm-started from {checkpoint_path}: "
+        f"hidden+output layers transferred, "
+        f"first layer expanded {obs_cols}→{new_w0.shape[1]} "
+        f"(new {new_w0.shape[1] - obs_cols} columns init σ={noise_scale})"
+    )
 
 
 def get_opponent(opponent_type, player_id=2):
@@ -427,9 +488,29 @@ def validate_mixed_fine_tuning_args(args) -> None:
     if args.mode not in MIXED_FINE_TUNING_MODES:
         modes = ", ".join(sorted(MIXED_FINE_TUNING_MODES))
         raise ValueError(f"--mixed_opponents can only be used with --mode in: {modes}")
-    if not (args.load_model or args.load_checkpoint):
+    if not (args.load_model or args.load_checkpoint or args.warm_start_checkpoint):
         raise ValueError(
-            "--mixed_opponents is a fine-tuning mode and requires --load_model or --load_checkpoint"
+            "--mixed_opponents is a fine-tuning mode and requires --load_model, "
+            "--load_checkpoint, or --warm_start_checkpoint"
+        )
+
+
+def validate_pretrain_args(args) -> None:
+    """Block pretraining when an existing model is loaded.
+
+    Pretraining replaces existing Q-value estimates with proximity-reward
+    signal.  A loaded checkpoint has already learned game-play behaviour;
+    overwriting it with pretraining may degrade that knowledge.  Use
+    pretraining only when training a fresh agent from scratch (no
+    --load_model / --load_checkpoint / --warm_start_checkpoint).
+    """
+    if not getattr(args, "pretrain", False):
+        return
+    if args.load_model or args.load_checkpoint or args.warm_start_checkpoint:
+        raise ValueError(
+            "--pretrain cannot be combined with --load_model, --load_checkpoint, or "
+            "--warm_start_checkpoint.  Pretraining is designed for fresh agents "
+            "(epsilon=1.0) and will corrupt loaded weights when epsilon is already low."
         )
 
 
@@ -983,6 +1064,7 @@ def create_optimized_agent():
         train_frequency=1,  # Allow frequent updates due to dual-scale optimization
         min_replay_size=1000,  # Start training after sufficient experience
         reward_normalization=True,
+        include_prev_action_in_state=True,
     )
 
 
@@ -2287,12 +2369,40 @@ def parse_arguments(argv: list[str] | None = None):
         default=None,
         help="Path to checkpoint file to resume training",
     )
+    parser.add_argument(
+        "--warm_start_checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Path to a schema-v1 (30-input) checkpoint to warm-start from. "
+            "Hidden+output layers are copied; the first layer is expanded from 30 to 39 "
+            "inputs (9 new columns for the prev-action one-hot, initialised to small noise). "
+            "Use this to preserve learned features when upgrading to the v2 architecture."
+        ),
+    )
+
+    # Pretraining (proximity reward on optimal interception point)
+    parser.add_argument(
+        "--pretrain",
+        action="store_true",
+        help=(
+            "Run a pretraining phase on optimal-point proximity reward before main training. "
+            "Teaches the agent to approach the ball interception point, giving the replay "
+            "buffer a warm start. Compatible with --warm_start_checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--pretrain_steps",
+        type=int,
+        default=50000,
+        help="Number of pretraining steps on the optimal interception point (default: 50000)",
+    )
 
     # Checkpoint settings
     parser.add_argument(
         "--checkpoint_interval",
         type=int,
-        default=500,
+        default=50000,
         help="Save checkpoint every N episodes (0 to disable)",
     )
     parser.add_argument(
@@ -2698,6 +2808,7 @@ def parse_arguments(argv: list[str] | None = None):
     args = parser.parse_args(argv)
     try:
         validate_mixed_fine_tuning_args(args)
+        validate_pretrain_args(args)
         validate_reward_shaping_args(args)
         args.parsed_opponent_mix = parse_opponent_mix(args.opponent_mix)
         args.parsed_training_score_targets = parse_training_score_targets(args.training_score_mix)
@@ -2791,9 +2902,54 @@ def main(argv: list[str] | None = None):
             print(
                 f"Resuming from episode {checkpoint_metadata['episode']}, phase {checkpoint_metadata['phase']}"
             )
+    elif args.warm_start_checkpoint:
+        print(f"Warm-starting v2 agent from v1 checkpoint: {args.warm_start_checkpoint}")
+        agent = create_agent_from_args(args)
+        warm_start_from_v1_checkpoint(agent, args.warm_start_checkpoint)
     else:
         print("Creating new agent with optimized parameters")
         agent = create_agent_from_args(args)
+
+    # Optional pretraining phase (proximity reward on optimal interception point)
+    if getattr(args, "pretrain", False):
+        pretrain_steps = getattr(args, "pretrain_steps", 50000)
+        print(f"\nPretraining phase: {pretrain_steps} steps on optimal interception point")
+        saved_epsilon = agent.epsilon
+        saved_epsilon_min = agent.epsilon_min
+        saved_proximity_factor = ai_config.PROXIMITY_REWARD_FACTOR
+        # Use a stronger reward signal during pretraining.  The default factor (0.01)
+        # produces ~0.08–0.10 reward per step — too weak.  0.1 puts each step's
+        # reward on the same scale as goal rewards for clearer Q-value gradients.
+        ai_config.PROXIMITY_REWARD_FACTOR = 0.1
+        # Keep epsilon=1.0 throughout pretraining (pure random exploration).
+        # Each step is an independent random scenario — not a temporal sequence —
+        # so greedy exploitation does not help and actually creates a feedback loop:
+        #   good transitions → greedy policy over-exploits those states →
+        #   Q-values overfit → generalization drops → reward oscillates 3-4×.
+        # Random exploration gives unbiased Q-value estimates and avoids this cycle.
+        # epsilon_decay would take epsilon to epsilon_min in ~1500 steps (≈2 batches),
+        # so we pin epsilon_min=1.0 to prevent any decay.
+        agent.epsilon = 1.0
+        agent.epsilon_min = 1.0
+        pretrainer = create_pretrainer(y_only=False)
+        pretrainer.run_pretraining_phase(
+            agent=agent,
+            total_steps=pretrain_steps,
+            steps_per_batch=min(1000, pretrain_steps),
+            player_id=1,
+            verbose=True,
+        )
+        ai_config.PROXIMITY_REWARD_FACTOR = saved_proximity_factor
+        # Restore epsilon settings before saving the pretrained checkpoint.
+        # The checkpoint is saved at epsilon_min (not 1.0) so it behaves near-greedy
+        # when loaded for evaluation.  The agent's epsilon is then restored to
+        # saved_epsilon (1.0 for a fresh agent) for the subsequent training phase.
+        agent.epsilon_min = saved_epsilon_min
+        agent.epsilon = agent.epsilon_min
+        pretrain_path = Path(args.output_dir) / f"{args.model_prefix}_pretrained.pth"
+        agent.save_model(str(pretrain_path))
+        print(f"Pretrained checkpoint saved: {pretrain_path}")
+        agent.epsilon = saved_epsilon
 
     # Training
     if args.mode == "curriculum":

@@ -61,6 +61,7 @@ class OptimalPointPretrainer:
         # Margins to avoid edges
         self.margin = game_config.PADDLE_MARGIN
 
+        self.y_only = y_only
         # Reward calculator to use existing functions
         self.reward_calculator = RewardCalculator(y_only=y_only)
 
@@ -302,20 +303,37 @@ class OptimalPointPretrainer:
             game_state = self.create_game_state_from_ball_state(ball_state, player_id)
             initial_paddle_pos = game_state[f"player{player_id}_position"]
 
-            # Initialize proximity reward before modifying system state
+            # Initialize the distance baseline for this step before the paddle moves.
+            # Must enable USE_PROXIMITY_REWARD so the function actually sets
+            # last_ball_distance instead of short-circuiting with return 0.0.
+            original_proximity = ai_config.USE_PROXIMITY_REWARD
+            ai_config.USE_PROXIMITY_REWARD = True
             self.reward_calculator._calculate_proximity_reward(game_state, player_id)
+            ai_config.USE_PROXIMITY_REWARD = original_proximity
 
             # Convert state to observation for agent
             observation = self._game_state_to_observation(game_state, player_id)
             state = agent._observation_to_state(observation)
 
+            # Capture prev action BEFORE act() updates _last_chosen_action so we
+            # build the same extended state that act() feeds to the network.
+            prev_action = agent._last_chosen_action
+
             # Agent chooses an action
             action_index = agent.act(state, training=True)
             action = self._index_to_action(action_index)
 
+            # Build the network-facing extended state for the replay buffer.
+            extended_state = agent._extend_state(state, prev_action)
+
+            # When training y_only, strip the X component from the simulated movement.
+            # The optimal interception Y is computed at the paddle's X position, so
+            # moving X shifts the target and makes the reward signal incoherent.
+            sim_action = Action(move_x=0.0, move_y=action.move_y) if self.y_only else action
+
             # Simulate paddle movement
             new_paddle_pos = self.simulate_paddle_movement(
-                initial_paddle_pos, action, player_id=player_id, dt=dt
+                initial_paddle_pos, sim_action, player_id=player_id, dt=dt
             )
 
             # Update game state with new position
@@ -331,9 +349,13 @@ class OptimalPointPretrainer:
             # Create next state (same state but with new paddle position)
             next_observation = self._game_state_to_observation(game_state, player_id)
             next_state = agent._observation_to_state(next_observation)
+            # The action we just took is the "previous action" context for the next step.
+            extended_next_state = agent._extend_state(next_state, action_index)
 
-            # Store experience in replay memory
-            agent.remember(state, action_index, proximity_reward, next_state, done=False)
+            # Store experience in replay memory (extended states to match v2 network)
+            agent.remember(
+                extended_state, action_index, proximity_reward, extended_next_state, done=False
+            )
 
             # Train agent if enough experiences
             if len(agent.memory) > agent.batch_size:

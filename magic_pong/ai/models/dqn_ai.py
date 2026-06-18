@@ -403,9 +403,9 @@ class DQNNetwork(nn.Module):
     def __init__(
         self,
         input_size: int,
-        hidden_size: int = 512,
+        hidden_size: int = 256,
         output_size: int = 9,
-        layer_size: int = 3,
+        layer_size: int = 2,
         use_normalization: bool = True,
         dropout_rate: float = 0.0,
     ):
@@ -604,6 +604,8 @@ class DQNAgent(AIPlayer):
         tactical_learning_rate: float | None = None,
         strategic_learning_rate: float | None = None,
         dropout_rate: float = 0.0,
+        action_hysteresis_margin: float = 0.0,
+        include_prev_action_in_state: bool = True,
         name: str = "DQN AI",
     ):
         """
@@ -630,12 +632,25 @@ class DQNAgent(AIPlayer):
             tactical_learning_rate: Learning rate for tactical training (default: lr * 0.3)
             strategic_learning_rate: Learning rate for strategic training (default: lr * 1.5)
             dropout_rate: Dropout probability for DQN hidden layers. Defaults to disabled.
+            action_hysteresis_margin: Fraction of a state's Q-value spread that a
+                challenger action must exceed the previously chosen action by before
+                the greedy policy switches. 0.0 (default) preserves plain argmax
+                behavior; only affects inference, never training data collection
+                unless explicitly enabled there too.
+            include_prev_action_in_state: When True (default) the previous action
+                is appended as a 9-element one-hot to every state vector before it
+                enters the network, giving the policy temporal context and reducing
+                frame-to-frame oscillation. The network input size becomes
+                state_size + action_size (= 39 by default).
             name: Agent name
         """
         super().__init__(name)
 
         self.state_size = state_size
         self.action_size = action_size
+        self.include_prev_action_in_state = include_prev_action_in_state
+        # Actual first-layer input size: observation + prev-action one-hot when enabled.
+        self._network_input_size = state_size + (action_size if include_prev_action_in_state else 0)
         self.lr = lr
         self.gamma = gamma
         self.epsilon = epsilon
@@ -671,16 +686,20 @@ class DQNAgent(AIPlayer):
         self.training_enabled = True
         self.exploration_enabled = True
 
+        # Greedy action hysteresis to dampen frame-to-frame Q-value flicker.
+        self.action_hysteresis_margin = action_hysteresis_margin
+        self._last_chosen_action: int | None = None
+
         # Step counters for controlling training frequency
         self.step_count = 0
         self.tactical_step_count = 0
 
-        # Neural networks
-        self.q_network = DQNNetwork(state_size, 512, action_size, dropout_rate=dropout_rate).to(
-            device
-        )
+        # Neural networks (first-layer input includes prev-action one-hot when enabled)
+        self.q_network = DQNNetwork(
+            self._network_input_size, 512, action_size, dropout_rate=dropout_rate
+        ).to(device)
         self.target_network = DQNNetwork(
-            state_size, 512, action_size, dropout_rate=dropout_rate
+            self._network_input_size, 512, action_size, dropout_rate=dropout_rate
         ).to(device)
 
         # Initialize optimizers based on training mode
@@ -748,17 +767,20 @@ class DQNAgent(AIPlayer):
         """
         if observation is None:
             self._clear_pending_transition()
+            self._last_chosen_action = None
             return Action(move_x=0.0, move_y=0.0)
-        # Convert observation to state vector
         state = self._observation_to_state(observation)
 
-        # Get numeric action
+        # Snapshot _last_chosen_action BEFORE act() updates it so we can build the
+        # same extended state that act() feeds to the network.
+        prev_action_snapshot = self._last_chosen_action
+
         action_idx = self.act(state, explore=explore)
         if self.training_enabled:
-            self.last_state = state.copy()
+            # Store the network-facing (possibly extended) state for the replay buffer.
+            self.last_state = self._extend_state(state, prev_action_snapshot)
             self.last_action = action_idx
 
-        # Convert to game Action
         return ACTION_MAPPING[action_idx]
 
     def on_step(
@@ -783,7 +805,10 @@ class DQNAgent(AIPlayer):
             done: Whether the episode is finished
             info: Additional information
         """
-        current_state = self._observation_to_state(observation)
+        current_state_raw = self._observation_to_state(observation)
+        # The next state for the replay transition uses the action we just took as its
+        # "previous action" context — mirror of how get_action() builds last_state.
+        current_state = self._extend_state(current_state_raw, self.last_action)
 
         if not self.training_enabled:
             self.current_episode_reward += reward
@@ -1100,18 +1125,23 @@ class DQNAgent(AIPlayer):
         Returns:
             Normalized state vector of variable dimension depending on active bonuses
         """
-        # Base state (10 dimensions)
+        # Scale factors for normalization
+        _fw = float(game_config.FIELD_WIDTH)
+        _fh = float(game_config.FIELD_HEIGHT)
+        _ms = float(game_config.MAX_BALL_SPEED)
+
+        # Base state (10 dimensions) — all values normalized to roughly [-1, 1] or [0, 1]
         base_state = [
-            observation["ball_pos"][0],  # Ball X position
-            observation["ball_pos"][1],  # Ball Y position
-            observation["ball_vel"][0],  # Ball X velocity
-            observation["ball_vel"][1],  # Ball Y velocity
-            observation["player_pos"][0],  # Player X position
-            observation["player_pos"][1],  # Player Y position
-            observation["opponent_pos"][0],  # Opponent X position
-            observation["opponent_pos"][1],  # Opponent Y position
-            observation["opponent_previous_pos"][0],  # Opponent previous X position
-            observation["opponent_previous_pos"][1],  # Opponent previous Y position
+            observation["ball_pos"][0] / _fw,  # Ball X position
+            observation["ball_pos"][1] / _fh,  # Ball Y position
+            observation["ball_vel"][0] / _ms,  # Ball X velocity
+            observation["ball_vel"][1] / _ms,  # Ball Y velocity
+            observation["player_pos"][0] / _fw,  # Player X position
+            observation["player_pos"][1] / _fh,  # Player Y position
+            observation["opponent_pos"][0] / _fw,  # Opponent X position
+            observation["opponent_pos"][1] / _fh,  # Opponent Y position
+            observation["opponent_previous_pos"][0] / _fw,  # Opponent previous X position
+            observation["opponent_previous_pos"][1] / _fh,  # Opponent previous Y position
         ]
 
         # Additional important information (5 dimensions)
@@ -1138,8 +1168,8 @@ class DQNAgent(AIPlayer):
                 if len(bonus) >= 3:  # [x, y, type]
                     bonus_state.extend(
                         [
-                            bonus[0],  # Bonus X position (already normalized)
-                            bonus[1],  # Bonus Y position (already normalized)
+                            bonus[0] / _fw,  # Bonus X position
+                            bonus[1] / _fh,  # Bonus Y position
                             bonus[2] / 3.0,  # Bonus type (normalized: 1,2,3 -> 0.33,0.67,1.0)
                         ]
                     )
@@ -1164,8 +1194,8 @@ class DQNAgent(AIPlayer):
                     )  # Normalize [-π, π] -> [0, 1]
                     rotating_paddle_state.extend(
                         [
-                            rp[0],  # X position (already normalized)
-                            rp[1],  # Y position (already normalized)
+                            rp[0] / _fw,  # X position
+                            rp[1] / _fh,  # Y position
                             normalized_angle,  # Normalized angle ([-π, π] -> [0, 1])
                         ]
                     )
@@ -1221,8 +1251,21 @@ class DQNAgent(AIPlayer):
         normalized_size = float(np.clip(size / game_config.PADDLE_HEIGHT, 0.0, 4.0))
         return normalized_size
 
+    def _extend_state(self, state: np.ndarray, prev_action: int | None) -> np.ndarray:
+        """Append a one-hot encoding of prev_action to state when the feature is enabled."""
+        if not self.include_prev_action_in_state:
+            return state
+        one_hot = np.zeros(self.action_size, dtype=np.float32)
+        if prev_action is not None:
+            one_hot[prev_action] = 1.0
+        return np.concatenate([state, one_hot])
+
     def _clear_pending_transition(self) -> None:
-        """Clear the decision-time transition source after it has been consumed."""
+        """Clear the pending replay transition (last_state/last_action) after it is consumed.
+
+        Does NOT reset _last_chosen_action so the hysteresis context persists across
+        steps within the same episode. Only episode boundaries should clear it.
+        """
         self.last_state = None
         self.last_action = None
 
@@ -1230,10 +1273,12 @@ class DQNAgent(AIPlayer):
         """Clear stale decision data when a new episode starts."""
         super().on_episode_start()
         self._clear_pending_transition()
+        self._last_chosen_action = None
 
     def on_episode_end(self) -> None:
         """Clear stale decision data when an episode ends."""
         self._clear_pending_transition()
+        self._last_chosen_action = None
         super().on_episode_end()
 
     def update_target_network(self) -> None:
@@ -1251,6 +1296,10 @@ class DQNAgent(AIPlayer):
     def set_exploration_mode(self, explore: bool) -> None:
         """Enable or disable epsilon-greedy policy exploration independently."""
         self.exploration_enabled = explore
+
+    def set_action_hysteresis(self, margin: float) -> None:
+        """Set the greedy action hysteresis margin (fraction of Q-value spread)."""
+        self.action_hysteresis_margin = margin
 
     def soft_update_target_network(self) -> None:
         """Soft update of target network"""
@@ -1382,10 +1431,14 @@ class DQNAgent(AIPlayer):
             explore = self.exploration_enabled
 
         if explore and random.random() < self.epsilon:
-            return random.randrange(self.action_size)
+            action_idx = random.randrange(self.action_size)
+            self._last_chosen_action = action_idx
+            return action_idx
 
-        # Convert to PyTorch tensor
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+        # Extend state with the previous action one-hot before the network sees it.
+        # _last_chosen_action still holds the PREVIOUS step's action here (not yet updated).
+        network_state = self._extend_state(state, self._last_chosen_action)
+        state_tensor = torch.FloatTensor(network_state).unsqueeze(0).to(device)
 
         # Prediction with the network
         was_training = self.q_network.training
@@ -1394,7 +1447,33 @@ class DQNAgent(AIPlayer):
             q_values = self.q_network(state_tensor)
         self.q_network.train(was_training)
 
-        return int(q_values.cpu().data.numpy().argmax())
+        q_values_np = q_values.cpu().data.numpy().flatten()
+        action_idx = int(q_values_np.argmax())
+        action_idx = self._apply_action_hysteresis(action_idx, q_values_np)
+        self._last_chosen_action = action_idx
+        return action_idx
+
+    def _apply_action_hysteresis(self, greedy_action: int, q_values: np.ndarray) -> int:
+        """Stick with the previous action unless the greedy one clears a margin.
+
+        Re-evaluating argmax every single 60Hz frame makes the policy flicker
+        between two near-tied actions. Requiring the challenger to beat the
+        previous action by a fraction of the state's Q-value spread damps that
+        without changing behavior when the margin is 0 (the default).
+        """
+        previous_action = self._last_chosen_action
+        if (
+            self.action_hysteresis_margin <= 0.0
+            or previous_action is None
+            or previous_action == greedy_action
+        ):
+            return greedy_action
+
+        spread = float(q_values.max() - q_values.min())
+        margin = self.action_hysteresis_margin * spread
+        if q_values[greedy_action] - q_values[previous_action] < margin:
+            return previous_action
+        return greedy_action
 
     def replay(self) -> float | None:
         """Train the network with experience replay"""
@@ -1499,6 +1578,7 @@ class DQNAgent(AIPlayer):
                     "training_mode": self.training_mode,
                     "reward_normalization": self.reward_normalization,
                     "use_prioritized_replay": self.use_prioritized_replay,
+                    "include_prev_action_in_state": self.include_prev_action_in_state,
                 },
             },
             filepath,
@@ -1541,6 +1621,12 @@ class DQNAgent(AIPlayer):
             self.dropout_rate = hyperparams.get("dropout_rate", self.dropout_rate)
             self.q_network.set_dropout_rate(self.dropout_rate)
             self.target_network.set_dropout_rate(self.dropout_rate)
+            self.include_prev_action_in_state = hyperparams.get(
+                "include_prev_action_in_state", False
+            )
+            self._network_input_size = self.state_size + (
+                self.action_size if self.include_prev_action_in_state else 0
+            )
 
         # Reset episode buffer when loading (don't carry over partial episodes)
         self._reset_episode_buffer()

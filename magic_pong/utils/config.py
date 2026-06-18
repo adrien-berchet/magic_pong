@@ -240,9 +240,9 @@ class AIConfig(BaseModel):
         default=0.1, description="Reward for hitting the ball with a paddle"
     )
     USE_PROXIMITY_REWARD: bool = Field(default=False, description="Enable proximity rewards")
-    PROXIMITY_REWARD_FACTOR: float = Field(default=0.001, ge=0, description="Proximity reward")
-    PROXIMITY_PENALTY_FACTOR: float = Field(default=0.001, ge=0, description="Proximity penalty")
-    MAX_PROXIMITY_REWARD: float = Field(default=0.01, ge=0, description="Max proximity reward")
+    PROXIMITY_REWARD_FACTOR: float = Field(default=0.01, ge=0, description="Proximity reward")
+    PROXIMITY_PENALTY_FACTOR: float = Field(default=0.01, ge=0, description="Proximity penalty")
+    MAX_PROXIMITY_REWARD: float = Field(default=0.1, ge=0, description="Max proximity reward")
     REWARD_SHAPING_MODE: str = Field(
         default="legacy", description="Reward shaping mode: legacy or phase3"
     )

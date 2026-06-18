@@ -91,6 +91,7 @@ def valid_dqn_checkpoint_payload() -> dict[str, Any]:
             "batch_size": 64,
             "tau": 0.005,
             "use_prioritized_replay": False,
+            "include_prev_action_in_state": True,
         },
     }
 
