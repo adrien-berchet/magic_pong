@@ -17,6 +17,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -248,18 +249,68 @@ def load_existing_model(agent, model_path):
     print(f"✅ Existing model loaded from: {model_path}")
 
 
-def warm_start_from_v1_checkpoint(
-    agent: DQNAgent, checkpoint_path: str, noise_scale: float = 0.01
-) -> None:
-    """Transfer hidden+output weights from a schema-v1 (30-input) checkpoint into a v2 agent.
+def _copy_overlapping_tensor(new_tensor, old_tensor):
+    """Return a copy of new_tensor with the overlapping old_tensor slice copied in."""
+    copied = new_tensor.clone()
+    if copied.ndim != old_tensor.ndim:
+        return copied, ()
 
-    The v1 first layer is (512, 30).  The v2 first layer is (512, 39) — 9 extra columns for
-    the previous-action one-hot.  We copy the existing 30 columns and initialise the 9 new
-    ones with small Gaussian noise so the network starts with a neutral prior on the new
-    inputs while keeping all learned feature detectors intact.  The optimizer is NOT
-    restored (start fresh) because the parameter space changed.
+    overlap = tuple(
+        min(new_dim, old_dim) for new_dim, old_dim in zip(copied.shape, old_tensor.shape)
+    )
+    if any(size <= 0 for size in overlap):
+        return copied, overlap
+
+    slices = tuple(slice(0, size) for size in overlap)
+    old_slice = old_tensor[slices].to(device=copied.device, dtype=copied.dtype)
+    copied[slices] = old_slice
+    return copied, overlap
+
+
+def _copy_first_layer_for_warm_start(
+    *, new_weight, old_weight, current_state_size: int, legacy_state_size: int | None
+):
+    """Copy legacy observation columns without leaking them into prev-action columns."""
+    copied = new_weight.clone()
+    if copied.ndim != 2 or old_weight.ndim != 2:
+        return copied, ()
+
+    rows = min(copied.shape[0], old_weight.shape[0])
+    if rows <= 0:
+        return copied, (0, 0)
+
+    if legacy_state_size == 32 and current_state_size == 30:
+        # Legacy schema-v1 stored field_width/field_height at columns 10-11.
+        # Current schema-v3 removed those constants, so the tail shifts left by two.
+        first_block = min(10, copied.shape[1], old_weight.shape[1])
+        second_block = min(20, copied.shape[1] - 10, old_weight.shape[1] - 12)
+        if first_block > 0:
+            copied[:rows, :first_block] = old_weight[:rows, :first_block].to(
+                device=copied.device, dtype=copied.dtype
+            )
+        if second_block > 0:
+            copied[:rows, 10 : 10 + second_block] = old_weight[:rows, 12 : 12 + second_block].to(
+                device=copied.device, dtype=copied.dtype
+            )
+        return copied, (rows, first_block + second_block)
+
+    old_observation_cols = (
+        legacy_state_size if legacy_state_size is not None else old_weight.shape[1]
+    )
+    cols = min(copied.shape[1], old_weight.shape[1], current_state_size, old_observation_cols)
+    if cols > 0:
+        copied[:rows, :cols] = old_weight[:rows, :cols].to(device=copied.device, dtype=copied.dtype)
+    return copied, (rows, cols)
+
+
+def warm_start_from_v1_checkpoint(agent: DQNAgent, checkpoint_path: str) -> None:
+    """Transfer compatible weights from a legacy checkpoint into the current DQN agent.
+
+    Legacy checkpoints in this project may have a different observation width and
+    hidden-layer width from the current schema.  The optimizer is intentionally not
+    restored because the parameter space can change across schemas.
     """
-    import torch  # local import — torch may not be available globally
+    import torch
 
     from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
 
@@ -267,6 +318,17 @@ def warm_start_from_v1_checkpoint(
         raise FileNotFoundError(f"Warm-start checkpoint not found: {checkpoint_path}")
 
     checkpoint = safe_torch_load(checkpoint_path)
+    for state_dict_key in ("q_network_state_dict", "target_network_state_dict"):
+        if state_dict_key not in checkpoint or not isinstance(checkpoint[state_dict_key], Mapping):
+            raise ValueError(f"Warm-start checkpoint missing {state_dict_key}")
+
+    metadata = checkpoint.get("metadata", {})
+    hyperparameters = checkpoint.get("hyperparameters", {})
+    legacy_state_size = metadata.get("state_size", hyperparameters.get("state_size"))
+    if legacy_state_size is not None:
+        legacy_state_size = int(legacy_state_size)
+
+    transfer_summary: list[str] = []
 
     for net, old_sd_key in [
         (agent.q_network, "q_network_state_dict"),
@@ -275,23 +337,40 @@ def warm_start_from_v1_checkpoint(
         old_sd = checkpoint[old_sd_key]
         new_sd = net.state_dict()
 
-        # First layer: expand from (512, 30) to (512, 39)
-        old_w0 = old_sd["fc_layers.0.weight"]
-        new_w0 = new_sd["fc_layers.0.weight"].clone()
-        obs_cols = old_w0.shape[1]  # = 30
-        new_w0[:, :obs_cols] = old_w0
-        new_w0[:, obs_cols:] = (
-            torch.randn(new_w0.shape[0], new_w0.shape[1] - obs_cols) * noise_scale
-        )
-        new_sd["fc_layers.0.weight"] = new_w0
-        new_sd["fc_layers.0.bias"] = old_sd["fc_layers.0.bias"]
+        copied_shapes: dict[str, tuple[int, ...]] = {}
 
-        # All other layers have identical shapes — copy directly
-        for key in new_sd:
-            if key not in ("fc_layers.0.weight", "fc_layers.0.bias") and key in old_sd:
-                new_sd[key] = old_sd[key]
+        first_layer_key = "fc_layers.0.weight"
+        if first_layer_key in old_sd and first_layer_key in new_sd:
+            new_w0, overlap = _copy_first_layer_for_warm_start(
+                new_weight=new_sd[first_layer_key],
+                old_weight=old_sd[first_layer_key],
+                current_state_size=agent.state_size,
+                legacy_state_size=legacy_state_size,
+            )
+            new_sd[first_layer_key] = new_w0
+            copied_shapes[first_layer_key] = overlap
+
+        for key, old_value in old_sd.items():
+            if key == first_layer_key or key not in new_sd:
+                continue
+            new_value = new_sd[key]
+            if not torch.is_tensor(old_value) or not torch.is_tensor(new_value):
+                continue
+            if key == "output_layer.weight" and old_value.shape != new_value.shape:
+                continue
+            copied_value, overlap = _copy_overlapping_tensor(new_value, old_value)
+            new_sd[key] = copied_value
+            copied_shapes[key] = overlap
 
         net.load_state_dict(new_sd)
+
+        if old_sd_key == "q_network_state_dict":
+            partial = [
+                f"{key}{tuple(old_sd[key].shape)}->{tuple(new_sd[key].shape)} overlap={overlap}"
+                for key, overlap in copied_shapes.items()
+                if key in old_sd and tuple(old_sd[key].shape) != tuple(new_sd[key].shape)
+            ]
+            transfer_summary.extend(partial)
 
     agent.epsilon = float(checkpoint.get("epsilon", agent.epsilon))
     agent.training_step = int(checkpoint.get("training_step", 0))
@@ -299,11 +378,10 @@ def warm_start_from_v1_checkpoint(
     agent.loss_history = list(checkpoint.get("loss_history", []))
     agent.reward_history = list(checkpoint.get("reward_history", []))
 
+    summary = "; ".join(transfer_summary) if transfer_summary else "all tensors copied exactly"
     print(
         f"Warm-started from {checkpoint_path}: "
-        f"hidden+output layers transferred, "
-        f"first layer expanded {obs_cols}→{new_w0.shape[1]} "
-        f"(new {new_w0.shape[1] - obs_cols} columns init σ={noise_scale})"
+        f"compatible tensor slices transferred ({summary}); optimizer reset"
     )
 
 
@@ -1052,12 +1130,12 @@ def create_optimized_agent():
         epsilon_decay=0.998,  # Slower decay for more exploration
         epsilon_min=0.05,  # Slightly higher min epsilon
         batch_size=64,  # Larger batch size for stability
-        use_prioritized_replay=True,
+        use_prioritized_replay=False,
         tau=0.003,  # Slower soft update
         memory_size=20000,  # Larger buffer
         # Advanced dual-scale training configuration
         training_mode="step_by_step",
-        enable_dual_scale_training=True,
+        enable_dual_scale_training=False,  # Set to True to enable dual-scale training
         tactical_train_frequency=10,  # Tactical training every 10 steps
         tactical_learning_rate=0.0003,  # Conservative for tactical stability
         strategic_learning_rate=0.0015,  # More aggressive for strategic adaptation
@@ -1264,7 +1342,7 @@ def train_progressive_curriculum(agent, args):
 
     initial_score_reward = ai_config.SCORE_REWARD
     initial_lose_penalty = ai_config.LOSE_PENALTY
-    initial_wall_hit_reward = ai_config.WALL_HIT_REWARD
+    initial_paddle_hit_reward = ai_config.PADDLE_HIT_REWARD
     initial_use_proximity_reward = ai_config.USE_PROXIMITY_REWARD
     initial_proximity_reward_factor = ai_config.PROXIMITY_REWARD_FACTOR
     initial_proximity_penalty_factor = ai_config.PROXIMITY_PENALTY_FACTOR
@@ -1273,7 +1351,7 @@ def train_progressive_curriculum(agent, args):
     initial_fps = game_config.FPS
     ai_config.SCORE_REWARD = 0
     ai_config.LOSE_PENALTY = 0
-    ai_config.WALL_HIT_REWARD = 1
+    ai_config.PADDLE_HIT_REWARD = 1
     ai_config.USE_PROXIMITY_REWARD = True
     ai_config.PROXIMITY_REWARD_FACTOR = 0.1
     ai_config.PROXIMITY_PENALTY_FACTOR = 0.1
@@ -1296,7 +1374,7 @@ def train_progressive_curriculum(agent, args):
     )
     ai_config.SCORE_REWARD = initial_score_reward
     ai_config.LOSE_PENALTY = initial_lose_penalty
-    ai_config.WALL_HIT_REWARD = initial_wall_hit_reward
+    ai_config.PADDLE_HIT_REWARD = initial_paddle_hit_reward
     ai_config.USE_PROXIMITY_REWARD = initial_use_proximity_reward
     ai_config.PROXIMITY_REWARD_FACTOR = initial_proximity_reward_factor
     ai_config.PROXIMITY_PENALTY_FACTOR = initial_proximity_penalty_factor
@@ -1329,10 +1407,10 @@ def train_progressive_curriculum(agent, args):
 
     initial_score_reward = ai_config.SCORE_REWARD
     initial_lose_penalty = ai_config.LOSE_PENALTY
-    initial_wall_hit_reward = ai_config.WALL_HIT_REWARD
+    initial_paddle_hit_reward = ai_config.PADDLE_HIT_REWARD
     ai_config.SCORE_REWARD = 0.5
     ai_config.LOSE_PENALTY = -0.5
-    ai_config.WALL_HIT_REWARD = 1  # Increase reward for hitting wall to encourage contact
+    ai_config.PADDLE_HIT_REWARD = 1  # Increase contact reward to encourage returns
 
     # Reduce exploration slightly for phase 2
     if args.progressive_epsilon_reduction > 0:
@@ -1353,7 +1431,7 @@ def train_progressive_curriculum(agent, args):
     )
     ai_config.SCORE_REWARD = initial_score_reward
     ai_config.LOSE_PENALTY = initial_lose_penalty
-    ai_config.WALL_HIT_REWARD = initial_wall_hit_reward
+    ai_config.PADDLE_HIT_REWARD = initial_paddle_hit_reward
 
     total_episodes_count += phase2_episodes
     all_phase_data.append(
@@ -2931,7 +3009,7 @@ def main(argv: list[str] | None = None):
         # so we pin epsilon_min=1.0 to prevent any decay.
         agent.epsilon = 1.0
         agent.epsilon_min = 1.0
-        pretrainer = create_pretrainer(y_only=False)
+        pretrainer = create_pretrainer(y_only=True)
         pretrainer.run_pretraining_phase(
             agent=agent,
             total_steps=pretrain_steps,

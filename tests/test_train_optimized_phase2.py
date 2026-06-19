@@ -13,6 +13,7 @@ import train_optimized
 from magic_pong.ai.evaluation import EvaluationConfig
 from magic_pong.ai.evaluation import EvaluationResult
 from magic_pong.ai.evaluation import OpponentEvaluation
+from magic_pong.utils.config import ai_config
 from magic_pong.utils.config import game_config
 
 
@@ -100,6 +101,147 @@ def test_training_score_targets_parse_and_sample_deterministically() -> None:
 
     with pytest.raises(ValueError, match="positive"):
         train_optimized.parse_training_score_targets("3,0")
+
+
+def test_warm_start_copies_legacy_overlap_without_prev_action_leak(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNAgent
+
+    def legacy_state_dict() -> dict[str, Any]:
+        first_weight = torch.arange(32, dtype=torch.float32).expand(512, 32).clone()
+        return {
+            "fc_layers.0.weight": first_weight,
+            "fc_layers.0.bias": torch.full((512,), 2.0),
+            "fc_layers.1.weight": torch.full((256, 512), 3.0),
+            "fc_layers.1.bias": torch.full((256,), 4.0),
+            "fc_layers.2.weight": torch.full((128, 256), 5.0),
+            "fc_layers.2.bias": torch.full((128,), 6.0),
+            "layer_norms.0.weight": torch.full((512,), 5.0),
+            "layer_norms.0.bias": torch.full((512,), 6.0),
+            "layer_norms.1.weight": torch.full((256,), 7.0),
+            "layer_norms.1.bias": torch.full((256,), 8.0),
+            "layer_norms.2.weight": torch.full((128,), 11.0),
+            "layer_norms.2.bias": torch.full((128,), 12.0),
+            "output_layer.weight": torch.full((9, 128), 9.0),
+            "output_layer.bias": torch.full((9,), 10.0),
+        }
+
+    checkpoint_path = tmp_path / "legacy_v1.pth"
+    torch.save(
+        {
+            "q_network_state_dict": legacy_state_dict(),
+            "target_network_state_dict": legacy_state_dict(),
+            "epsilon": 0.123,
+            "training_step": 42,
+            "step_count": 7,
+            "loss_history": [1.5],
+            "reward_history": [2.5],
+            "metadata": {"state_size": 32},
+            "hyperparameters": {"state_size": 32},
+        },
+        checkpoint_path,
+    )
+
+    agent = DQNAgent(epsilon=1.0, batch_size=8, min_replay_size=1000)
+    before = {key: value.detach().clone() for key, value in agent.q_network.state_dict().items()}
+
+    train_optimized.warm_start_from_v1_checkpoint(agent, str(checkpoint_path))
+
+    after = agent.q_network.state_dict()
+    expected_columns = torch.tensor(
+        list(range(10)) + list(range(12, 32)), dtype=after["fc_layers.0.weight"].dtype
+    )
+    assert torch.all(after["fc_layers.0.weight"][:, :30] == expected_columns)
+    assert torch.allclose(after["fc_layers.0.weight"][:, 30:], before["fc_layers.0.weight"][:, 30:])
+    assert torch.all(after["fc_layers.0.bias"] == 2.0)
+    assert torch.all(after["fc_layers.1.weight"] == 3.0)
+    assert torch.all(after["fc_layers.1.bias"] == 4.0)
+    assert torch.allclose(after["output_layer.weight"], before["output_layer.weight"])
+    assert torch.all(after["output_layer.bias"] == 10.0)
+    assert agent.epsilon == pytest.approx(0.123)
+    assert agent.training_step == 42
+    assert agent.step_count == 7
+
+    current_checkpoint_path = tmp_path / "current_schema.pth"
+    agent.save_model(str(current_checkpoint_path))
+    DQNAgent().load_model(str(current_checkpoint_path))
+
+
+def test_warm_start_rejects_missing_state_dict_before_mutating(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNAgent
+
+    checkpoint_path = tmp_path / "invalid_legacy.pth"
+    torch.save({"q_network_state_dict": {}}, checkpoint_path)
+    agent = DQNAgent(batch_size=8, min_replay_size=1000)
+    before = {key: value.detach().clone() for key, value in agent.q_network.state_dict().items()}
+
+    with pytest.raises(ValueError, match="target_network_state_dict"):
+        train_optimized.warm_start_from_v1_checkpoint(agent, str(checkpoint_path))
+
+    after = agent.q_network.state_dict()
+    for key, before_value in before.items():
+        assert torch.equal(after[key], before_value)
+
+
+def test_progressive_curriculum_uses_paddle_hit_reward_config(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    original_paddle_hit_reward = ai_config.PADDLE_HIT_REWARD
+    observed_rewards: list[tuple[int, float]] = []
+
+    class FakeTrainingManager:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            pass
+
+    class SavingAgent(FakeAgent):
+        epsilon_min = 0.05
+
+    def fake_train_phase(
+        _agent: Any,
+        _opponent: Any,
+        _phase_name: str,
+        _episodes: int,
+        _training_manager: Any,
+        _args: Any,
+        *,
+        phase_num: int,
+        total_phases: int,
+        start_episode: int = 0,
+    ) -> tuple[list[float], int, int]:
+        assert total_phases == 4
+        assert start_episode >= 0
+        observed_rewards.append((phase_num, ai_config.PADDLE_HIT_REWARD))
+        return [1.0], 1, 1
+
+    monkeypatch.setattr(train_optimized, "TrainingManager", FakeTrainingManager)
+    monkeypatch.setattr(train_optimized, "get_opponent", lambda name: FakeOpponent(name))
+    monkeypatch.setattr(train_optimized, "train_phase", fake_train_phase)
+
+    args = phase_args(
+        mode="progressive",
+        mixed_opponents=False,
+        progressive_episodes_per_phase=1,
+        progressive_epsilon_reduction=0.7,
+        phase1_training_opponent="dummy",
+        output_dir=str(tmp_path),
+        model_prefix="progressive_smoke",
+        save_phase_models=False,
+        save_plots=False,
+        fast_gui=True,
+        eval_gates=[],
+        parsed_eval_gates=(),
+    )
+
+    _agent, results = train_optimized.train_progressive_curriculum(SavingAgent(), args)
+
+    assert observed_rewards[0] == (1, 1)
+    assert observed_rewards[1] == (2, 1)
+    assert results["total_episodes"] == 4
+    assert ai_config.PADDLE_HIT_REWARD == pytest.approx(original_paddle_hit_reward)
 
 
 def test_train_phase_samples_opponent_and_score_and_restores_config(monkeypatch: Any) -> None:

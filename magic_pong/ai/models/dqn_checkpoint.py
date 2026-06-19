@@ -53,15 +53,15 @@ REQUIRED_METADATA_KEYS = (
 )
 
 EXPECTED_DQN_STATE_DICT_SHAPES = {
-    "fc_layers.0.weight": (512, EXPECTED_NETWORK_INPUT_SIZE),
-    "fc_layers.0.bias": (512,),
-    "fc_layers.1.weight": (256, 512),
-    "fc_layers.1.bias": (256,),
-    "layer_norms.0.weight": (512,),
-    "layer_norms.0.bias": (512,),
-    "layer_norms.1.weight": (256,),
-    "layer_norms.1.bias": (256,),
-    "output_layer.weight": (EXPECTED_ACTION_SIZE, 256),
+    "fc_layers.0.weight": (256, EXPECTED_NETWORK_INPUT_SIZE),
+    "fc_layers.0.bias": (256,),
+    "fc_layers.1.weight": (128, 256),
+    "fc_layers.1.bias": (128,),
+    "layer_norms.0.weight": (256,),
+    "layer_norms.0.bias": (256,),
+    "layer_norms.1.weight": (128,),
+    "layer_norms.1.bias": (128,),
+    "output_layer.weight": (EXPECTED_ACTION_SIZE, 128),
     "output_layer.bias": (EXPECTED_ACTION_SIZE,),
 }
 EXPECTED_DQN_PARAMETER_COUNT = len(EXPECTED_DQN_STATE_DICT_SHAPES)
@@ -258,6 +258,15 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
             f"Incompatible DQN checkpoint {name}: contains a 3-layer network "
             "(fc_layers.2.*) from schema v1/v2. The architecture is now 2 layers and "
             "inputs are normalized. Retrain from scratch."
+        )
+
+    # Old 512-hidden-size checkpoints (schema v3) used hidden_size=512 giving [512, 256] layers.
+    # The architecture is now hidden_size=256 giving [256, 128] layers. Retrain from scratch.
+    first_layer = state_dict.get("fc_layers.0.weight")
+    if first_layer is not None and _tensor_shape(first_layer) == (512, EXPECTED_NETWORK_INPUT_SIZE):
+        raise DQNCheckpointError(
+            f"Incompatible DQN checkpoint {name}: contains an old hidden_size=512 network "
+            "(schema v3). The architecture is now hidden_size=256. Retrain from scratch."
         )
 
     missing_keys = [key for key in EXPECTED_DQN_STATE_DICT_SHAPES if key not in state_dict]

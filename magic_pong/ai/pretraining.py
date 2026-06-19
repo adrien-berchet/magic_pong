@@ -186,9 +186,7 @@ class OptimalPointPretrainer:
         field_bounds = game_state.get("field_bounds", (0, 800, 0, 600))
 
         # Calculate paddle center
-        paddle_center_x = player_pos[0]
-        if player_id == 1:
-            paddle_center_x += game_config.PADDLE_WIDTH
+        paddle_center_x = player_pos[0] + game_config.PADDLE_WIDTH / 2
         paddle_center_y = player_pos[1] + game_config.PADDLE_HEIGHT / 2
 
         # Find optimal interception point on ball's trajectory
@@ -322,6 +320,9 @@ class OptimalPointPretrainer:
             # Agent chooses an action
             action_index = agent.act(state, training=True)
             action = self._index_to_action(action_index)
+            training_action_index = self._action_index_for_training(action_index)
+            if self.y_only:
+                agent._last_chosen_action = training_action_index
 
             # Build the network-facing extended state for the replay buffer.
             extended_state = agent._extend_state(state, prev_action)
@@ -350,11 +351,17 @@ class OptimalPointPretrainer:
             next_observation = self._game_state_to_observation(game_state, player_id)
             next_state = agent._observation_to_state(next_observation)
             # The action we just took is the "previous action" context for the next step.
-            extended_next_state = agent._extend_state(next_state, action_index)
+            extended_next_state = agent._extend_state(next_state, training_action_index)
 
-            # Store experience in replay memory (extended states to match v2 network)
+            # Store experience in replay memory (extended states to match v2 network).
+            # Each generated pretraining scenario is independent, so this is a
+            # terminal one-step transition and must not bootstrap from next_state.
             agent.remember(
-                extended_state, action_index, proximity_reward, extended_next_state, done=False
+                extended_state,
+                training_action_index,
+                proximity_reward,
+                extended_next_state,
+                done=True,
             )
 
             # Train agent if enough experiences
@@ -405,6 +412,18 @@ class OptimalPointPretrainer:
             # Default action if invalid index
             print(f"Invalid action index: {action_index}, returning no movement.")
             return Action(move_x=0.0, move_y=0.0)
+
+    def _action_index_for_training(self, action_index: int) -> int:
+        """Collapse y-only pretraining labels to STAY, UP, or DOWN actions."""
+        if not self.y_only:
+            return action_index
+
+        action = self._index_to_action(action_index)
+        if action.move_y < 0:
+            return 1
+        if action.move_y > 0:
+            return 2
+        return 0
 
     def run_pretraining_phase(
         self,

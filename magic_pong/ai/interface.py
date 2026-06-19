@@ -182,6 +182,7 @@ class RewardCalculator:
         self.last_score = [0, 0]
         self.last_ball_distance: dict[int, float] = {}
         self.optimal_points: dict[int, dict] = {}  # Store optimal points for visualization
+        self._last_interception_details: dict[int, dict[str, Any]] = {}
         self.y_only = y_only
 
     def calculate_reward(
@@ -387,13 +388,16 @@ class RewardCalculator:
         player_pos = game_state.get(f"player{player_id}_position", (0, 0))
         field_bounds = game_state.get("field_bounds", (0, 800, 0, 600))
 
+        paddle_height = float(
+            game_state.get(f"player{player_id}_paddle_size", game_config.PADDLE_HEIGHT)
+        )
+
         # Calculate paddle center
-        paddle_center_x = player_pos[0]
-        if player_id == 1:
-            paddle_center_x += game_config.PADDLE_WIDTH / 2
-        paddle_center_y = player_pos[1] + game_config.PADDLE_HEIGHT / 2
+        paddle_center_x = player_pos[0] + game_config.PADDLE_WIDTH / 2
+        paddle_center_y = player_pos[1] + paddle_height / 2
 
         # Find optimal interception point on ball's trajectory
+        self._last_interception_details.pop(player_id, None)
         optimal_point = self._find_optimal_interception_point(
             ball_pos,
             ball_vel,
@@ -401,11 +405,13 @@ class RewardCalculator:
             field_bounds,
             player_id,
             self.y_only,
+            paddle_height,
         )
 
         if optimal_point is None:
-            # Fallback to current ball position if trajectory calculation fails
-            optimal_point = (paddle_center_x, ball_pos[1])
+            self.optimal_points.pop(player_id, None)
+            self.last_ball_distance.pop(player_id, None)
+            return 0.0
 
         # Store optimal point for visualization
         self.optimal_points[player_id] = {
@@ -414,6 +420,7 @@ class RewardCalculator:
             "ball_velocity": ball_vel,
             "paddle_position": (paddle_center_x, paddle_center_y),
         }
+        self.optimal_points[player_id].update(self._last_interception_details.get(player_id, {}))
 
         # Debug display of optimal points
         if ai_config.DEBUG_OPTIMAL_POINTS:
@@ -443,7 +450,23 @@ class RewardCalculator:
         # better/worse the action was, so Q-learning can distinguish a large
         # stride toward the target from a tiny one.
         distance_change = current_distance - previous_distance
-        return -distance_change * ai_config.PROXIMITY_REWARD_FACTOR
+        reward = -distance_change * ai_config.PROXIMITY_REWARD_FACTOR
+        current_paddle_covers_trajectory = bool(
+            self._last_interception_details.get(player_id, {}).get(
+                "current_paddle_covers_trajectory", False
+            )
+        )
+        if (
+            current_distance > self._proximity_target_deadband(paddle_height)
+            and distance_change >= -1e-9
+            and not current_paddle_covers_trajectory
+        ):
+            reward -= ai_config.PROXIMITY_PENALTY_FACTOR
+        return reward
+
+    def _proximity_target_deadband(self, paddle_height: float) -> float:
+        del paddle_height
+        return 1.0
 
     def _find_optimal_interception_point(
         self,
@@ -453,6 +476,7 @@ class RewardCalculator:
         field_bounds: tuple[float, float, float, float],
         player_id: int,
         y_only: bool = False,
+        paddle_height: float | None = None,
     ) -> tuple[float, float] | None:
         """
         Find the optimal interception point on the ball's trajectory considering wall bounces
@@ -474,44 +498,40 @@ class RewardCalculator:
         # 1. If ball is moving towards paddle side, predict interception
         # 2. Otherwise, reward positioning towards current ball position
 
-        min_x, max_x, min_y, max_y = field_bounds
-
-        # Determine paddle side (left = player 1, right = player 2)
-        is_left_paddle = player_id == 1
-
         # Check if ball is moving towards this paddle
-        ball_moving_towards = (is_left_paddle and ball_vel[0] < 0) or (
-            not is_left_paddle and ball_vel[0] > 0
-        )
+        ball_moving_towards = self._ball_is_approaching_player(ball_vel, player_id)
 
         if not ball_moving_towards:
             # Ball moving away or sideways, reward staying near current ball Y position
+            self._last_interception_details.pop(player_id, None)
             return None
 
-        # Ball is moving towards paddle, find best interception point
         trajectory_points = self._simulate_ball_trajectory(
-            ball_pos, ball_vel, field_bounds, max_time=10.0, dt=0.05
+            ball_pos, ball_vel, field_bounds, max_time=None
         )
 
         if not trajectory_points:
             return ball_pos
 
-        # Find closest interception points on paddle side
-        # paddle_x_zone = paddle_pos[0]
-        # best_point = ball_pos
-        # min_distance = float('inf')
+        paddle_height = float(paddle_height or game_config.PADDLE_HEIGHT)
+        current_paddle_covers_trajectory = self._ball_path_crosses_current_paddle(
+            trajectory_points, paddle_pos, player_id, paddle_height
+        )
+        interception = self._find_earliest_reachable_interception(
+            trajectory_points, paddle_pos, field_bounds, player_id, y_only, paddle_height
+        )
+        if interception is None:
+            self._last_interception_details.pop(player_id, None)
+            return None
 
-        trajectory_pts = np.array([i[0] for i in trajectory_points])
-        if y_only:
-            distances = np.abs(trajectory_pts[:, 0] - paddle_pos[0])
-        else:
-            distances = np.linalg.norm(trajectory_pts - paddle_pos, axis=1)
-
-        best_point_arr = trajectory_pts[np.argmin(distances)]
-        if y_only:
-            best_point: tuple[float, float] = (paddle_pos[0], float(best_point_arr[1]))
-        else:
-            best_point = (float(best_point_arr[0]), float(best_point_arr[1]))
+        self._last_interception_details[player_id] = {
+            "ball_interception_position": interception["ball_position"],
+            "paddle_target_position": interception["paddle_target_position"],
+            "interception_time": interception["time"],
+            "reachable": interception["reachable"],
+            "current_paddle_covers_trajectory": current_paddle_covers_trajectory,
+        }
+        best_point = interception["paddle_target_position"]
 
         # for point, time_step in trajectory_points:
         #     # Only consider points that are reasonably close to paddle's X zone
@@ -535,12 +555,338 @@ class RewardCalculator:
 
         return best_point
 
+    def _ball_path_crosses_current_paddle(
+        self,
+        trajectory_points: list[tuple[tuple[float, float], float]],
+        paddle_pos: tuple[float, float],
+        player_id: int,
+        paddle_height: float,
+    ) -> bool:
+        """Return True when the static current paddle already covers the ball path."""
+        face_x = self._paddle_face_ball_center_x(float(paddle_pos[0]), player_id)
+        crossing = self._trajectory_crossing_at_x(trajectory_points, face_x)
+        if crossing is None:
+            return False
+
+        ball_position, _time_step = crossing
+        half_height = paddle_height / 2.0
+        min_contact_y = float(paddle_pos[1]) - half_height - game_config.BALL_RADIUS
+        max_contact_y = float(paddle_pos[1]) + half_height + game_config.BALL_RADIUS
+        return min_contact_y <= float(ball_position[1]) <= max_contact_y
+
+    def _find_earliest_reachable_interception(
+        self,
+        trajectory_points: list[tuple[tuple[float, float], float]],
+        paddle_pos: tuple[float, float],
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        y_only: bool,
+        paddle_height: float,
+    ) -> dict[str, Any] | None:
+        """Find the first legal ball trajectory point the paddle can reach."""
+        if y_only:
+            return self._find_y_only_interception(
+                trajectory_points, paddle_pos, field_bounds, player_id, paddle_height
+            )
+
+        for start, end in zip(trajectory_points, trajectory_points[1:], strict=False):
+            segment_interval = self._legal_interception_time_interval(
+                start, end, field_bounds, player_id, paddle_height
+            )
+            if segment_interval is None:
+                continue
+
+            interval_start, interval_end = segment_interval
+            candidate = self._interception_candidate_at_time(
+                start, end, interval_start, field_bounds, player_id, paddle_pos, paddle_height
+            )
+            if candidate is not None and self._can_reach_interception(candidate, paddle_pos, False):
+                return candidate
+
+            end_candidate = self._interception_candidate_at_time(
+                start, end, interval_end, field_bounds, player_id, paddle_pos, paddle_height
+            )
+            if end_candidate is None or not self._can_reach_interception(
+                end_candidate, paddle_pos, False
+            ):
+                continue
+
+            low = interval_start
+            high = interval_end
+            for _ in range(32):
+                mid = (low + high) / 2.0
+                mid_candidate = self._interception_candidate_at_time(
+                    start, end, mid, field_bounds, player_id, paddle_pos, paddle_height
+                )
+                if mid_candidate is not None and self._can_reach_interception(
+                    mid_candidate, paddle_pos, False
+                ):
+                    high = mid
+                else:
+                    low = mid
+            return self._interception_candidate_at_time(
+                start, end, high, field_bounds, player_id, paddle_pos, paddle_height
+            )
+
+        return None
+
+    def _find_y_only_interception(
+        self,
+        trajectory_points: list[tuple[tuple[float, float], float]],
+        paddle_pos: tuple[float, float],
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_height: float,
+    ) -> dict[str, Any] | None:
+        face_x = self._paddle_face_ball_center_x(paddle_pos[0], player_id)
+        crossing = self._trajectory_crossing_at_x(trajectory_points, face_x)
+        if crossing is None:
+            return None
+
+        ball_position, time_step = crossing
+        target_y = self._nearest_legal_paddle_center_y(
+            ball_position[1], paddle_pos[1], field_bounds, paddle_height
+        )
+        if target_y is None:
+            return None
+
+        candidate = {
+            "ball_position": ball_position,
+            "paddle_target_position": (float(paddle_pos[0]), target_y),
+            "time": float(time_step),
+            "reachable": True,
+        }
+        if not self._can_reach_interception(candidate, paddle_pos, True):
+            return None
+        return candidate
+
+    def _legal_interception_time_interval(
+        self,
+        start: tuple[tuple[float, float], float],
+        end: tuple[tuple[float, float], float],
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_height: float,
+    ) -> tuple[float, float] | None:
+        start_time = float(start[1])
+        end_time = float(end[1])
+        if end_time < start_time:
+            return None
+
+        ball_x_min, ball_x_max = self._legal_ball_x_intercept_range(
+            field_bounds, player_id, paddle_height
+        )
+        return self._segment_time_interval_for_value_range(
+            start_time,
+            end_time,
+            float(start[0][0]),
+            float(end[0][0]),
+            ball_x_min,
+            ball_x_max,
+        )
+
+    def _legal_ball_x_intercept_range(
+        self,
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_height: float,
+    ) -> tuple[float, float]:
+        center_min_x, center_max_x, _center_min_y, _center_max_y = self._legal_paddle_center_bounds(
+            field_bounds, player_id, paddle_height
+        )
+        contact_offset = game_config.BALL_RADIUS + game_config.PADDLE_WIDTH / 2
+        if player_id == 1:
+            return center_min_x + contact_offset, center_max_x + contact_offset
+        return center_min_x - contact_offset, center_max_x - contact_offset
+
+    def _segment_time_interval_for_value_range(
+        self,
+        start_time: float,
+        end_time: float,
+        start_value: float,
+        end_value: float,
+        min_value: float,
+        max_value: float,
+    ) -> tuple[float, float] | None:
+        if end_time == start_time:
+            if min_value <= start_value <= max_value:
+                return start_time, end_time
+            return None
+
+        if abs(end_value - start_value) <= 1e-12:
+            if min_value <= start_value <= max_value:
+                return start_time, end_time
+            return None
+
+        alpha_min = (min_value - start_value) / (end_value - start_value)
+        alpha_max = (max_value - start_value) / (end_value - start_value)
+        low_alpha = max(0.0, min(alpha_min, alpha_max))
+        high_alpha = min(1.0, max(alpha_min, alpha_max))
+        if low_alpha > high_alpha:
+            return None
+
+        duration = end_time - start_time
+        return start_time + low_alpha * duration, start_time + high_alpha * duration
+
+    def _interception_candidate_at_time(
+        self,
+        start: tuple[tuple[float, float], float],
+        end: tuple[tuple[float, float], float],
+        time_step: float,
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_pos: tuple[float, float],
+        paddle_height: float,
+    ) -> dict[str, Any] | None:
+        start_time = float(start[1])
+        end_time = float(end[1])
+        if end_time == start_time:
+            alpha = 0.0
+        else:
+            alpha = np.clip((time_step - start_time) / (end_time - start_time), 0.0, 1.0)
+        ball_x = float(start[0][0]) + (float(end[0][0]) - float(start[0][0])) * float(alpha)
+        ball_y = float(start[0][1]) + (float(end[0][1]) - float(start[0][1])) * float(alpha)
+        paddle_target = self._paddle_target_for_ball_position(
+            (ball_x, ball_y), field_bounds, player_id, paddle_pos, paddle_height
+        )
+        if paddle_target is None:
+            return None
+        return {
+            "ball_position": (ball_x, ball_y),
+            "paddle_target_position": paddle_target,
+            "time": float(time_step),
+            "reachable": True,
+        }
+
+    def _paddle_target_for_ball_position(
+        self,
+        ball_position: tuple[float, float],
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_pos: tuple[float, float],
+        paddle_height: float,
+    ) -> tuple[float, float] | None:
+        center_min_x, center_max_x, center_min_y, center_max_y = self._legal_paddle_center_bounds(
+            field_bounds, player_id, paddle_height
+        )
+        contact_offset = game_config.BALL_RADIUS + game_config.PADDLE_WIDTH / 2
+        if player_id == 1:
+            target_x = float(ball_position[0]) - contact_offset
+        else:
+            target_x = float(ball_position[0]) + contact_offset
+        target_x = float(np.clip(target_x, center_min_x, center_max_x))
+        target_y = self._nearest_legal_paddle_center_y(
+            float(ball_position[1]), float(paddle_pos[1]), field_bounds, paddle_height
+        )
+        if target_y is None:
+            return None
+        return (target_x, target_y)
+
+    def _legal_paddle_center_bounds(
+        self,
+        field_bounds: tuple[float, float, float, float],
+        player_id: int,
+        paddle_height: float,
+    ) -> tuple[float, float, float, float]:
+        min_x, max_x, min_y, max_y = map(float, field_bounds)
+        half_width = game_config.PADDLE_WIDTH / 2
+        half_height = paddle_height / 2
+        if player_id == 1:
+            center_min_x = min_x + game_config.PADDLE_MARGIN + half_width
+            center_max_x = (max_x - min_x) / 2 + min_x - game_config.PADDLE_MARGIN - half_width
+        else:
+            center_min_x = (max_x - min_x) / 2 + min_x + game_config.PADDLE_MARGIN + half_width
+            center_max_x = max_x - game_config.PADDLE_MARGIN - half_width
+        return (
+            float(center_min_x),
+            float(center_max_x),
+            min_y + half_height,
+            max_y - half_height,
+        )
+
+    def _nearest_legal_paddle_center_y(
+        self,
+        ball_y: float,
+        current_center_y: float,
+        field_bounds: tuple[float, float, float, float],
+        paddle_height: float,
+    ) -> float | None:
+        _center_min_x, _center_max_x, field_center_min_y, field_center_max_y = (
+            self._legal_paddle_center_bounds(field_bounds, 1, paddle_height)
+        )
+        half_height = paddle_height / 2
+        contact_min_y = max(field_center_min_y, ball_y - half_height)
+        contact_max_y = min(field_center_max_y, ball_y + half_height)
+        if contact_min_y > contact_max_y:
+            return None
+        return float(np.clip(current_center_y, contact_min_y, contact_max_y))
+
+    def _paddle_face_ball_center_x(self, paddle_center_x: float, player_id: int) -> float:
+        contact_offset = game_config.BALL_RADIUS + game_config.PADDLE_WIDTH / 2
+        if player_id == 1:
+            return float(paddle_center_x) + contact_offset
+        return float(paddle_center_x) - contact_offset
+
+    def _trajectory_crossing_at_x(
+        self,
+        trajectory_points: list[tuple[tuple[float, float], float]],
+        target_x: float,
+    ) -> tuple[tuple[float, float], float] | None:
+        for start, end in zip(trajectory_points, trajectory_points[1:], strict=False):
+            crossing_interval = self._segment_time_interval_for_value_range(
+                float(start[1]),
+                float(end[1]),
+                float(start[0][0]),
+                float(end[0][0]),
+                target_x,
+                target_x,
+            )
+            if crossing_interval is None:
+                continue
+            crossing_time = crossing_interval[0]
+            candidate = self._interpolate_trajectory_point(start, end, crossing_time)
+            return candidate, crossing_time
+        return None
+
+    def _interpolate_trajectory_point(
+        self,
+        start: tuple[tuple[float, float], float],
+        end: tuple[tuple[float, float], float],
+        time_step: float,
+    ) -> tuple[float, float]:
+        start_time = float(start[1])
+        end_time = float(end[1])
+        alpha = (
+            0.0 if end_time == start_time else (time_step - start_time) / (end_time - start_time)
+        )
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        return (
+            float(start[0][0]) + (float(end[0][0]) - float(start[0][0])) * alpha,
+            float(start[0][1]) + (float(end[0][1]) - float(start[0][1])) * alpha,
+        )
+
+    def _can_reach_interception(
+        self, candidate: dict[str, Any], paddle_pos: tuple[float, float], y_only: bool
+    ) -> bool:
+        target_x, target_y = candidate["paddle_target_position"]
+        if y_only:
+            required_time = abs(float(target_y) - float(paddle_pos[1])) / game_config.PADDLE_SPEED
+        else:
+            required_time = (
+                max(
+                    abs(float(target_x) - float(paddle_pos[0])),
+                    abs(float(target_y) - float(paddle_pos[1])),
+                )
+                / game_config.PADDLE_SPEED
+            )
+        return required_time <= float(candidate["time"]) + 1e-9
+
     def _simulate_ball_trajectory(
         self,
         ball_pos: tuple,
         ball_vel: tuple,
         field_bounds: tuple,
-        max_time: float = 10.0,
+        max_time: float | None = 10.0,
         dt: float = 0.1,
     ) -> list:
         """
@@ -550,55 +896,78 @@ class RewardCalculator:
             ball_pos: Starting ball position (x, y)
             ball_vel: Ball velocity (vx, vy)
             field_bounds: Field boundaries (min_x, max_x, min_y, max_y)
-            max_time: Maximum simulation time
-            dt: Time step for simulation
+            max_time: Maximum simulation time. If None, simulate until the ball reaches a side.
+            dt: Deprecated compatibility argument; the returned trajectory uses exact segment points.
 
         Returns:
             List of (position, time) tuples along the trajectory
         """
+        del dt
         min_x, max_x, min_y, max_y = field_bounds
-        ball_radius = game_config.BALL_RADIUS
+        ball_radius = float(game_config.BALL_RADIUS)
 
-        # Current state
-        pos_x, pos_y = ball_pos
-        vel_x, vel_y = ball_vel
-
-        trajectory = [(ball_pos, 0.0)]
+        pos_x, pos_y = float(ball_pos[0]), float(ball_pos[1])
+        vel_x, vel_y = float(ball_vel[0]), float(ball_vel[1])
         current_time = 0.0
+        trajectory = [((pos_x, pos_y), current_time)]
 
-        while current_time < max_time:
-            # Predict next position
-            next_x = pos_x + vel_x * dt
-            next_y = pos_y + vel_y * dt
+        if abs(vel_x) < 1e-9 and max_time is None:
+            return trajectory
 
-            # Check for wall bounces (top and bottom walls only, like in the game)
-            if next_y - ball_radius <= min_y:
-                # Bottom wall bounce
-                next_y = min_y + ball_radius
-                vel_y = -vel_y
-            elif next_y + ball_radius >= max_y:
-                # Top wall bounce
-                next_y = max_y - ball_radius
-                vel_y = -vel_y
+        while max_time is None or current_time < max_time:
+            remaining_time = float("inf") if max_time is None else max_time - current_time
+            side_time = self._time_to_side_boundary(pos_x, vel_x, min_x, max_x, ball_radius)
+            wall_time = self._time_to_horizontal_wall(pos_y, vel_y, min_y, max_y, ball_radius)
 
-            # Check for left/right boundaries (goals) - stop simulation
-            if next_x - ball_radius <= min_x or next_x + ball_radius >= max_x:
-                # Ball would reach goal area, add final point and stop
-                trajectory.append(((next_x, next_y), current_time + dt))
+            next_time = remaining_time
+            event = "limit"
+            if side_time is not None and side_time <= next_time:
+                next_time = side_time
+                event = "side"
+            if wall_time is not None and wall_time <= next_time:
+                next_time = wall_time
+                event = "wall"
+
+            if next_time == float("inf"):
                 break
 
-            # Update position
-            pos_x, pos_y = next_x, next_y
-            current_time += dt
+            pos_x += vel_x * next_time
+            pos_y += vel_y * next_time
+            current_time += next_time
 
-            # Add point to trajectory
+            if event == "side":
+                pos_x = min_x + ball_radius if vel_x < 0 else max_x - ball_radius
+                trajectory.append(((pos_x, pos_y), current_time))
+                break
+
+            if event == "wall":
+                pos_y = min_y + ball_radius if vel_y < 0 else max_y - ball_radius
+                vel_y = -vel_y
+                trajectory.append(((pos_x, pos_y), current_time))
+                continue
+
             trajectory.append(((pos_x, pos_y), current_time))
-
-            # Stop if ball gets too close to goals (to avoid infinite simulation)
-            if pos_x < min_x + 100 or pos_x > max_x - 100:
-                break
+            break
 
         return trajectory
+
+    def _time_to_side_boundary(
+        self, pos_x: float, vel_x: float, min_x: float, max_x: float, ball_radius: float
+    ) -> float | None:
+        if vel_x < -1e-12:
+            return max(((min_x + ball_radius) - pos_x) / vel_x, 0.0)
+        if vel_x > 1e-12:
+            return max(((max_x - ball_radius) - pos_x) / vel_x, 0.0)
+        return None
+
+    def _time_to_horizontal_wall(
+        self, pos_y: float, vel_y: float, min_y: float, max_y: float, ball_radius: float
+    ) -> float | None:
+        if vel_y < -1e-12:
+            return max(((min_y + ball_radius) - pos_y) / vel_y, 0.0)
+        if vel_y > 1e-12:
+            return max(((max_y - ball_radius) - pos_y) / vel_y, 0.0)
+        return None
 
     def _debug_optimal_point(
         self,

@@ -11,6 +11,7 @@ from magic_pong.ai.agent_adapter import adapt_info_for_agent
 from magic_pong.ai.agent_adapter import to_player1_dqn_observation
 from magic_pong.ai.environment.factory import EnvironmentFactory
 from magic_pong.ai.interface import ObservationProcessor
+from magic_pong.ai.interface import RewardCalculator
 from magic_pong.ai.interfaces.observation import VectorObservationBuilder
 from magic_pong.ai.models.simple_ai import AggressiveAI
 from magic_pong.ai.models.simple_ai import DefensiveAI
@@ -24,6 +25,7 @@ from magic_pong.core.game_engine import GameEngine
 from magic_pong.core.game_engine import TrainingManager
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import ai_config
+from magic_pong.utils.config import ai_config_tmp
 from magic_pong.utils.config import game_config
 
 
@@ -432,6 +434,284 @@ def test_pretraining_player2_uses_canonical_dqn_observation_and_world_action(
     assert initial_observation["player_pos"][0] < 400.0
     assert next_observation["player_pos"][0] > initial_observation["player_pos"][0]
     assert agent.memory[0][1] == 4
+
+
+@pytest.mark.parametrize(
+    ("chosen_action", "expected_training_action"),
+    [
+        (3, 0),
+        (4, 0),
+        (5, 1),
+        (6, 1),
+        (7, 2),
+        (8, 2),
+    ],
+)
+def test_y_only_pretraining_stores_vertical_action_label(
+    chosen_action: int, expected_training_action: int
+) -> None:
+    class FixedActionPretrainingAgent(RecordingPretrainingAgent):
+        def act(self, state: np.ndarray, training: bool = True) -> int:
+            self._last_chosen_action = chosen_action
+            return chosen_action
+
+    pretrainer = create_pretrainer(y_only=True)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 260.0)
+    state["player1_last_position"] = state["player1_position"]
+
+    pretrainer.generate_random_ball_state = lambda player_id: {}
+    pretrainer.create_game_state_from_ball_state = lambda ball_state, player_id: state
+
+    agent = FixedActionPretrainingAgent()
+    pretrainer.pretraining_step(agent, player_id=1, num_steps=1)
+
+    assert agent.memory[0][1] == expected_training_action
+    assert agent.memory[0][4] is True
+    assert agent._last_chosen_action == expected_training_action
+
+
+def test_legacy_pretraining_y_only_uses_full_trajectory_target_y() -> None:
+    calculator = RewardCalculator(y_only=True)
+    point = calculator._find_optimal_interception_point(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(-300.0, 100.0),
+        paddle_pos=(20.0, 300.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        player_id=1,
+        y_only=True,
+    )
+
+    assert point is not None
+    assert point == pytest.approx((20.0, 381.5))
+
+
+def test_pretraining_full_trajectory_can_choose_point_behind_current_paddle_x() -> None:
+    calculator = RewardCalculator(y_only=False)
+    point = calculator._find_optimal_interception_point(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(-300.0, 100.0),
+        paddle_pos=(350.0, 450.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        player_id=1,
+        y_only=False,
+    )
+
+    assert point is not None
+    assert point[0] < 350.0
+    assert point == pytest.approx((329.5, 358.3333333333))
+
+
+def test_pretraining_full_trajectory_can_choose_player2_point_behind_current_paddle_x() -> None:
+    calculator = RewardCalculator(y_only=False)
+    point = calculator._find_optimal_interception_point(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(300.0, 100.0),
+        paddle_pos=(450.0, 450.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        player_id=2,
+        y_only=False,
+    )
+
+    assert point is not None
+    assert point[0] > 450.0
+    assert point == pytest.approx((470.5, 358.3333333333))
+
+
+def test_pretraining_interception_records_ball_contact_and_paddle_target() -> None:
+    calculator = RewardCalculator(y_only=False)
+    point = calculator._find_optimal_interception_point(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(-300.0, 100.0),
+        paddle_pos=(350.0, 300.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        player_id=1,
+        y_only=False,
+    )
+    details = calculator._last_interception_details[1]
+
+    assert point == pytest.approx((371.5625, 300.0))
+    assert details["ball_interception_position"] == pytest.approx((387.0625, 304.3125))
+    assert details["paddle_target_position"] == pytest.approx(point)
+    assert details["ball_interception_position"][0] - point[0] == pytest.approx(
+        game_config.BALL_RADIUS + game_config.PADDLE_WIDTH / 2
+    )
+
+
+def test_pretraining_no_reachable_interception_does_not_record_optimal_point() -> None:
+    calculator = RewardCalculator()
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-3000.0, 0.0)
+    state["player1_position"] = (20.0, 520.0)
+    state["player1_last_position"] = state["player1_position"]
+
+    with ai_config_tmp(USE_PROXIMITY_REWARD=True):
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == 0.0
+    assert calculator.get_optimal_points() == {}
+
+
+def test_pretraining_idle_action_is_penalized_when_intercept_not_covered() -> None:
+    calculator = RewardCalculator(y_only=False)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 260.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        calculator._calculate_proximity_reward(state, player_id=1)
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == pytest.approx(-0.25)
+
+
+def test_pretraining_idle_action_is_neutral_when_intercept_is_already_covered() -> None:
+    calculator = RewardCalculator(y_only=False)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 340.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        calculator._calculate_proximity_reward(state, player_id=1)
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == pytest.approx(0.0)
+
+
+def test_pretraining_y_only_idle_action_is_neutral_when_intercept_is_covered() -> None:
+    calculator = RewardCalculator(y_only=True)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 340.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        calculator._calculate_proximity_reward(state, player_id=1)
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == pytest.approx(0.0)
+
+
+def test_pretraining_y_only_idle_action_is_penalized_just_outside_coverage() -> None:
+    calculator = RewardCalculator(y_only=True)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 330.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        calculator._calculate_proximity_reward(state, player_id=1)
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == pytest.approx(-0.25)
+
+
+def test_pretraining_progress_toward_intercept_does_not_receive_idle_penalty() -> None:
+    calculator = RewardCalculator(y_only=True)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 260.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        calculator._calculate_proximity_reward(state, player_id=1)
+        state["player1_position"] = (20.0, 270.0)
+        reward = calculator._calculate_proximity_reward(state, player_id=1)
+
+    assert reward == pytest.approx(10.0)
+
+
+def test_pretraining_step_records_negative_reward_for_stay_when_intercept_not_covered() -> None:
+    class StayPretrainingAgent(RecordingPretrainingAgent):
+        def act(self, state: np.ndarray, training: bool = True) -> int:
+            action = 0
+            self._last_chosen_action = action
+            return action
+
+    pretrainer = create_pretrainer(y_only=False)
+    state = _canonical_game_state()
+    state["ball_position"] = (400.0, 300.0)
+    state["ball_velocity"] = (-300.0, 100.0)
+    state["player1_position"] = (20.0, 260.0)
+    state["player1_last_position"] = state["player1_position"]
+    state["player1_paddle_size"] = 80.0
+
+    pretrainer.generate_random_ball_state = lambda player_id: {}
+    pretrainer.create_game_state_from_ball_state = lambda ball_state, player_id: state
+
+    agent = StayPretrainingAgent()
+    with ai_config_tmp(
+        USE_PROXIMITY_REWARD=True,
+        PROXIMITY_REWARD_FACTOR=1.0,
+        PROXIMITY_PENALTY_FACTOR=0.25,
+    ):
+        result = pretrainer.pretraining_step(agent, player_id=1, num_steps=1)
+
+    assert agent.memory[0][1] == 0
+    assert agent.memory[0][2] == pytest.approx(-0.25)
+    assert result["rewards_history"] == pytest.approx([-0.25])
+
+
+def test_pretraining_unbounded_trajectory_reaches_side_for_slow_ball() -> None:
+    calculator = RewardCalculator()
+    trajectory = calculator._simulate_ball_trajectory(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(-10.0, 0.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        max_time=None,
+    )
+
+    assert trajectory[-1][0] == pytest.approx((8.0, 300.0))
+    assert trajectory[-1][1] == pytest.approx(39.2)
+
+
+def test_pretraining_tiny_horizontal_velocity_is_not_treated_as_approaching() -> None:
+    calculator = RewardCalculator()
+    point = calculator._find_optimal_interception_point(
+        ball_pos=(400.0, 300.0),
+        ball_vel=(-1e-10, 100.0),
+        paddle_pos=(100.0, 450.0),
+        field_bounds=(0.0, 800.0, 0.0, 600.0),
+        player_id=1,
+        y_only=False,
+    )
+
+    assert point is None
 
 
 def test_dqn_transition_uses_decision_time_state_and_stores_terminal(

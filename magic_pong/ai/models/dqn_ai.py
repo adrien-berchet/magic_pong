@@ -696,26 +696,32 @@ class DQNAgent(AIPlayer):
 
         # Neural networks (first-layer input includes prev-action one-hot when enabled)
         self.q_network = DQNNetwork(
-            self._network_input_size, 512, action_size, dropout_rate=dropout_rate
+            self._network_input_size,
+            output_size=action_size,
+            dropout_rate=dropout_rate,
         ).to(device)
         self.target_network = DQNNetwork(
-            self._network_input_size, 512, action_size, dropout_rate=dropout_rate
+            self._network_input_size,
+            output_size=action_size,
+            dropout_rate=dropout_rate,
         ).to(device)
 
         # Initialize optimizers based on training mode
         if self.enable_dual_scale_training:
             # Separate optimizers for tactical and strategic learning
-            self.tactical_optimizer = optim.Adam(
+            self.tactical_optimizer = optim.AdamW(
                 self.q_network.parameters(),
                 lr=self.tactical_learning_rate,
                 weight_decay=1e-4,
                 eps=1e-4,
+                amsgrad=True,
             )
-            self.strategic_optimizer = optim.Adam(
+            self.strategic_optimizer = optim.AdamW(
                 self.q_network.parameters(),
                 lr=self.strategic_learning_rate,
                 weight_decay=1e-3,
                 eps=1e-4,
+                amsgrad=True,
             )
             # Keep original optimizer for compatibility
             self.optimizer = self.strategic_optimizer
@@ -728,8 +734,12 @@ class DQNAgent(AIPlayer):
             self.strategic_loss_history: list[float] = []
         else:
             # Standard single optimizer
-            self.optimizer = optim.Adam(
-                self.q_network.parameters(), lr=lr, weight_decay=1e-3, eps=1e-4
+            self.optimizer = optim.AdamW(
+                self.q_network.parameters(),
+                lr=lr,
+                weight_decay=1e-3,
+                eps=1e-4,
+                amsgrad=True,
             )
 
         # Learning rate scheduler
