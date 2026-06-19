@@ -123,7 +123,10 @@ class PygameRenderer:
     def draw_paddle(self, paddle: Paddle) -> None:
         """Draw a player paddle"""
         rect = pygame.Rect(
-            int(paddle.position.x), int(paddle.position.y), int(paddle.width), int(paddle.height)
+            int(paddle.position.x),
+            int(paddle.position.y),
+            int(paddle.width),
+            int(paddle.height),
         )
         pygame.draw.rect(self.screen, self.paddle_color, rect)
 
@@ -433,7 +436,9 @@ class PygameRenderer:
                 label_color = (255, 168, 118) if is_selected else (158, 132, 128)
 
             label = self._truncate_text(
-                str(option.get("label", "Option")), self.font_config_body, row_rect.width - 28
+                str(option.get("label", "Option")),
+                self.font_config_body,
+                row_rect.width - 28,
             )
             label_surface = self.font_config_body.render(label, True, label_color)
             self.screen.blit(label_surface, (row_rect.x + 14, row_rect.y + 7))
@@ -450,7 +455,8 @@ class PygameRenderer:
         if scroll_offset > 0:
             indicator = self.font_config_micro.render("More above", True, (140, 150, 166))
             self.screen.blit(
-                indicator, (panel_rect.right - indicator.get_width() - 18, list_top - 18)
+                indicator,
+                (panel_rect.right - indicator.get_width() - 18, list_top - 18),
             )
 
         if scroll_offset + max_visible < len(options):
@@ -464,7 +470,10 @@ class PygameRenderer:
             )
 
     def _draw_menu_detail(
-        self, options: list[dict[str, Any]], selected_index: int, detail_rect: pygame.Rect
+        self,
+        options: list[dict[str, Any]],
+        selected_index: int,
+        detail_rect: pygame.Rect,
     ) -> None:
         """Draw detail information for the selected menu/action option."""
         if not options:
@@ -625,7 +634,10 @@ class PygameRenderer:
         return option
 
     def _draw_model_detail(
-        self, models: list[dict[str, Any]], selected_index: int, detail_rect: pygame.Rect
+        self,
+        models: list[dict[str, Any]],
+        selected_index: int,
+        detail_rect: pygame.Rect,
     ) -> None:
         """Draw the selected model metadata panel."""
         if not models:
@@ -1104,7 +1116,8 @@ class PygameRenderer:
         if scroll_offset > 0:
             indicator = self.font_config_micro.render("More above", True, (140, 150, 166))
             self.screen.blit(
-                indicator, (content_rect.right - indicator.get_width() - 24, list_top - 18)
+                indicator,
+                (content_rect.right - indicator.get_width() - 24, list_top - 18),
             )
 
         if scroll_offset + max_visible < len(options):
@@ -1345,7 +1358,11 @@ class PygameRenderer:
         self.screen.blit(text_surface, text_rect)
 
     def _draw_numeric_slider(
-        self, option: dict, control_rect: pygame.Rect, is_selected: bool, is_editing: bool
+        self,
+        option: dict,
+        control_rect: pygame.Rect,
+        is_selected: bool,
+        is_editing: bool,
     ) -> None:
         """Draw a numeric value with slider context."""
         value = option["value"]

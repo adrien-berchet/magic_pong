@@ -65,7 +65,8 @@ class EnvironmentFactory:
             physics=physics,
             reward_calculator=DenseRewardCalculator(),
             observation_builder=VectorObservationBuilder(
-                field_width=game_config.FIELD_WIDTH, field_height=game_config.FIELD_HEIGHT
+                field_width=game_config.FIELD_WIDTH,
+                field_height=game_config.FIELD_HEIGHT,
             ),
             headless=headless,
             player_id=player_id,
@@ -95,7 +96,8 @@ class EnvironmentFactory:
             physics=physics,
             reward_calculator=SparseRewardCalculator(),
             observation_builder=VectorObservationBuilder(
-                field_width=game_config.FIELD_WIDTH, field_height=game_config.FIELD_HEIGHT
+                field_width=game_config.FIELD_WIDTH,
+                field_height=game_config.FIELD_HEIGHT,
             ),
             headless=headless,
             player_id=player_id,
@@ -141,7 +143,8 @@ class EnvironmentFactory:
 
         if observation_builder is None:
             observation_builder = VectorObservationBuilder(
-                field_width=game_config.FIELD_WIDTH, field_height=game_config.FIELD_HEIGHT
+                field_width=game_config.FIELD_WIDTH,
+                field_height=game_config.FIELD_HEIGHT,
             )
 
         # Create wrapper that uses the protocol-based components

@@ -124,7 +124,8 @@ def check_trajectory_intersection(
     for i in range(1, num_samples):
         t = i / num_samples
         sample_pos = Vector2D(
-            start_pos.x + (end_pos.x - start_pos.x) * t, start_pos.y + (end_pos.y - start_pos.y) * t
+            start_pos.x + (end_pos.x - start_pos.x) * t,
+            start_pos.y + (end_pos.y - start_pos.y) * t,
         )
         sample_rect = (
             prev_rect[0] + (current_rect[0] - prev_rect[0]) * t,
@@ -397,7 +398,11 @@ class CollisionDetector:
         return False
 
     def separate_ball_from_paddle(
-        self, ball: Ball, paddle: Paddle, separation_multiplier: float = 1.0, force: bool = False
+        self,
+        ball: Ball,
+        paddle: Paddle,
+        separation_multiplier: float = 1.0,
+        force: bool = False,
     ) -> None:
         """
         Ensures the ball is positioned outside the paddle after collision.

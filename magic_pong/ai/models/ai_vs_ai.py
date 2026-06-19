@@ -144,7 +144,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Magic Pong AI Training")
     parser.add_argument(
-        "--mode", choices=["training", "tournament"], default="training", help="Execution mode"
+        "--mode",
+        choices=["training", "tournament"],
+        default="training",
+        help="Execution mode",
     )
 
     args = parser.parse_args()

@@ -95,7 +95,9 @@ class PhysicsEngine:
     def reset_paddles(self) -> None:
         """Resets paddles to their initial position and size"""
         self.player1 = Paddle(
-            game_config.PADDLE_MARGIN, self.field_height / 2 - game_config.PADDLE_HEIGHT / 2, 1
+            game_config.PADDLE_MARGIN,
+            self.field_height / 2 - game_config.PADDLE_HEIGHT / 2,
+            1,
         )
 
         self.player2 = Paddle(

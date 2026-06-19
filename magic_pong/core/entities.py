@@ -204,7 +204,9 @@ class Paddle:
         """Applies a temporary size effect"""
         new_size = max(
             min(
-                self.height * multiplier, self.original_height * 4, game_config.FIELD_HEIGHT * 0.95
+                self.height * multiplier,
+                self.original_height * 4,
+                game_config.FIELD_HEIGHT * 0.95,
             ),
             self.original_height * 0.25,
         )  # Limit min and max size

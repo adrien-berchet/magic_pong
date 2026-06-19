@@ -171,10 +171,7 @@ class DQNPretrainer:
         if "state_size" not in agent_kwargs:
             agent_kwargs["state_size"] = EXPECTED_STATE_SIZE
 
-        # Create DQN agent (v2 architecture: prev-action one-hot in state)
-        dqn_agent = DQNAgent(
-            name="DQN_Pretrained", include_prev_action_in_state=True, **agent_kwargs
-        )
+        dqn_agent = DQNAgent(name="DQN_Pretrained", **agent_kwargs)
 
         # Phase 1: Pretraining (unless skipped)
         if not skip_pretraining:

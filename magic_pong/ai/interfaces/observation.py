@@ -106,7 +106,14 @@ class VectorObservationBuilder:
             opponent_y_norm = p1_pos[1] / self.field_height
 
         return np.array(
-            [ball_x_norm, ball_y_norm, ball_vx_norm, ball_vy_norm, paddle_y_norm, opponent_y_norm],
+            [
+                ball_x_norm,
+                ball_y_norm,
+                ball_vx_norm,
+                ball_vy_norm,
+                paddle_y_norm,
+                opponent_y_norm,
+            ],
             dtype=np.float32,
         )
 

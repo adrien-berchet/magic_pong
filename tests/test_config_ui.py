@@ -318,7 +318,10 @@ def test_model_info_rejects_optimizer_param_count_mismatch(
     model_path = tmp_path / "wrong_optimizer_params_agent.pth"
     model_path.write_bytes(b"0" * 2048)
     checkpoint = valid_dqn_checkpoint_payload()
-    checkpoint["optimizer_state_dict"] = {"state": {}, "param_groups": [{"params": [0]}]}
+    checkpoint["optimizer_state_dict"] = {
+        "state": {},
+        "param_groups": [{"params": [0]}],
+    }
 
     fake_torch = ModuleType("torch")
     fake_torch.load = lambda *_args, **_kwargs: checkpoint
@@ -412,7 +415,11 @@ def test_model_selection_data_includes_cached_training_metadata(
         "valid": True,
         "training_step": 12000,
         "epsilon": 0.012345,
-        "hyperparameters": {"state_size": EXPECTED_STATE_SIZE, "action_size": 9, "lr": 0.001},
+        "hyperparameters": {
+            "state_size": EXPECTED_STATE_SIZE,
+            "action_size": 9,
+            "lr": 0.001,
+        },
     }
 
     model_data = app._build_model_selection_data()
@@ -601,7 +608,9 @@ def test_game_over_actions_data_includes_result_context(monkeypatch: Any) -> Non
     assert details["Mode"] == "1 vs AI"
 
 
-def test_help_overlay_data_uses_keyboard_layout_for_playing_1v1(monkeypatch: Any) -> None:
+def test_help_overlay_data_uses_keyboard_layout_for_playing_1v1(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setattr(game_config, "KEYBOARD_LAYOUT", "qwerty")
     app = create_app(monkeypatch)
     app.state = GameState.PLAYING

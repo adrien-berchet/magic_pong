@@ -376,7 +376,9 @@ class DQNTrainer:
         if self.win_rates:
             plt.subplot(2, 2, 2)
             episodes_eval = np.arange(
-                self.eval_interval, len(self.win_rates) * self.eval_interval + 1, self.eval_interval
+                self.eval_interval,
+                len(self.win_rates) * self.eval_interval + 1,
+                self.eval_interval,
             )
             plt.plot(episodes_eval, self.win_rates, "o-", color="green")
             plt.xlabel("Episode")
@@ -444,14 +446,6 @@ def main() -> None:
     parser.add_argument("--memory_size", type=int, default=10000, help="Replay buffer size")
     parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
     parser.add_argument(
-        "--use_prioritized_replay",
-        action="store_true",
-        help="Use prioritized experience replay",
-    )
-    parser.add_argument(
-        "--tau", type=float, default=0.005, help="Target network soft update coefficient"
-    )
-    parser.add_argument(
         "--model_dir", type=str, default="models", help="Directory for saving models"
     )
     parser.add_argument("--plot", action="store_true", help="Display training graphs")
@@ -513,8 +507,6 @@ def main() -> None:
         "epsilon_decay": args.epsilon_decay,
         "memory_size": args.memory_size,
         "batch_size": args.batch_size,
-        "use_prioritized_replay": args.use_prioritized_replay,
-        "tau": args.tau,
     }
 
     # Entraîner l'agent

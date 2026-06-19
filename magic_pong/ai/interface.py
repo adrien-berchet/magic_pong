@@ -123,7 +123,10 @@ class ObservationProcessor:
         observation["ball_pos"] = [ball_x, ball_y]
         observation["player_pos"] = [player_x, player_y]
         observation["opponent_pos"] = [opponent_x, opponent_y]
-        observation["opponent_previous_pos"] = [opponent_previous_x, opponent_previous_y]
+        observation["opponent_previous_pos"] = [
+            opponent_previous_x,
+            opponent_previous_y,
+        ]
         observation["field_width"] = self.field_width
         observation["field_height"] = self.field_height
 
@@ -171,7 +174,11 @@ class ObservationProcessor:
 
     def _encode_bonus_type(self, bonus_type: str) -> float:
         """Encodes bonus type to numeric value"""
-        encoding = {"enlarge_paddle": 1.0, "shrink_opponent": 2.0, "rotating_paddle": 3.0}
+        encoding = {
+            "enlarge_paddle": 1.0,
+            "shrink_opponent": 2.0,
+            "rotating_paddle": 3.0,
+        }
         return encoding.get(bonus_type, 0.0)
 
 
@@ -252,7 +259,8 @@ class RewardCalculator:
             return 0.0
 
         field_bounds = game_state.get(
-            "field_bounds", (0.0, game_config.FIELD_WIDTH, 0.0, game_config.FIELD_HEIGHT)
+            "field_bounds",
+            (0.0, game_config.FIELD_WIDTH, 0.0, game_config.FIELD_HEIGHT),
         )
         paddle_center_x, paddle_center_y, previous_center_y, paddle_height = (
             self._phase3_paddle_geometry(game_state, player_id)
@@ -273,7 +281,11 @@ class RewardCalculator:
 
         if ai_config.DEBUG_OPTIMAL_POINTS:
             self._debug_optimal_point(
-                player_id, ball_pos, ball_vel, (paddle_center_x, paddle_center_y), optimal_point
+                player_id,
+                ball_pos,
+                ball_vel,
+                (paddle_center_x, paddle_center_y),
+                optimal_point,
             )
 
         current_distance = abs(intercept_y - paddle_center_y)
@@ -425,7 +437,11 @@ class RewardCalculator:
         # Debug display of optimal points
         if ai_config.DEBUG_OPTIMAL_POINTS:
             self._debug_optimal_point(
-                player_id, ball_pos, ball_vel, (paddle_center_x, paddle_center_y), optimal_point
+                player_id,
+                ball_pos,
+                ball_vel,
+                (paddle_center_x, paddle_center_y),
+                optimal_point,
             )
 
         # Calculate current distance to optimal interception point
@@ -518,7 +534,12 @@ class RewardCalculator:
             trajectory_points, paddle_pos, player_id, paddle_height
         )
         interception = self._find_earliest_reachable_interception(
-            trajectory_points, paddle_pos, field_bounds, player_id, y_only, paddle_height
+            trajectory_points,
+            paddle_pos,
+            field_bounds,
+            player_id,
+            y_only,
+            paddle_height,
         )
         if interception is None:
             self._last_interception_details.pop(player_id, None)
@@ -598,13 +619,25 @@ class RewardCalculator:
 
             interval_start, interval_end = segment_interval
             candidate = self._interception_candidate_at_time(
-                start, end, interval_start, field_bounds, player_id, paddle_pos, paddle_height
+                start,
+                end,
+                interval_start,
+                field_bounds,
+                player_id,
+                paddle_pos,
+                paddle_height,
             )
             if candidate is not None and self._can_reach_interception(candidate, paddle_pos, False):
                 return candidate
 
             end_candidate = self._interception_candidate_at_time(
-                start, end, interval_end, field_bounds, player_id, paddle_pos, paddle_height
+                start,
+                end,
+                interval_end,
+                field_bounds,
+                player_id,
+                paddle_pos,
+                paddle_height,
             )
             if end_candidate is None or not self._can_reach_interception(
                 end_candidate, paddle_pos, False

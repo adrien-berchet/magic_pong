@@ -197,7 +197,12 @@ class RecordingPretrainingAgent:
         return action
 
     def remember(
-        self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
     ) -> None:
         self.memory.append((state, action, reward, next_state, done))
 
@@ -220,7 +225,10 @@ def _normalized_heuristic_observation() -> dict[str, Any]:
     return {
         "ball_pos": [480.0 / 800.0, 180.0 / 600.0],
         "player_pos": [160.0 / 800.0, 300.0 / 600.0],
-        "ball_vel": [240.0 / game_config.MAX_BALL_SPEED, -120.0 / game_config.MAX_BALL_SPEED],
+        "ball_vel": [
+            240.0 / game_config.MAX_BALL_SPEED,
+            -120.0 / game_config.MAX_BALL_SPEED,
+        ],
         "bonuses": [[200.0 / 800.0, 315.0 / 600.0, 1.0]],
         "field_width": 800.0,
         "field_height": 600.0,
@@ -284,7 +292,9 @@ def test_player2_dqn_adapter_matches_equivalent_player1_normalized_observation(
     assert adapted["field_height"] == canonical["field_height"]
 
 
-def test_game_engine_player2_dqn_mount_uses_canonical_hook_frame(monkeypatch: Any) -> None:
+def test_game_engine_player2_dqn_mount_uses_canonical_hook_frame(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", False)
     engine = GameEngine(headless=True)
     player2 = RecordingDQNLikePlayer()
@@ -335,7 +345,10 @@ def test_player2_dqn_info_filters_contacts_to_canonical_agent_frame() -> None:
     player2 = RecordingDQNLikePlayer()
     info = {
         "events": {
-            "paddle_hits": [{"player": 1, "kind": "opponent"}, {"player": 2, "kind": "agent"}],
+            "paddle_hits": [
+                {"player": 1, "kind": "opponent"},
+                {"player": 2, "kind": "agent"},
+            ],
             "rotating_paddle_hits": [{"player": 2, "kind": "agent_rotate"}],
             "goals": [{"player": 1}],
         },
@@ -724,7 +737,6 @@ def test_dqn_transition_uses_decision_time_state_and_stores_terminal(
         epsilon=0.0,
         batch_size=8,
         min_replay_size=1000,
-        training_mode="step_by_step",
     )
     monkeypatch.setattr(agent, "act", lambda *_args, **_kwargs: 5)
 
@@ -733,19 +745,13 @@ def test_dqn_transition_uses_decision_time_state_and_stores_terminal(
     decision_state = agent._observation_to_state(decision_obs)
     post_step_state = agent._observation_to_state(post_step_obs)
 
-    # With include_prev_action_in_state=True (the default), the replay buffer holds
-    # states extended with the previous-action one-hot.  On the first ever step the
-    # previous action is None → one-hot is all zeros.  On the next-state side the
-    # "previous action" is the action that was just taken (5).
-    expected_first_state = agent._extend_state(decision_state, None)
-    expected_first_next_state = agent._extend_state(post_step_state, 5)
-
     action = agent.get_action(decision_obs, explore=False)
     agent.on_step(post_step_obs, action, reward=1.25, done=False, info={})
 
     first_transition = agent.memory.buffer[0]
-    np.testing.assert_array_equal(first_transition.state, expected_first_state)
-    np.testing.assert_array_equal(first_transition.next_state, expected_first_next_state)
+    # State stored at decision time; next_state stored after the step
+    np.testing.assert_array_equal(first_transition.state, decision_state)
+    np.testing.assert_array_equal(first_transition.next_state, post_step_state)
     assert first_transition.action == 5
     assert first_transition.done is False
 
@@ -758,7 +764,9 @@ def test_dqn_transition_uses_decision_time_state_and_stores_terminal(
     assert agent.last_action is None
 
 
-def test_dqn_checkpoint_valid_metadata_loads_and_resets_pending_buffers(tmp_path: Any) -> None:
+def test_dqn_checkpoint_valid_metadata_loads_and_resets_pending_buffers(
+    tmp_path: Any,
+) -> None:
     pytest.importorskip("torch")
     from magic_pong.ai.models.dqn_ai import DQNAgent
 
@@ -772,8 +780,6 @@ def test_dqn_checkpoint_valid_metadata_loads_and_resets_pending_buffers(tmp_path
     loading_agent = DQNAgent(epsilon=1.0, batch_size=8, min_replay_size=1000)
     loading_agent.last_state = np.ones(32, dtype=np.float32)
     loading_agent.last_action = 3
-    loading_agent.episode_buffer.append({"state": "pending"})
-    loading_agent.episode_rewards.append(1.0)
 
     loading_agent.load_model(str(model_path))
 
@@ -783,8 +789,6 @@ def test_dqn_checkpoint_valid_metadata_loads_and_resets_pending_buffers(tmp_path
     assert loading_agent.reward_history == [1.5]
     assert loading_agent.last_state is None
     assert loading_agent.last_action is None
-    assert loading_agent.episode_buffer == []
-    assert loading_agent.episode_rewards == []
 
 
 @pytest.mark.parametrize(
@@ -819,7 +823,6 @@ def test_dqn_checkpoint_incompatible_metadata_rejected_before_pending_reset(
     loading_agent = DQNAgent(epsilon=1.0)
     loading_agent.last_state = np.ones(32, dtype=np.float32)
     loading_agent.last_action = 3
-    loading_agent.episode_buffer.append({"state": "pending"})
 
     with pytest.raises(DQNCheckpointError, match=error_match):
         loading_agent.load_model(str(invalid_path))
@@ -827,7 +830,6 @@ def test_dqn_checkpoint_incompatible_metadata_rejected_before_pending_reset(
     assert loading_agent.epsilon == pytest.approx(1.0)
     assert loading_agent.last_state is not None
     assert loading_agent.last_action == 3
-    assert loading_agent.episode_buffer == [{"state": "pending"}]
 
 
 def test_dqn_checkpoint_missing_metadata_is_rejected_as_legacy(tmp_path: Any) -> None:
@@ -909,7 +911,7 @@ def test_dqn_eval_can_explicitly_explore_without_learning(monkeypatch: Any) -> N
     from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
     from magic_pong.ai.models.dqn_ai import DQNAgent
 
-    agent = DQNAgent(epsilon=1.0, training_mode="step_by_step")
+    agent = DQNAgent(epsilon=1.0)
     agent.set_training_mode(False)
     agent.set_exploration_mode(True)
     monkeypatch.setattr("magic_pong.ai.models.dqn_ai.random.random", lambda: 0.0)
@@ -938,152 +940,3 @@ def test_dqn_rotating_paddle_angle_uses_unwrapped_radians() -> None:
         agent._observation_to_state(wrapped),
         agent._observation_to_state(unwrapped),
     )
-
-
-def test_tactical_reward_direction_uses_left_side_canonical_frame() -> None:
-    pytest.importorskip("torch")
-    from magic_pong.ai.models.dqn_ai import HybridRewardCalculator
-
-    calculator = HybridRewardCalculator()
-    action = Action(move_x=1.0, move_y=1.0)
-    approaching = {
-        "ball_pos": [0.12, 0.5],
-        "player_pos": [0.05, 0.5],
-        "ball_vel": [-0.4, 0.0],
-    }
-    moving_away = {
-        "ball_pos": [0.12, 0.5],
-        "player_pos": [0.05, 0.5],
-        "ball_vel": [0.4, 0.0],
-    }
-
-    assert calculator.calculate_tactical_reward(approaching, action, 0.0) > 0.0
-    assert calculator.calculate_tactical_reward(moving_away, action, 0.0) == pytest.approx(0.0)
-
-    raw_approaching = {
-        "ball_pos": [96.0, 300.0],
-        "player_pos": [20.0, 300.0],
-        "ball_vel": [-200.0, 0.0],
-        "field_width": 800.0,
-        "field_height": 600.0,
-    }
-    raw_moving_away = {
-        "ball_pos": [96.0, 300.0],
-        "player_pos": [20.0, 300.0],
-        "ball_vel": [200.0, 0.0],
-        "field_width": 800.0,
-        "field_height": 600.0,
-    }
-
-    assert calculator.calculate_tactical_reward(raw_approaching, action, 0.0) > 0.0
-    assert calculator.calculate_tactical_reward(raw_moving_away, action, 0.0) == pytest.approx(0.0)
-
-
-def test_strategic_defensive_reward_uses_left_side_canonical_frame() -> None:
-    pytest.importorskip("torch")
-    from magic_pong.ai.models.dqn_ai import HybridRewardCalculator
-
-    calculator = HybridRewardCalculator()
-    actions = [Action(move_x=0.0, move_y=0.0)] * 9
-    rewards = [0.0] * 9
-    defensive_observations = [
-        {
-            "ball_pos": [0.8, 0.4],
-            "player_pos": [0.05, 0.5],
-            "ball_vel": [0.2, 0.0],
-        }
-        for _ in range(9)
-    ]
-    approaching_observations = [
-        {
-            "ball_pos": [0.2, 0.4],
-            "player_pos": [0.05, 0.5],
-            "ball_vel": [-0.2, 0.0],
-        }
-        for _ in range(9)
-    ]
-
-    defensive_reward = calculator.calculate_strategic_reward(
-        rewards, defensive_observations, actions
-    )
-    approaching_reward = calculator.calculate_strategic_reward(
-        rewards, approaching_observations, actions
-    )
-
-    assert defensive_reward[-1] - approaching_reward[-1] == pytest.approx(0.4)
-
-    raw_defensive_observations = [
-        {
-            "ball_pos": [640.0, 240.0],
-            "player_pos": [20.0, 300.0],
-            "ball_vel": [200.0, 0.0],
-            "field_width": 800.0,
-            "field_height": 600.0,
-        }
-        for _ in range(9)
-    ]
-    raw_approaching_observations = [
-        {
-            "ball_pos": [160.0, 240.0],
-            "player_pos": [20.0, 300.0],
-            "ball_vel": [-200.0, 0.0],
-            "field_width": 800.0,
-            "field_height": 600.0,
-        }
-        for _ in range(9)
-    ]
-
-    raw_defensive_reward = calculator.calculate_strategic_reward(
-        rewards, raw_defensive_observations, actions
-    )
-    raw_approaching_reward = calculator.calculate_strategic_reward(
-        rewards, raw_approaching_observations, actions
-    )
-
-    assert raw_defensive_reward[-1] - raw_approaching_reward[-1] == pytest.approx(0.4)
-
-
-def test_strategic_rally_reward_uses_runtime_event_buckets() -> None:
-    pytest.importorskip("torch")
-    from magic_pong.ai.models.dqn_ai import HybridRewardCalculator
-
-    calculator = HybridRewardCalculator()
-    actions = [Action(move_x=0.0, move_y=0.0)] * 5
-    rewards = [0.0] * 5
-    observations = [
-        {
-            "ball_pos": [0.5, 0.5],
-            "player_pos": [0.05, 0.5],
-            "ball_vel": [-0.2, 0.0],
-            "events": {},
-        }
-        for _ in range(5)
-    ]
-    observations[3]["events"] = {"paddle_hits": [{"player": 1}]}
-
-    strategic_rewards = calculator.calculate_strategic_reward(rewards, observations, actions)
-
-    assert strategic_rewards[0] > 0.0
-
-
-def test_strategic_rally_reward_ignores_opponent_contact_events() -> None:
-    pytest.importorskip("torch")
-    from magic_pong.ai.models.dqn_ai import HybridRewardCalculator
-
-    calculator = HybridRewardCalculator()
-    actions = [Action(move_x=0.0, move_y=0.0)] * 5
-    rewards = [0.0] * 5
-    observations = [
-        {
-            "ball_pos": [0.5, 0.5],
-            "player_pos": [0.05, 0.5],
-            "ball_vel": [-0.2, 0.0],
-            "events": {},
-        }
-        for _ in range(5)
-    ]
-    observations[3]["events"] = {"paddle_hits": [{"player": 2}]}
-
-    strategic_rewards = calculator.calculate_strategic_reward(rewards, observations, actions)
-
-    assert strategic_rewards == pytest.approx([0.0] * 5)

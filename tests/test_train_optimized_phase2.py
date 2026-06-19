@@ -26,7 +26,7 @@ class FakeAgent:
         pass
 
     def get_training_stats(self) -> dict[str, Any]:
-        return {"dual_scale_training": False, "training_mode": "step_by_step", "memory_size": 0}
+        return {"memory_size": 0}
 
     def save_model(self, path: str) -> None:
         Path(path).write_text("fake checkpoint", encoding="utf-8")
@@ -103,7 +103,9 @@ def test_training_score_targets_parse_and_sample_deterministically() -> None:
         train_optimized.parse_training_score_targets("3,0")
 
 
-def test_warm_start_copies_legacy_overlap_without_prev_action_leak(tmp_path: Path) -> None:
+def test_warm_start_copies_legacy_overlap_without_prev_action_leak(
+    tmp_path: Path,
+) -> None:
     torch = pytest.importorskip("torch")
     from magic_pong.ai.models.dqn_ai import DQNAgent
 
@@ -147,17 +149,21 @@ def test_warm_start_copies_legacy_overlap_without_prev_action_leak(tmp_path: Pat
 
     train_optimized.warm_start_from_v1_checkpoint(agent, str(checkpoint_path))
 
-    after = agent.q_network.state_dict()
+    after = {k: v.cpu() for k, v in agent.q_network.state_dict().items()}
+    before_cpu = {k: v.cpu() for k, v in before.items()}
     expected_columns = torch.tensor(
         list(range(10)) + list(range(12, 32)), dtype=after["fc_layers.0.weight"].dtype
     )
     assert torch.all(after["fc_layers.0.weight"][:, :30] == expected_columns)
-    assert torch.allclose(after["fc_layers.0.weight"][:, 30:], before["fc_layers.0.weight"][:, 30:])
+    assert torch.allclose(
+        after["fc_layers.0.weight"][:, 30:], before_cpu["fc_layers.0.weight"][:, 30:]
+    )
     assert torch.all(after["fc_layers.0.bias"] == 2.0)
     assert torch.all(after["fc_layers.1.weight"] == 3.0)
     assert torch.all(after["fc_layers.1.bias"] == 4.0)
-    assert torch.allclose(after["output_layer.weight"], before["output_layer.weight"])
-    assert torch.all(after["output_layer.bias"] == 10.0)
+    # Output layer is never transferred in warm_start (representations are incompatible)
+    assert torch.allclose(after["output_layer.weight"], before_cpu["output_layer.weight"])
+    assert torch.allclose(after["output_layer.bias"], before_cpu["output_layer.bias"])
     assert agent.epsilon == pytest.approx(0.123)
     assert agent.training_step == 42
     assert agent.step_count == 7
@@ -244,11 +250,15 @@ def test_progressive_curriculum_uses_paddle_hit_reward_config(
     assert ai_config.PADDLE_HIT_REWARD == pytest.approx(original_paddle_hit_reward)
 
 
-def test_train_phase_samples_opponent_and_score_and_restores_config(monkeypatch: Any) -> None:
+def test_train_phase_samples_opponent_and_score_and_restores_config(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setattr(game_config, "MAX_SCORE", 11)
     monkeypatch.setattr(game_config, "BONUSES_ENABLED", True)
     monkeypatch.setattr(
-        train_optimized, "get_opponent", lambda opponent_name: FakeOpponent(opponent_name)
+        train_optimized,
+        "get_opponent",
+        lambda opponent_name: FakeOpponent(opponent_name),
     )
     observed: list[tuple[str, int, bool]] = []
 
@@ -284,7 +294,9 @@ def test_train_phase_restores_config_after_episode_error(monkeypatch: Any) -> No
     monkeypatch.setattr(game_config, "MAX_SCORE", 11)
     monkeypatch.setattr(game_config, "BONUSES_ENABLED", False)
     monkeypatch.setattr(
-        train_optimized, "get_opponent", lambda opponent_name: FakeOpponent(opponent_name)
+        train_optimized,
+        "get_opponent",
+        lambda opponent_name: FakeOpponent(opponent_name),
     )
 
     class RaisingManager:
@@ -311,7 +323,9 @@ def test_train_phase_restores_config_after_episode_error(monkeypatch: Any) -> No
     assert game_config.BONUSES_ENABLED is False
 
 
-def test_train_phase_uses_training_max_score_when_mix_disabled(monkeypatch: Any) -> None:
+def test_train_phase_uses_training_max_score_when_mix_disabled(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setattr(game_config, "MAX_SCORE", 11)
     monkeypatch.setattr(game_config, "BONUSES_ENABLED", True)
     observed: list[tuple[str, int, bool]] = []
@@ -473,7 +487,9 @@ def test_train_single_phase_evaluates_final_model_when_checkpoint_eval_enabled(
     assert captured["context"]["win_rate"] == 100
 
 
-def test_evaluate_final_performance_restores_score_when_setup_fails(monkeypatch: Any) -> None:
+def test_evaluate_final_performance_restores_score_when_setup_fails(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setattr(game_config, "MAX_SCORE", 11)
     monkeypatch.setattr(train_optimized, "get_opponent", lambda name: FakeOpponent(name))
 
@@ -498,7 +514,9 @@ def test_evaluate_final_performance_restores_score_when_setup_fails(monkeypatch:
     assert game_config.MAX_SCORE == 11
 
 
-def test_mixed_opponents_cli_requires_fine_tuning_mode_and_loaded_model(capsys: Any) -> None:
+def test_mixed_opponents_cli_requires_fine_tuning_mode_and_loaded_model(
+    capsys: Any,
+) -> None:
     with pytest.raises(SystemExit):
         train_optimized.parse_arguments(
             ["--mode", "curriculum", "--load_model", "model.pth", "--mixed_opponents"]

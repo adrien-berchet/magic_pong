@@ -6,15 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-CHECKPOINT_SCHEMA_VERSION = 3
+CHECKPOINT_SCHEMA_VERSION = 4
 EXPECTED_MODEL_TYPE = "magic_pong.dqn"
-EXPECTED_STATE_SCHEMA = "magic_pong.dqn_state.v3"
+EXPECTED_STATE_SCHEMA = "magic_pong.dqn_state.v4"
 EXPECTED_OBSERVATION_FRAME = "player1_dqn_frame"
 EXPECTED_ACTION_FRAME = "player1_dqn_frame"
 EXPECTED_STATE_SIZE = 30
 EXPECTED_ACTION_SIZE = 9
-# Network first-layer input = observation (30) + previous-action one-hot (9)
-EXPECTED_NETWORK_INPUT_SIZE = EXPECTED_STATE_SIZE + EXPECTED_ACTION_SIZE
+# Network first-layer input equals the observation size (vanilla DQN, no history)
+EXPECTED_NETWORK_INPUT_SIZE = EXPECTED_STATE_SIZE
 
 METADATA_KEY = "metadata"
 
@@ -37,9 +37,6 @@ REQUIRED_HYPERPARAMETER_KEYS = (
     "epsilon_min",
     "epsilon_decay",
     "batch_size",
-    "tau",
-    "use_prioritized_replay",
-    "include_prev_action_in_state",
 )
 
 REQUIRED_METADATA_KEYS = (
@@ -57,10 +54,6 @@ EXPECTED_DQN_STATE_DICT_SHAPES = {
     "fc_layers.0.bias": (256,),
     "fc_layers.1.weight": (128, 256),
     "fc_layers.1.bias": (128,),
-    "layer_norms.0.weight": (256,),
-    "layer_norms.0.bias": (256,),
-    "layer_norms.1.weight": (128,),
-    "layer_norms.1.bias": (128,),
     "output_layer.weight": (EXPECTED_ACTION_SIZE, 128),
     "output_layer.bias": (EXPECTED_ACTION_SIZE,),
 }
@@ -171,7 +164,7 @@ def get_dqn_checkpoint_validation_info(checkpoint: Any) -> DQNCheckpointValidati
             error=str(exc),
             warnings=(),
             metadata=metadata if isinstance(metadata, Mapping) else None,
-            hyperparameters=hyperparameters if isinstance(hyperparameters, Mapping) else None,
+            hyperparameters=(hyperparameters if isinstance(hyperparameters, Mapping) else None),
             training_step=checkpoint_mapping.get("training_step"),
             epsilon=checkpoint_mapping.get("epsilon"),
         )
@@ -234,12 +227,9 @@ def _validate_hyperparameters(hyperparameters: Any) -> Mapping[str, Any]:
         "hyperparameters.state_size", hyperparameters["state_size"], EXPECTED_STATE_SIZE
     )
     _validate_expected_value(
-        "hyperparameters.action_size", hyperparameters["action_size"], EXPECTED_ACTION_SIZE
-    )
-    _validate_expected_value(
-        "hyperparameters.include_prev_action_in_state",
-        hyperparameters["include_prev_action_in_state"],
-        True,
+        "hyperparameters.action_size",
+        hyperparameters["action_size"],
+        EXPECTED_ACTION_SIZE,
     )
 
     return hyperparameters
@@ -251,6 +241,14 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
     if not state_dict:
         raise DQNCheckpointError(f"Invalid DQN checkpoint {name}: state dict is empty")
 
+    # Schema v3 checkpoints contain LayerNorm weights; schema v4 removed them.
+    if "layer_norms.0.weight" in state_dict:
+        raise DQNCheckpointError(
+            f"Incompatible DQN checkpoint {name}: contains LayerNorm weights "
+            "(layer_norms.*) from schema v3. The architecture is now vanilla DQN "
+            "(no normalization). Use warm_start_from_v1_checkpoint to transfer weights."
+        )
+
     # Old 3-layer checkpoints (schema v1/v2) have fc_layers.2.* which no longer exist.
     # Inputs were also unnormalized then, so weights are incompatible regardless of shape.
     if "fc_layers.2.weight" in state_dict:
@@ -260,14 +258,16 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
             "inputs are normalized. Retrain from scratch."
         )
 
-    # Old 512-hidden-size checkpoints (schema v3) used hidden_size=512 giving [512, 256] layers.
+    # Old 512-hidden-size checkpoints used hidden_size=512 giving [512, 256] layers.
     # The architecture is now hidden_size=256 giving [256, 128] layers. Retrain from scratch.
     first_layer = state_dict.get("fc_layers.0.weight")
-    if first_layer is not None and _tensor_shape(first_layer) == (512, EXPECTED_NETWORK_INPUT_SIZE):
-        raise DQNCheckpointError(
-            f"Incompatible DQN checkpoint {name}: contains an old hidden_size=512 network "
-            "(schema v3). The architecture is now hidden_size=256. Retrain from scratch."
-        )
+    if first_layer is not None and _tensor_shape(first_layer) is not None:
+        shape = _tensor_shape(first_layer)
+        if shape is not None and shape[0] == 512:
+            raise DQNCheckpointError(
+                f"Incompatible DQN checkpoint {name}: contains an old hidden_size=512 network. "
+                "The architecture is now hidden_size=256. Retrain from scratch."
+            )
 
     missing_keys = [key for key in EXPECTED_DQN_STATE_DICT_SHAPES if key not in state_dict]
     if missing_keys:

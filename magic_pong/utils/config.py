@@ -30,7 +30,12 @@ class KeyboardLayout:
 KEYBOARD_LAYOUTS = {
     "qwerty": KeyboardLayout(
         name="QWERTY",
-        wasd_keys={"up": pygame.K_w, "down": pygame.K_s, "left": pygame.K_a, "right": pygame.K_d},
+        wasd_keys={
+            "up": pygame.K_w,
+            "down": pygame.K_s,
+            "left": pygame.K_a,
+            "right": pygame.K_d,
+        },
         arrow_keys={
             "up": pygame.K_UP,
             "down": pygame.K_DOWN,
@@ -57,7 +62,12 @@ KEYBOARD_LAYOUTS = {
     ),
     "qwertz": KeyboardLayout(
         name="QWERTZ",
-        wasd_keys={"up": pygame.K_w, "down": pygame.K_s, "left": pygame.K_a, "right": pygame.K_d},
+        wasd_keys={
+            "up": pygame.K_w,
+            "down": pygame.K_s,
+            "left": pygame.K_a,
+            "right": pygame.K_d,
+        },
         arrow_keys={
             "up": pygame.K_UP,
             "down": pygame.K_DOWN,
@@ -253,7 +263,9 @@ class AIConfig(BaseModel):
         default=0.02, ge=0, description="Penalty for being far from predicted intercept"
     )
     PHASE3_SUCCESSFUL_RETURN_REWARD: float = Field(
-        default=0.05, ge=0, description="Reward for returning the ball toward opponent side"
+        default=0.05,
+        ge=0,
+        description="Reward for returning the ball toward opponent side",
     )
     DEBUG_OPTIMAL_POINTS: bool = Field(default=False, description="Debug optimal points")
     SHOW_OPTIMAL_POINTS_GUI: bool = Field(default=False, description="Show optimal points in GUI")

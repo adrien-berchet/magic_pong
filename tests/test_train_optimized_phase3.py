@@ -21,7 +21,7 @@ class FakeAgent:
         pass
 
     def get_training_stats(self) -> dict[str, Any]:
-        return {"dual_scale_training": False, "training_mode": "step_by_step", "memory_size": 0}
+        return {"memory_size": 0}
 
 
 class FakeOpponent:

@@ -570,7 +570,7 @@ def _aggregate_by_opponent(
                 timeouts=timeouts,
                 win_rate=wins / episode_count if episode_count else 0.0,
                 avg_reward=_mean(rewards),
-                std_reward=float(statistics.pstdev(rewards)) if len(rewards) > 1 else 0.0,
+                std_reward=(float(statistics.pstdev(rewards)) if len(rewards) > 1 else 0.0),
                 min_reward=min(rewards) if rewards else 0.0,
                 max_reward=max(rewards) if rewards else 0.0,
                 avg_steps=_mean(steps),

@@ -145,7 +145,12 @@ class TrainingDummyAI(UnitObservationMixin, AIPlayer):
     to ensure the learning agent can focus purely on ball contact
     """
 
-    def __init__(self, name: str = "TrainingDummyAI", movement_factor: float = 0.02, **kwargs: Any):
+    def __init__(
+        self,
+        name: str = "TrainingDummyAI",
+        movement_factor: float = 0.02,
+        **kwargs: Any,
+    ):
         super().__init__(name=name, **kwargs)
         self.movement_factor = movement_factor  # Very small movement to add minimal variation
         self.center_x = 0.0  # Will be set based on player side
