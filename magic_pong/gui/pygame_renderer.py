@@ -334,7 +334,14 @@ class PygameRenderer:
             ],
         )
 
-    def draw_menu(self, menu_options: list[dict[str, Any]], selected_option: int = 0) -> None:
+    def draw_menu(
+        self,
+        menu_options: list[dict[str, Any]],
+        selected_option: int = 0,
+        title: str = "Magic Pong",
+        subtitle: str = "Choose a mode or open the control panel",
+        hint_esc: str = "Quit",
+    ) -> None:
         """Draw the main menu as a two-panel control surface."""
         self.screen.fill((7, 10, 15))
 
@@ -360,12 +367,10 @@ class PygameRenderer:
             footer_height,
         )
 
-        title_surface = self.font_config_title.render("Magic Pong", True, self.text_color)
+        title_surface = self.font_config_title.render(title, True, self.text_color)
         self.screen.blit(title_surface, (margin, 24))
 
-        subtitle_surface = self.font_config_hint.render(
-            "Choose a mode or open the control panel", True, (154, 166, 184)
-        )
+        subtitle_surface = self.font_config_hint.render(subtitle, True, (154, 166, 184))
         subtitle_rect = subtitle_surface.get_rect()
         subtitle_rect.midleft = (margin + 214, 47)
         self.screen.blit(subtitle_surface, subtitle_rect)
@@ -380,7 +385,7 @@ class PygameRenderer:
             [
                 ("UP/DOWN", "Navigate"),
                 ("ENTER/SPACE", "Select"),
-                ("ESC", "Quit"),
+                ("ESC", hint_esc),
             ],
         )
 
@@ -552,7 +557,11 @@ class PygameRenderer:
             self.screen.blit(value_surface, value_rect)
 
     def draw_model_selection_menu(
-        self, available_models: list[dict[str, Any]], selected_model: int = 0
+        self,
+        available_models: list[dict[str, Any]],
+        selected_model: int = 0,
+        title: str = "Model Browser",
+        subtitle: str = "Choose a trained checkpoint for the DQN opponent",
     ) -> None:
         """Draw the trained model browser as a two-panel control surface."""
         self.screen.fill((7, 10, 15))
@@ -581,12 +590,10 @@ class PygameRenderer:
             footer_height,
         )
 
-        title_surface = self.font_config_title.render("Model Browser", True, self.text_color)
+        title_surface = self.font_config_title.render(title, True, self.text_color)
         self.screen.blit(title_surface, (margin, 24))
 
-        subtitle_surface = self.font_config_hint.render(
-            "Choose a trained checkpoint for the DQN opponent", True, (154, 166, 184)
-        )
+        subtitle_surface = self.font_config_hint.render(subtitle, True, (154, 166, 184))
         subtitle_rect = subtitle_surface.get_rect()
         subtitle_rect.midleft = (margin + 250, 47)
         self.screen.blit(subtitle_surface, subtitle_rect)

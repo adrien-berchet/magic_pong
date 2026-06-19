@@ -41,6 +41,7 @@ class GameMode(Enum):
     ONE_VS_AI = "1vAI"
     LOAD_MODEL = "load_model"
     AI_DEMO = "demo"
+    WATCH_AI = "watch_ai"
     CONFIG = "config"
 
 
@@ -60,6 +61,8 @@ class GameState(Enum):
 
     MENU = "menu"
     MODEL_SELECTION = "model_selection"
+    WATCH_P1_SELECT = "watch_p1_select"
+    WATCH_P2_SELECT = "watch_p2_select"
     CONFIG_CATEGORY = "config_category"
     CONFIG_OPTIONS = "config_options"
     CONFIG_CONFIRM = "config_confirm"
@@ -107,6 +110,17 @@ class GameOverMenuAction:
     title: str
     description: str
     details: tuple[tuple[str, str], ...]
+
+
+_WATCH_AI_TYPES: tuple[tuple[str, str], ...] = (
+    ("dqn", "Load DQN Model..."),
+    ("follow_ball", "Follow Ball AI"),
+    ("defensive", "Defensive AI"),
+    ("aggressive", "Aggressive AI"),
+    ("predictive", "Predictive AI"),
+    ("random", "Random AI"),
+    ("dummy", "Dummy AI"),
+)
 
 
 class MagicPongApp:
@@ -166,6 +180,17 @@ class MagicPongApp:
                 "Watch the simple and defensive AI players compete without human input.",
                 (
                     ("Players", "Simple AI vs Defensive AI"),
+                    ("Controls", "Watch mode"),
+                    ("Status", "Ready"),
+                ),
+            ),
+            MainMenuOption(
+                "Watch AI vs AI",
+                GameMode.WATCH_AI,
+                "Watch Any AI Match",
+                "Pick any two AI opponents — simple rules-based or trained DQN — and watch them play.",
+                (
+                    ("Players", "Any AI vs Any AI"),
                     ("Controls", "Watch mode"),
                     ("Status", "Ready"),
                 ),
@@ -268,6 +293,15 @@ class MagicPongApp:
         self.error_message: str | None = None
         self.error_timer: float = 0.0
 
+        # Watch AI vs AI selection state
+        self._watch_p1_idx: int = 0
+        self._watch_p2_idx: int = 0
+        self._watch_p1_type: str = "dqn"
+        self._watch_p2_type: str = "defensive"
+        self._watch_p1_model: str | None = None
+        self._watch_p2_model: str | None = None
+        self._watch_selecting_player: int = 0  # 0 = not in watch flow, 1 or 2 = which player
+
         # Players
         self.human_players: dict[int, HumanPlayer | None] = {1: None, 2: None}
 
@@ -330,6 +364,33 @@ class MagicPongApp:
             # AI vs AI
             ai_players[1] = SimpleAI("AI 1")
             ai_players[2] = DefensiveAI("AI 2")
+
+        elif mode == GameMode.WATCH_AI:
+            from magic_pong.ai.models.simple_ai import create_ai
+
+            watch_types = dict(_WATCH_AI_TYPES)
+
+            def _resolve_watch_player(
+                type_key: str, model_path: str | None, label: str
+            ) -> Player | None:
+                if type_key == "dqn":
+                    return self._create_trained_ai(model_path or "")
+                return create_ai(type_key, name=label)
+
+            p1_label = watch_types.get(self._watch_p1_type, self._watch_p1_type)
+            p2_label = watch_types.get(self._watch_p2_type, self._watch_p2_type)
+            ai_players[1] = _resolve_watch_player(
+                self._watch_p1_type, self._watch_p1_model, p1_label
+            )
+            ai_players[2] = _resolve_watch_player(
+                self._watch_p2_type, self._watch_p2_model, p2_label
+            )
+
+            if ai_players[1] is None or ai_players[2] is None:
+                print("Failed to create one or both watch AI players")
+                self.state = GameState.MENU
+                self.current_mode = GameMode.MENU
+                return
 
         # Set players in game engine
         player1 = self.human_players[1] or ai_players[1]
@@ -502,12 +563,16 @@ class MagicPongApp:
                     self.open_config_menu(GameState.MENU)
                 elif selected_mode == GameMode.LOAD_MODEL:
                     # Switch to model selection screen
+                    self._watch_selecting_player = 0
                     self.state = GameState.MODEL_SELECTION
                     self.model_selected = 0
                     if self.available_models:
                         print("Entering model selection mode")
                     else:
                         print("No trained models found!")
+                elif selected_mode == GameMode.WATCH_AI:
+                    self._watch_p1_idx = 0
+                    self.state = GameState.WATCH_P1_SELECT
                 else:
                     self.start_game_mode(selected_mode)
             elif event.key == pygame.K_ESCAPE:
@@ -531,7 +596,17 @@ class MagicPongApp:
 
                     if self.model_info["valid"]:
                         print(f"Loading model: {selected_model['name']}")
-                        self.start_game_mode(GameMode.LOAD_MODEL)
+                        if self._watch_selecting_player == 1:
+                            self._watch_p1_model = self.selected_model_path
+                            self._watch_p2_idx = 0
+                            self._watch_selecting_player = 0
+                            self.state = GameState.WATCH_P2_SELECT
+                        elif self._watch_selecting_player == 2:
+                            self._watch_p2_model = self.selected_model_path
+                            self._watch_selecting_player = 0
+                            self.start_game_mode(GameMode.WATCH_AI)
+                        else:
+                            self.start_game_mode(GameMode.LOAD_MODEL)
                     else:
                         error_msg = (
                             f"Cannot load '{selected_model['name']}': {self.model_info['error']}"
@@ -546,6 +621,50 @@ class MagicPongApp:
                 print("Returning to main menu")
             elif event.key == pygame.K_F1:
                 self.show_help = True
+
+    def handle_watch_player_select(self, event: pygame.event.Event, player_num: int) -> None:
+        """Handle AI type selection for Watch AI vs AI mode."""
+        if event.type != pygame.KEYDOWN:
+            return
+        idx = self._watch_p1_idx if player_num == 1 else self._watch_p2_idx
+        n = len(_WATCH_AI_TYPES)
+        if event.key == pygame.K_UP:
+            idx = (idx - 1) % n
+        elif event.key == pygame.K_DOWN:
+            idx = (idx + 1) % n
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            selected_type = _WATCH_AI_TYPES[idx][0]
+            if player_num == 1:
+                self._watch_p1_idx = idx
+                self._watch_p1_type = selected_type
+                if selected_type == "dqn":
+                    self._watch_selecting_player = 1
+                    self._discover_models()
+                    self.model_selected = 0
+                    self.state = GameState.MODEL_SELECTION
+                else:
+                    self._watch_p1_model = None
+                    self._watch_p2_idx = 0
+                    self.state = GameState.WATCH_P2_SELECT
+            else:
+                self._watch_p2_idx = idx
+                self._watch_p2_type = selected_type
+                if selected_type == "dqn":
+                    self._watch_selecting_player = 2
+                    self._discover_models()
+                    self.model_selected = 0
+                    self.state = GameState.MODEL_SELECTION
+                else:
+                    self._watch_p2_model = None
+                    self.start_game_mode(GameMode.WATCH_AI)
+            return
+        elif event.key == pygame.K_ESCAPE:
+            self.state = GameState.WATCH_P1_SELECT if player_num == 2 else GameState.MENU
+            return
+        if player_num == 1:
+            self._watch_p1_idx = idx
+        else:
+            self._watch_p2_idx = idx
 
     def handle_game_input(self, event: pygame.event.Event) -> None:
         """Handle input during gameplay"""
@@ -1007,6 +1126,12 @@ class MagicPongApp:
                 {"key": "UP/DOWN", "action": "Choose model"},
                 {"key": "ENTER/SPACE", "action": "Load model"},
             ]
+        if self.state in (GameState.WATCH_P1_SELECT, GameState.WATCH_P2_SELECT):
+            return [
+                {"key": "UP/DOWN", "action": "Choose AI type"},
+                {"key": "ENTER/SPACE", "action": "Confirm selection"},
+                {"key": "ESC", "action": "Back"},
+            ]
         if self.state == GameState.CONFIG_CATEGORY:
             return [
                 {"key": "UP/DOWN", "action": "Choose category"},
@@ -1050,7 +1175,7 @@ class MagicPongApp:
                 {"key": wasd_vertical, "action": "Player up/down"},
                 {"key": wasd_horizontal, "action": "Player left/right"},
             ]
-        if self.current_mode == GameMode.AI_DEMO:
+        if self.current_mode in (GameMode.AI_DEMO, GameMode.WATCH_AI):
             return [{"key": "-", "action": "Watch mode"}]
         return []
 
@@ -1072,6 +1197,7 @@ class MagicPongApp:
             GameMode.ONE_VS_AI: "1 vs AI",
             GameMode.LOAD_MODEL: "Trained Model",
             GameMode.AI_DEMO: "AI Demo",
+            GameMode.WATCH_AI: "Watch AI vs AI",
             GameMode.CONFIG: "Settings",
         }
         return labels[mode]
@@ -1081,6 +1207,8 @@ class MagicPongApp:
         labels = {
             GameState.MENU: "Main Menu",
             GameState.MODEL_SELECTION: "Model Browser",
+            GameState.WATCH_P1_SELECT: "Select Player 1",
+            GameState.WATCH_P2_SELECT: "Select Player 2",
             GameState.CONFIG_CATEGORY: "Settings",
             GameState.CONFIG_OPTIONS: "Settings",
             GameState.CONFIG_CONFIRM: "Confirm",
@@ -1251,6 +1379,55 @@ class MagicPongApp:
 
         return ", ".join(parts[:5])
 
+    def _build_watch_select_data(self, player_num: int) -> list[dict[str, Any]]:
+        """Build renderer-friendly menu data for the watch-AI player type selector."""
+        model_count = len(self.available_models)
+        options_data = []
+        for type_key, label in _WATCH_AI_TYPES:
+            if type_key == "dqn":
+                available = model_count > 0
+                status = f"{model_count} model(s)" if model_count > 0 else "No models found"
+                description = (
+                    "Load a saved DQN checkpoint from the models/ directory "
+                    "and use it as this player."
+                )
+                details: list[dict[str, Any]] = [
+                    {"label": "Type", "value": "Deep Q-Network (trained)"},
+                    {
+                        "label": "Availability",
+                        "value": status,
+                        "tone": "success" if available else "error",
+                    },
+                ]
+            else:
+                available = True
+                status = "Ready"
+                descriptions = {
+                    "follow_ball": "Chases the ball directly. Fast but predictable.",
+                    "defensive": "Stays near its goal and predicts the ball trajectory.",
+                    "aggressive": "Pursues bonuses and attacks aggressively.",
+                    "predictive": "Predicts future ball position and intercepts it.",
+                    "random": "Moves completely at random. Good as a baseline.",
+                    "dummy": "Never moves. Useful to test the opponent's attack.",
+                }
+                description = descriptions.get(type_key, "Rule-based AI opponent.")
+                details = [
+                    {"label": "Type", "value": "Rule-based AI"},
+                    {"label": "Status", "value": "Ready"},
+                ]
+            options_data.append(
+                {
+                    "label": label,
+                    "mode": type_key,
+                    "title": label,
+                    "description": description,
+                    "details": details,
+                    "status": status,
+                    "available": available,
+                }
+            )
+        return options_data
+
     def _build_config_options_data(self, category: ConfigCategory) -> list[dict[str, Any]]:
         """Build renderer-friendly option data for a configuration category."""
         options_data = []
@@ -1275,8 +1452,44 @@ class MagicPongApp:
             self.renderer.draw_menu(self._build_main_menu_data(), self.menu_selected)
 
         elif self.state == GameState.MODEL_SELECTION:
+            if self._watch_selecting_player == 1:
+                model_title = "Model Browser  —  Player 1"
+                model_subtitle = "Choose the DQN checkpoint for the left side (Player 1)"
+            elif self._watch_selecting_player == 2:
+                p1_label = dict(_WATCH_AI_TYPES).get(self._watch_p1_type, self._watch_p1_type)
+                p1_model = os.path.basename(self._watch_p1_model) if self._watch_p1_model else ""
+                p1_summary = p1_label + (f"  ({p1_model})" if p1_model else "")
+                model_title = "Model Browser  —  Player 2"
+                model_subtitle = f"Player 1: {p1_summary}  |  Choose Player 2 DQN checkpoint"
+            else:
+                model_title = "Model Browser"
+                model_subtitle = "Choose a trained checkpoint for the DQN opponent"
             self.renderer.draw_model_selection_menu(
-                self._build_model_selection_data(), self.model_selected
+                self._build_model_selection_data(),
+                self.model_selected,
+                title=model_title,
+                subtitle=model_subtitle,
+            )
+
+        elif self.state == GameState.WATCH_P1_SELECT:
+            self.renderer.draw_menu(
+                self._build_watch_select_data(1),
+                self._watch_p1_idx,
+                title="Watch AI vs AI  —  Player 1",
+                subtitle="Choose the AI type for the left side (Player 1)",
+                hint_esc="Back to menu",
+            )
+
+        elif self.state == GameState.WATCH_P2_SELECT:
+            p1_label = dict(_WATCH_AI_TYPES).get(self._watch_p1_type, self._watch_p1_type)
+            p1_model = os.path.basename(self._watch_p1_model) if self._watch_p1_model else ""
+            p1_summary = f"{p1_label}" + (f"  ({p1_model})" if p1_model else "")
+            self.renderer.draw_menu(
+                self._build_watch_select_data(2),
+                self._watch_p2_idx,
+                title="Watch AI vs AI  —  Player 2",
+                subtitle=f"Player 1: {p1_summary}  |  Now choose Player 2 (right side)",
+                hint_esc="Back to Player 1",
             )
 
         elif self.state == GameState.CONFIG_CATEGORY:
@@ -1396,6 +1609,10 @@ class MagicPongApp:
                         self.handle_menu_input(event)
                     elif self.state == GameState.MODEL_SELECTION:
                         self.handle_model_selection_input(event)
+                    elif self.state == GameState.WATCH_P1_SELECT:
+                        self.handle_watch_player_select(event, 1)
+                    elif self.state == GameState.WATCH_P2_SELECT:
+                        self.handle_watch_player_select(event, 2)
                     elif self.state == GameState.CONFIG_CATEGORY:
                         self.handle_config_category_input(event)
                     elif self.state == GameState.CONFIG_OPTIONS:
