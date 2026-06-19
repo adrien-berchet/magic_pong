@@ -30,10 +30,10 @@ lint-fix: ## Automatically fix linting issues
 	ruff check --fix magic_pong/ tests/
 
 format: ## Format code with black
-	black magic_pong/ tests/
+	ruff format magic_pong/ tests/
 
 format-check: ## Check formatting without modifying files
-	black --check --diff magic_pong/ tests/
+	ruff format --check magic_pong/ tests/
 
 type-check: ## Check types with mypy
 	mypy magic_pong/
