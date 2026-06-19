@@ -23,29 +23,26 @@ test-cov: ## Run tests with code coverage
 test-all: ## Run all tests with tox
 	tox
 
-lint: ## Check code with ruff
-	ruff check magic_pong/ tests/
+lint: ## Check code with all pre-commit hooks
+	pre-commit run --all-files
 
-lint-fix: ## Automatically fix linting issues
-	ruff check --fix magic_pong/ tests/
+lint-fix: ## Automatically fix linting issues with pre-commit
+	pre-commit run --all-files
 
-format: ## Format code with black
-	ruff format magic_pong/ tests/
+format: ## Format code with ruff-format
+	pre-commit run ruff-format --all-files
 
 format-check: ## Check formatting without modifying files
-	ruff format --check magic_pong/ tests/
+	pre-commit run ruff-format --all-files
 
 type-check: ## Check types with mypy
 	mypy magic_pong/
 
-quality: ## Run all quality checks (lint, format, type-check)
+quality: ## Run all quality checks (alias to lint)
 	$(MAKE) lint
-	$(MAKE) format-check
-	$(MAKE) type-check
 
-quality-fix: ## Automatically fix quality issues
+quality-fix: ## Automatically fix quality issues (alias to lint-fix)
 	$(MAKE) lint-fix
-	$(MAKE) format
 
 clean: ## Clean temporary files
 	find . -type f -name "*.pyc" -delete
