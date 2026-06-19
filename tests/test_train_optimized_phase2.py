@@ -217,11 +217,11 @@ def test_progressive_curriculum_uses_paddle_hit_reward_config(
         phase_num: int,
         total_phases: int,
         start_episode: int = 0,
-    ) -> tuple[list[float], int, int]:
+    ) -> tuple[list[float], int, int, int]:
         assert total_phases == 4
         assert start_episode >= 0
         observed_rewards.append((phase_num, ai_config.PADDLE_HIT_REWARD))
-        return [1.0], 1, 1
+        return [1.0], 1, 2, 1
 
     monkeypatch.setattr(train_optimized, "TrainingManager", FakeTrainingManager)
     monkeypatch.setattr(train_optimized, "get_opponent", lambda name: FakeOpponent(name))
@@ -269,9 +269,13 @@ def test_train_phase_samples_opponent_and_score_and_restores_config(
         def train_episode(self, _agent: Any, opponent: Any, max_steps: int) -> dict[str, Any]:
             assert max_steps == 8
             observed.append((opponent.name, game_config.MAX_SCORE, game_config.BONUSES_ENABLED))
-            return {"total_reward_p1": 1.0, "winner": 1}
+            return {
+                "total_reward_p1": 1.0,
+                "winner": 1,
+                "events": [{"player": 1}, {"player": 1}],
+            }
 
-    rewards, wins, episodes = train_optimized.train_phase(
+    rewards, goals_for, goals, episodes = train_optimized.train_phase(
         FakeAgent(),
         FakeOpponent("fixed"),
         "mixed fine tuning",
@@ -281,7 +285,8 @@ def test_train_phase_samples_opponent_and_score_and_restores_config(
     )
 
     assert rewards == [1.0, 1.0, 1.0]
-    assert wins == 3
+    assert goals_for == 6
+    assert goals == 6
     assert episodes == 3
     assert {opponent for opponent, _score, _bonuses in observed} == {"dummy"}
     assert {score for _opponent, score, _bonuses in observed} <= {3, 5, 11}
@@ -449,7 +454,11 @@ def test_train_single_phase_evaluates_final_model_when_checkpoint_eval_enabled(
         def train_episode(self, _agent: Any, opponent: Any, max_steps: int) -> dict[str, Any]:
             assert opponent.name == "defensive"
             assert max_steps == 8
-            return {"total_reward_p1": 2.0, "winner": 1}
+            return {
+                "total_reward_p1": 2.0,
+                "winner": 1,
+                "events": [{"player": 1}],
+            }
 
         def cleanup(self) -> None:
             captured["cleanup"] = True
@@ -484,7 +493,7 @@ def test_train_single_phase_evaluates_final_model_when_checkpoint_eval_enabled(
     assert captured["eval_path"] == str(tmp_path / "fine_tuned_final.pth")
     assert captured["context"]["candidate_type"] == "final_model"
     assert captured["context"]["label"] == "single_phase_final"
-    assert captured["context"]["win_rate"] == 100
+    assert captured["context"]["point_win_rate"] == 100
 
 
 def test_evaluate_final_performance_restores_score_when_setup_fails(

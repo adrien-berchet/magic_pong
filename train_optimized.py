@@ -172,7 +172,15 @@ def get_ball_config_from_args(args):
 
 
 def save_checkpoint(
-    agent, episode, phase, total_episodes, rewards, wins, checkpoint_dir, prefix="checkpoint"
+    agent,
+    episode,
+    phase,
+    total_episodes,
+    rewards,
+    goals_for,
+    goals,
+    checkpoint_dir,
+    prefix="checkpoint",
 ):
     """Save a training checkpoint"""
     checkpoint_dir = Path(checkpoint_dir)
@@ -191,7 +199,8 @@ def save_checkpoint(
         "phase": phase,
         "total_episodes": total_episodes,
         "rewards": rewards,
-        "wins": wins,
+        "goals_for": goals_for,
+        "goals": goals,
         "epsilon": agent.epsilon,
         "timestamp": timestamp,
         "model_path": str(checkpoint_path),
@@ -860,7 +869,8 @@ def final_model_training_context(
     label: str,
     total_episodes: int,
     rewards: Sequence[float],
-    wins: int,
+    goals_for: int,
+    goals: int,
 ) -> dict[str, Any]:
     """Metadata used when evaluating a final saved model candidate."""
     recent_rewards = rewards[-100:] if len(rewards) >= 100 else rewards
@@ -869,8 +879,9 @@ def final_model_training_context(
         "mode": getattr(args, "mode", None),
         "label": label,
         "total_episodes": total_episodes,
-        "wins": wins,
-        "win_rate": wins / total_episodes * 100 if total_episodes > 0 else 0,
+        "goals_for": goals_for,
+        "goals": goals,
+        "point_win_rate": goals_for / goals * 100 if goals > 0 else 50.0,
         "avg_reward": float(np.mean(recent_rewards)) if recent_rewards else 0.0,
     }
 
@@ -937,8 +948,9 @@ def train_phase(
 
     try:
         rewards = []
-        wins = 0
-        wins_history = []  # Track wins per episode for recent win rate calculation
+        point_win_rates_history: list[float] = []
+        total_goals_for = 0
+        total_goals = 0
         best_avg_reward = float("-inf")
         episodes_since_improvement = 0
 
@@ -972,16 +984,21 @@ def train_phase(
                 episode_reward = episode_stats["total_reward_p1"]
                 rewards.append(episode_reward)
 
-                winner = episode_stats.get("winner", 0)
-                episode_won = 1 if winner == 1 else 0
-                wins_history.append(episode_won)
-                if winner == 1:
-                    wins += 1
+                episode_goals = episode_stats.get("events", [])
+                ep_goals_for = sum(1 for g in episode_goals if g.get("player") == 1)
+                ep_goals_against = sum(1 for g in episode_goals if g.get("player") == 2)
+                ep_total = ep_goals_for + ep_goals_against
+                episode_point_win_rate = ep_goals_for / ep_total if ep_total > 0 else 0.5
+                point_win_rates_history.append(episode_point_win_rate)
+                total_goals_for += ep_goals_for
+                total_goals += ep_total
 
                 # Debug info for troubleshooting
                 if args.verbose:
+                    winner = episode_stats.get("winner", 0)
                     print(
-                        f"    Episode {episode}: reward={episode_reward:.2f}, winner={winner}, agent_wins={wins}"
+                        f"    Episode {episode}: reward={episode_reward:.2f}, "
+                        f"points={ep_goals_for}/{ep_total} ({episode_point_win_rate * 100:.0f}%), winner={winner}"
                     )
 
                 # Progress reporting
@@ -989,19 +1006,21 @@ def train_phase(
                     recent_rewards = rewards[-args.log_interval :]
                     avg_reward = np.mean(recent_rewards)
 
-                    # Calculate recent win rate (same window as recent rewards)
-                    recent_wins = wins_history[-args.log_interval :]
-                    recent_win_rate = np.mean(recent_wins) * 100  # Convert to percentage
+                    # Calculate recent point win rate (same window as recent rewards)
+                    recent_rates = point_win_rates_history[-args.log_interval :]
+                    recent_win_rate = np.mean(recent_rates) * 100
 
-                    # Global win rate for comparison
-                    global_win_rate = wins / (episode - start_episode + 1) * 100
+                    # Global point win rate for comparison
+                    global_win_rate = (
+                        (total_goals_for / total_goals * 100) if total_goals > 0 else 50.0
+                    )
 
                     # Get detailed training statistics
                     training_stats = agent.get_training_stats()
 
                     base_info = (
                         f"  Episode {episode}: avg reward = {avg_reward:.2f}, "
-                        f"win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
+                        f"point win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
                     )
                     print(base_info)
                     if args.verbose:
@@ -1026,7 +1045,8 @@ def train_phase(
                         phase_num,
                         start_episode + episodes,
                         rewards,
-                        wins,
+                        total_goals_for,
+                        total_goals,
                         args.checkpoint_dir,
                     )
                     eval_path = maybe_save_checkpoint_evaluation(
@@ -1062,12 +1082,12 @@ def train_phase(
 
         final_episodes = len(rewards)
         avg_reward = np.mean(rewards[-100:]) if len(rewards) >= 100 else np.mean(rewards)
-        win_rate = wins / final_episodes * 100 if final_episodes > 0 else 0
+        point_win_rate = (total_goals_for / total_goals * 100) if total_goals > 0 else 50.0
 
         print(f"✅ Phase {phase_num} completed:")
         print(f"   Episodes: {final_episodes}")
         print(f"   Average reward: {avg_reward:.2f}")
-        print(f"   Win rate: {win_rate:.1f}% ({wins}/{final_episodes} wins)")
+        print(f"   Point win rate: {point_win_rate:.1f}% ({total_goals_for}/{total_goals} points)")
 
         # Debug: show some reward statistics
         if rewards:
@@ -1075,7 +1095,7 @@ def train_phase(
                 f"   Reward stats: min={min(rewards):.2f}, max={max(rewards):.2f}, std={np.std(rewards):.2f}"
             )
 
-        return rewards, wins, final_episodes
+        return rewards, total_goals_for, total_goals, final_episodes
 
     finally:
         # Restaurer la configuration originale
@@ -1117,7 +1137,7 @@ def train_with_curriculum(agent, args):
 
     # Phase 1: Basic training
     phase1_opponent = get_opponent(args.phase1_opponent)
-    phase1_rewards, phase1_wins, phase1_episodes = train_phase(
+    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes = train_phase(
         agent,
         phase1_opponent,
         f"Basic learning vs {args.phase1_opponent}",
@@ -1140,7 +1160,7 @@ def train_with_curriculum(agent, args):
         agent.epsilon_decay = 0.999
 
     phase2_opponent = get_opponent(args.phase2_opponent)
-    phase2_rewards, phase2_wins, phase2_episodes = train_phase(
+    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes = train_phase(
         agent,
         phase2_opponent,
         f"Advanced learning vs {args.phase2_opponent}",
@@ -1162,14 +1182,16 @@ def train_with_curriculum(agent, args):
         create_training_plots(
             phase1_rewards,
             phase2_rewards,
-            phase1_wins / phase1_episodes * 100 if phase1_episodes > 0 else 0,
-            phase2_wins / phase2_episodes * 100 if phase2_episodes > 0 else 0,
+            phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
+            phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
             args,
         )
 
     # Cleanup training manager
     training_manager.cleanup()
 
+    all_goals_for = phase1_goals_for + phase2_goals_for
+    all_goals = phase1_goals + phase2_goals
     maybe_save_checkpoint_evaluation(
         final_model_path,
         args,
@@ -1178,7 +1200,8 @@ def train_with_curriculum(agent, args):
             label="curriculum_final",
             total_episodes=phase1_episodes + phase2_episodes,
             rewards=phase1_rewards + phase2_rewards,
-            wins=phase1_wins + phase2_wins,
+            goals_for=all_goals_for,
+            goals=all_goals,
         ),
     )
 
@@ -1188,13 +1211,13 @@ def train_with_curriculum(agent, args):
         else np.mean(phase1_rewards)
         if phase1_rewards
         else 0,
-        "phase1_winrate": phase1_wins / phase1_episodes * 100 if phase1_episodes > 0 else 0,
+        "phase1_winrate": phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
         "phase2_avg": np.mean(phase2_rewards[-100:])
         if len(phase2_rewards) >= 100
         else np.mean(phase2_rewards)
         if phase2_rewards
         else 0,
-        "phase2_winrate": phase2_wins / phase2_episodes * 100 if phase2_episodes > 0 else 0,
+        "phase2_winrate": phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
         "total_episodes": phase1_episodes + phase2_episodes,
         "final_model_path": str(final_model_path),
     }
@@ -1211,7 +1234,7 @@ def train_single_phase(agent, args):
     )
     opponent = get_opponent(args.opponent)
 
-    rewards, wins, episodes = train_phase(
+    rewards, goals_for, goals, episodes = train_phase(
         agent,
         opponent,
         f"Training vs {args.opponent}",
@@ -1229,7 +1252,7 @@ def train_single_phase(agent, args):
 
     # Create training plots
     if args.save_plots:
-        create_single_phase_plots(rewards, wins / episodes * 100 if episodes > 0 else 0, args)
+        create_single_phase_plots(rewards, goals_for / goals * 100 if goals > 0 else 50.0, args)
 
     # Cleanup training manager
     training_manager.cleanup()
@@ -1242,7 +1265,8 @@ def train_single_phase(agent, args):
             label="single_phase_final",
             total_episodes=episodes,
             rewards=rewards,
-            wins=wins,
+            goals_for=goals_for,
+            goals=goals,
         ),
     )
 
@@ -1252,7 +1276,7 @@ def train_single_phase(agent, args):
         else np.mean(rewards)
         if rewards
         else 0,
-        "win_rate": wins / episodes * 100 if episodes > 0 else 0,
+        "win_rate": goals_for / goals * 100 if goals > 0 else 50.0,
         "total_episodes": episodes,
         "final_model_path": str(final_model_path),
     }
@@ -1316,7 +1340,7 @@ def train_progressive_curriculum(agent, args):
     game_config.FPS = 300.0
 
     phase1_opponent = get_opponent(args.phase1_training_opponent)
-    phase1_rewards, phase1_wins, phase1_episodes = train_phase(
+    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes = train_phase(
         agent,
         phase1_opponent,
         f"Ball contact training vs {args.phase1_training_opponent.replace('_', ' ').title()}",
@@ -1343,7 +1367,8 @@ def train_progressive_curriculum(agent, args):
         {
             "name": "Hit Ball",
             "rewards": phase1_rewards,
-            "wins": phase1_wins,
+            "goals_for": phase1_goals_for,
+            "goals": phase1_goals,
             "episodes": phase1_episodes,
             "objective": "Ball contact",
         }
@@ -1373,7 +1398,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
     phase2_opponent = get_opponent("defensive")
-    phase2_rewards, phase2_wins, phase2_episodes = train_phase(
+    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes = train_phase(
         agent,
         phase2_opponent,
         "Ball return training vs Defensive AI",
@@ -1393,7 +1418,8 @@ def train_progressive_curriculum(agent, args):
         {
             "name": "Return Ball",
             "rewards": phase2_rewards,
-            "wins": phase2_wins,
+            "goals_for": phase2_goals_for,
+            "goals": phase2_goals,
             "episodes": phase2_episodes,
             "objective": "Ball return",
         }
@@ -1419,7 +1445,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
     phase3_opponent = get_opponent("defensive")
-    phase3_rewards, phase3_wins, phase3_episodes = train_phase(
+    phase3_rewards, phase3_goals_for, phase3_goals, phase3_episodes = train_phase(
         agent,
         phase3_opponent,
         "Strategic play vs Defensive AI (no bonuses)",
@@ -1436,7 +1462,8 @@ def train_progressive_curriculum(agent, args):
         {
             "name": "Strategic Play",
             "rewards": phase3_rewards,
-            "wins": phase3_wins,
+            "goals_for": phase3_goals_for,
+            "goals": phase3_goals,
             "episodes": phase3_episodes,
             "objective": "Smart competition",
         }
@@ -1464,7 +1491,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Final epsilon: {agent.epsilon:.3f}")
 
     phase4_opponent = get_opponent("aggressive")
-    phase4_rewards, phase4_wins, phase4_episodes = train_phase(
+    phase4_rewards, phase4_goals_for, phase4_goals, phase4_episodes = train_phase(
         agent,
         phase4_opponent,
         "Master training vs Aggressive AI + Bonuses",
@@ -1481,7 +1508,8 @@ def train_progressive_curriculum(agent, args):
         {
             "name": "Master Play",
             "rewards": phase4_rewards,
-            "wins": phase4_wins,
+            "goals_for": phase4_goals_for,
+            "goals": phase4_goals,
             "episodes": phase4_episodes,
             "objective": "Full mastery",
         }
@@ -1503,6 +1531,8 @@ def train_progressive_curriculum(agent, args):
     # Cleanup training manager
     training_manager.cleanup()
 
+    all_goals_for = phase1_goals_for + phase2_goals_for + phase3_goals_for + phase4_goals_for
+    all_goals = phase1_goals + phase2_goals + phase3_goals + phase4_goals
     maybe_save_checkpoint_evaluation(
         final_model_path,
         args,
@@ -1511,7 +1541,8 @@ def train_progressive_curriculum(agent, args):
             label="progressive_final",
             total_episodes=total_episodes_count,
             rewards=phase1_rewards + phase2_rewards + phase3_rewards + phase4_rewards,
-            wins=phase1_wins + phase2_wins + phase3_wins + phase4_wins,
+            goals_for=all_goals_for,
+            goals=all_goals,
         ),
     )
 
@@ -1523,11 +1554,11 @@ def train_progressive_curriculum(agent, args):
         if phase4_rewards
         else 0
     )
-    final_winrate = phase4_wins / phase4_episodes * 100 if phase4_episodes > 0 else 0
+    final_winrate = phase4_goals_for / phase4_goals * 100 if phase4_goals > 0 else 50.0
 
     print("\n✨ PROGRESSIVE TRAINING COMPLETED ✨")
     print(f"Total episodes across all phases: {total_episodes_count}")
-    print(f"Final performance: {final_avg:.2f} avg reward, {final_winrate:.1f}% win rate")
+    print(f"Final performance: {final_avg:.2f} avg reward, {final_winrate:.1f}% point win rate")
 
     return agent, {
         "phase1_avg": np.mean(phase1_rewards[-50:])
@@ -1535,19 +1566,19 @@ def train_progressive_curriculum(agent, args):
         else np.mean(phase1_rewards)
         if phase1_rewards
         else 0,
-        "phase1_winrate": phase1_wins / phase1_episodes * 100 if phase1_episodes > 0 else 0,
+        "phase1_winrate": phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
         "phase2_avg": np.mean(phase2_rewards[-50:])
         if len(phase2_rewards) >= 50
         else np.mean(phase2_rewards)
         if phase2_rewards
         else 0,
-        "phase2_winrate": phase2_wins / phase2_episodes * 100 if phase2_episodes > 0 else 0,
+        "phase2_winrate": phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
         "phase3_avg": np.mean(phase3_rewards[-50:])
         if len(phase3_rewards) >= 50
         else np.mean(phase3_rewards)
         if phase3_rewards
         else 0,
-        "phase3_winrate": phase3_wins / phase3_episodes * 100 if phase3_episodes > 0 else 0,
+        "phase3_winrate": phase3_goals_for / phase3_goals * 100 if phase3_goals > 0 else 50.0,
         "phase4_avg": final_avg,
         "phase4_winrate": final_winrate,
         "total_episodes": total_episodes_count,
@@ -1627,8 +1658,8 @@ def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2
     colors = ["blue", "red"]
 
     bars = ax3.bar(phases, winrates, color=colors, alpha=0.7)
-    ax3.set_title("Win Rate by Phase")
-    ax3.set_ylabel("Win Rate (%)")
+    ax3.set_title("Point Win Rate by Phase")
+    ax3.set_ylabel("Point Win Rate (%)")
     ax3.set_ylim(0, 100)
 
     # Add values on bars
@@ -1740,14 +1771,14 @@ def create_progressive_training_plots(all_phase_data, args):
     avg_rewards = []
 
     for data in all_phase_data:
-        win_rate = data["wins"] / data["episodes"] * 100 if data["episodes"] > 0 else 0
+        win_rate = data["goals_for"] / data["goals"] * 100 if data.get("goals", 0) > 0 else 50.0
         win_rates.append(win_rate)
         avg_reward = np.mean(data["rewards"]) if data["rewards"] else 0
         avg_rewards.append(avg_reward)
 
     bars = ax2.bar(phase_names, win_rates, color=phase_colors, alpha=0.7)
-    ax2.set_title("Win Rate by Training Phase")
-    ax2.set_ylabel("Win Rate (%)")
+    ax2.set_title("Point Win Rate by Training Phase")
+    ax2.set_ylabel("Point Win Rate (%)")
     ax2.set_ylim(0, 100)
     ax2.tick_params(axis="x", rotation=45)
 
@@ -1860,11 +1891,15 @@ def create_phase_breakdown_plot(all_phase_data, args):
             y=mean_reward, color="red", linestyle="--", alpha=0.7, label=f"Mean: {mean_reward:.2f}"
         )
 
-        win_rate = phase_data["wins"] / phase_data["episodes"] * 100
+        win_rate = (
+            phase_data["goals_for"] / phase_data["goals"] * 100
+            if phase_data.get("goals", 0) > 0
+            else 50.0
+        )
 
         ax.set_title(
             f"Phase {i + 1}: {phase_data['name']}\n"
-            f"Win Rate: {win_rate:.1f}% | Objective: {phase_data['objective']}"
+            f"Point Win Rate: {win_rate:.1f}% | Objective: {phase_data['objective']}"
         )
         ax.set_xlabel("Episode")
         ax.set_ylabel("Reward")
@@ -1921,8 +1956,8 @@ def create_single_phase_plots(rewards, win_rate, args):
 
     # Win rate display
     ax3.bar(["Training"], [win_rate], color="blue", alpha=0.7)
-    ax3.set_title("Overall Win Rate")
-    ax3.set_ylabel("Win Rate (%)")
+    ax3.set_title("Overall Point Win Rate")
+    ax3.set_ylabel("Point Win Rate (%)")
     ax3.set_ylim(0, 100)
     ax3.text(0, win_rate + 2, f"{win_rate:.1f}%", ha="center", va="bottom")
     ax3.grid(True, alpha=0.3)
@@ -1998,8 +2033,8 @@ def create_single_phase_plots(rewards, win_rate, args):
 
     # Win rate display
     ax3.bar(["Training"], [win_rate], color="blue", alpha=0.7)
-    ax3.set_title("Overall Win Rate")
-    ax3.set_ylabel("Win Rate (%)")
+    ax3.set_title("Overall Point Win Rate")
+    ax3.set_ylabel("Point Win Rate (%)")
     ax3.set_ylim(0, 100)
     ax3.text(0, win_rate + 2, f"{win_rate:.1f}%", ha="center", va="bottom")
     ax3.grid(True, alpha=0.3)
