@@ -1155,6 +1155,15 @@ def train_phase(
                         agent, episode_opponent, max_steps=args.max_steps_per_episode
                     )
                 episode_reward = episode_stats["total_reward_p1"]
+
+                # Draw penalty: apply when episode timed out with no goals scored
+                _draw_penalty = getattr(args, "draw_penalty", 0.0)
+                if _draw_penalty != 0.0 and episode_stats.get("winner", 0) == 0:
+                    episode_goals_check = episode_stats.get("events", [])
+                    if not episode_goals_check:
+                        agent.add_terminal_reward(_draw_penalty)
+                        episode_reward += _draw_penalty
+
                 rewards.append(episode_reward)
 
                 episode_goals = episode_stats.get("events", [])
@@ -2724,6 +2733,18 @@ def parse_arguments(argv: list[str] | None = None):
             "Per-episode game parameter randomization: each of BALL_SPEED, PADDLE_SPEED, "
             "FIELD_HEIGHT is sampled uniformly in [base*(1-noise), base*(1+noise)]. "
             "0.0 = disabled (default). 0.2 = ±20%%."
+        ),
+    )
+
+    # Draw penalty
+    parser.add_argument(
+        "--draw_penalty",
+        type=float,
+        default=0.0,
+        help=(
+            "Reward applied when an episode ends by timeout with no goals scored (a draw). "
+            "Should be negative to discourage passive play, e.g. -0.3. "
+            "0.0 = disabled (default)."
         ),
     )
 

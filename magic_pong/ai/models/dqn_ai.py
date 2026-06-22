@@ -327,6 +327,19 @@ class DQNAgent(AIPlayer):
         """Add a transition to the replay buffer."""
         self.memory.add(state, action, reward, next_state, done)
 
+    def add_terminal_reward(self, extra_reward: float) -> None:
+        """Add extra reward to the most recently stored transition.
+
+        Used to apply post-episode outcomes (e.g. draw penalty) that are only
+        known after the episode ends, without changing the environment interface.
+        """
+        if not self.training_enabled or not self.memory.buffer:
+            return
+        last = self.memory.buffer[-1]
+        self.memory.buffer[-1] = Transition(
+            last.state, last.action, last.reward + extra_reward, last.next_state, last.done
+        )
+
     def act(
         self,
         state: np.ndarray,
@@ -424,8 +437,8 @@ class DQNAgent(AIPlayer):
                 "epsilon": self.epsilon,
                 "training_step": self.training_step,
                 "step_count": self.step_count,
-                "loss_history": self.loss_history,
-                "reward_history": self.reward_history,
+                "loss_history": self.loss_history[-1000:],
+                "reward_history": self.reward_history[-1000:],
                 "metadata": build_dqn_checkpoint_metadata(
                     state_size=self.state_size,
                     action_size=self.action_size,
