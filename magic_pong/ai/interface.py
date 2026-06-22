@@ -216,19 +216,20 @@ class RewardCalculator:
                 reward += ai_config.LOSE_PENALTY
 
         # Rewards for collected bonuses
+        micro_scale = ai_config.MICRO_REWARD_SCALE
         for bonus in events.get("bonus_collected", []):
             if bonus["player"] == player_id:
-                reward += ai_config.BONUS_REWARD
+                reward += ai_config.BONUS_REWARD * micro_scale
 
         # Rewards for hitting the ball
         for hit in events.get("paddle_hits", []):
             if hit["player"] == player_id:
-                reward += ai_config.PADDLE_HIT_REWARD
+                reward += ai_config.PADDLE_HIT_REWARD * micro_scale
 
         # Reward for rotating paddles
         for hit in events.get("rotating_paddle_hits", []):
             if hit["player"] == player_id:
-                reward += ai_config.PADDLE_HIT_REWARD * 2  # Bonus for using rotating paddle
+                reward += ai_config.PADDLE_HIT_REWARD * 2 * micro_scale
 
         if events.get("goals"):
             return reward

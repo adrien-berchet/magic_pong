@@ -101,6 +101,83 @@ class OpponentSampler:
         return selected_opponent.name, get_opponent(selected_opponent.name)
 
 
+class SelfPlaySampler:
+    """Dynamic opponent pool: rule-based AIs + a rolling buffer of DQN snapshots.
+
+    Rule-based AIs provide a stable training baseline from the start. DQN
+    snapshots are added periodically during training (via ``add_snapshot``)
+    and gradually displace the rule-based share as the pool fills up.
+    """
+
+    def __init__(
+        self,
+        base_mix: tuple[WeightedOpponent, ...],
+        rng: random.Random,
+        snapshot_dir: Path,
+        pool_size: int,
+        snapshot_weight: float,
+    ) -> None:
+        self.base_mix = base_mix
+        self.rng = rng
+        self.snapshot_dir = snapshot_dir
+        self.pool_size = pool_size
+        self.snapshot_weight = snapshot_weight
+        self._snapshots: list[str] = []
+        self._snap_counter = 0
+        # DQN opponents are cached after first load so torch.load() only runs once per snapshot.
+        self._dqn_cache: dict[str, object] = {}
+
+    def add_snapshot(self, agent: object) -> None:
+        """Save a frozen copy of *agent* and add it to the opponent pool."""
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        path = self.snapshot_dir / f"snap_{self._snap_counter:04d}.pth"
+        agent.save_model(str(path))  # type: ignore[attr-defined]
+        self._snapshots.append(str(path))
+        self._snap_counter += 1
+        if len(self._snapshots) > self.pool_size:
+            old = self._snapshots.pop(0)
+            self._dqn_cache.pop(old, None)
+            Path(old).unlink(missing_ok=True)
+        print(
+            f"  [self-play] snapshot {self._snap_counter} saved "
+            f"({len(self._snapshots)}/{self.pool_size} in pool)"
+        )
+
+    def _combined_pool(self) -> tuple[WeightedOpponent, ...]:
+        if not self._snapshots:
+            return self.base_mix
+        base_share = 1.0 - self.snapshot_weight
+        renorm = tuple(
+            WeightedOpponent(name=w.name, weight=w.weight * base_share) for w in self.base_mix
+        )
+        snap_each = self.snapshot_weight / len(self._snapshots)
+        snap_entries = tuple(
+            WeightedOpponent(name=f"dqn:{p}", weight=snap_each) for p in self._snapshots
+        )
+        return renorm + snap_entries
+
+    def _get_dqn_opponent(self, path: str) -> object:
+        """Return a cached frozen DQN agent, loading from disk only on first use."""
+        if path not in self._dqn_cache:
+            self._dqn_cache[path] = get_opponent(f"dqn:{path}")
+        return self._dqn_cache[path]
+
+    def next_opponent(self):
+        selected = sample_weighted_opponent(self._combined_pool(), self.rng)
+        name = selected.name
+        if name.startswith("dqn:"):
+            path = name[len("dqn:") :]
+            return name, self._get_dqn_opponent(path)
+        return name, get_opponent(name)
+
+    def cleanup(self) -> None:
+        """Delete all saved snapshot files."""
+        for path in self._snapshots:
+            Path(path).unlink(missing_ok=True)
+        self._snapshots.clear()
+        self._dqn_cache.clear()
+
+
 def get_pyplot():
     """Import matplotlib only when a plotting path is used."""
     import matplotlib.pyplot as plt
@@ -383,7 +460,22 @@ def warm_start_from_v1_checkpoint(agent: DQNAgent, checkpoint_path: str) -> None
 
 
 def get_opponent(opponent_type, player_id=2):
-    """Create opponent based on type"""
+    """Create opponent based on type.
+
+    Accepts either a name from AI_TYPES or the special form ``dqn:<path>`` to
+    load a frozen DQN checkpoint as a non-learning opponent.
+    """
+    if opponent_type.startswith("dqn:"):
+        model_path = opponent_type[len("dqn:") :]
+        opponent = DQNAgent(
+            state_size=EXPECTED_STATE_SIZE,
+            action_size=EXPECTED_ACTION_SIZE,
+        )
+        opponent.load_model(model_path)
+        opponent.set_training_mode(False)
+        opponent.name = f"dqn:{model_path}"
+        return opponent
+
     if opponent_type not in AI_TYPES:
         print(f"Warning: Unknown opponent type '{opponent_type}', using 'follow_ball'")
         opponent_type = "follow_ball"
@@ -589,6 +681,41 @@ def validate_pretrain_args(args) -> None:
         )
 
 
+def _validate_opponent_arg(args) -> None:
+    """Validate the --opponent argument for single-phase training."""
+    opponent = getattr(args, "opponent", None)
+    if opponent is None:
+        return
+    if opponent.startswith("dqn:"):
+        path = opponent[len("dqn:") :]
+        if not os.path.exists(path):
+            raise ValueError(f"DQN opponent model not found: {path!r}")
+        return
+    if opponent not in AI_TYPES:
+        valid = ", ".join(AI_TYPES)
+        raise ValueError(
+            f"Unknown opponent {opponent!r}. Use a named type ({valid}) "
+            "or 'dqn:<path>' to load a trained DQN checkpoint."
+        )
+
+
+def _validate_self_play_args(args) -> None:
+    """Validate self-play configuration flags."""
+    interval = getattr(args, "self_play_interval", 0)
+    if interval < 0:
+        raise ValueError("--self_play_interval must be >= 0")
+    if interval == 0:
+        return
+    if getattr(args, "mode", None) != "single":
+        raise ValueError("--self_play_interval is only supported with --mode single")
+    pool_size = getattr(args, "self_play_pool_size", 5)
+    if pool_size < 1:
+        raise ValueError("--self_play_pool_size must be >= 1")
+    weight = getattr(args, "self_play_weight", 0.5)
+    if not (0.0 <= weight < 1.0):
+        raise ValueError("--self_play_weight must be in [0.0, 1.0)")
+
+
 def _opponent_mix_from_args(args) -> tuple[WeightedOpponent, ...]:
     parsed_mix = getattr(args, "parsed_opponent_mix", None)
     if parsed_mix is not None:
@@ -713,6 +840,28 @@ def _checkpoint_eval_opponents(args) -> tuple[str, ...]:
     if "training_dummy" in opponents:
         raise ValueError("training_dummy cannot be used for deterministic checkpoint evaluation")
     return opponents
+
+
+_DOMAIN_RAND_PARAMS = ("BALL_SPEED", "PADDLE_SPEED", "FIELD_HEIGHT")
+
+
+@contextmanager
+def _domain_rand_context(args):
+    """Per-episode game parameter randomization (domain randomization)."""
+    noise = getattr(args, "domain_rand_noise", 0.0)
+    if noise <= 0.0:
+        yield
+        return
+
+    originals = {name: getattr(game_config, name) for name in _DOMAIN_RAND_PARAMS}
+    try:
+        for name, base in originals.items():
+            factor = 1.0 + random.uniform(-noise, noise)
+            setattr(game_config, name, type(base)(base * factor))
+        yield
+    finally:
+        for name, val in originals.items():
+            setattr(game_config, name, val)
 
 
 def checkpoint_evaluation_enabled(args) -> bool:
@@ -949,13 +1098,34 @@ def train_phase(
     try:
         rewards = []
         point_win_rates_history: list[float] = []
+        dqn_snap_win_rates: list[float] = []
+        rule_based_win_rates: list[float] = []
         total_goals_for = 0
         total_goals = 0
         best_avg_reward = float("-inf")
+        best_rule_win_rate = float("-inf")
+        best_model_path: Path | None = None
         episodes_since_improvement = 0
+
+        best_model_enabled = getattr(args, "save_best_model", True)
+        _best_model_file = (
+            Path(getattr(args, "output_dir", "."))
+            / f"{getattr(args, 'model_prefix', 'dqn')}_best.pth"
+        )
+
+        _anneal_episodes_arg = getattr(args, "micro_reward_anneal_episodes", 0)
+        anneal_episodes = _anneal_episodes_arg if _anneal_episodes_arg > 0 else episodes
+        anneal_enabled = getattr(args, "anneal_micro_rewards", False)
+        fixed_micro_scale = getattr(args, "micro_reward_scale", None)
+        if fixed_micro_scale is not None:
+            ai_config.MICRO_REWARD_SCALE = float(fixed_micro_scale)
 
         with temporary_reward_shaping_config(args):
             for episode in range(start_episode, start_episode + episodes):
+                if anneal_enabled:
+                    elapsed = episode - start_episode
+                    ai_config.MICRO_REWARD_SCALE = float(max(0.0, 1.0 - elapsed / anneal_episodes))
+
                 if hasattr(opponent_source, "next_opponent"):
                     episode_opponent_name, episode_opponent = opponent_source.next_opponent()
                     if score_targets:
@@ -977,7 +1147,10 @@ def train_phase(
 
                 agent.on_episode_start()
 
-                with temporary_game_config_value("MAX_SCORE", episode_max_score):
+                with (
+                    temporary_game_config_value("MAX_SCORE", episode_max_score),
+                    _domain_rand_context(args),
+                ):
                     episode_stats = training_manager.train_episode(
                         agent, episode_opponent, max_steps=args.max_steps_per_episode
                     )
@@ -990,6 +1163,10 @@ def train_phase(
                 ep_total = ep_goals_for + ep_goals_against
                 episode_point_win_rate = ep_goals_for / ep_total if ep_total > 0 else 0.5
                 point_win_rates_history.append(episode_point_win_rate)
+                if episode_opponent_name.startswith("dqn:"):
+                    dqn_snap_win_rates.append(episode_point_win_rate)
+                else:
+                    rule_based_win_rates.append(episode_point_win_rate)
                 total_goals_for += ep_goals_for
                 total_goals += ep_total
 
@@ -1018,20 +1195,65 @@ def train_phase(
                     # Get detailed training statistics
                     training_stats = agent.get_training_stats()
 
+                    recent_rb = rule_based_win_rates[-args.log_interval :]
+                    recent_dqn = dqn_snap_win_rates[-args.log_interval :]
+                    breakdown = ""
+                    if recent_rb and recent_dqn:
+                        breakdown = (
+                            f" [rule:{np.mean(recent_rb) * 100:.0f}%"
+                            f" / snap:{np.mean(recent_dqn) * 100:.0f}%]"
+                        )
+                    elif recent_rb:
+                        breakdown = f" [rule:{np.mean(recent_rb) * 100:.0f}%]"
+                    elif recent_dqn:
+                        breakdown = f" [snap:{np.mean(recent_dqn) * 100:.0f}%]"
                     base_info = (
                         f"  Episode {episode}: avg reward = {avg_reward:.2f}, "
-                        f"point win rate = {recent_win_rate:.1f}% (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
+                        f"point win rate = {recent_win_rate:.1f}%{breakdown}"
+                        f" (global: {global_win_rate:.1f}%), epsilon = {agent.epsilon:.3f}"
                     )
                     print(base_info)
                     if args.verbose:
                         print(f"    Memory: {training_stats['memory_size']} experiences")
 
-                    # Check for improvement
+                    # Check for improvement and save best model
                     if avg_reward > best_avg_reward:
                         best_avg_reward = avg_reward
                         episodes_since_improvement = 0
                     else:
                         episodes_since_improvement += args.log_interval
+
+                    if best_model_enabled and recent_rb:
+                        current_rule_wr = np.mean(recent_rb) * 100
+                        if current_rule_wr > best_rule_win_rate:
+                            best_rule_win_rate = current_rule_wr
+                            agent.save_model(str(_best_model_file))
+                            best_model_path = _best_model_file
+                            print(
+                                f"    ★ New best model saved ({current_rule_wr:.1f}% rule-based win rate)"
+                            )
+
+                # Self-play snapshot update
+                _self_play_interval = getattr(args, "self_play_interval", 0)
+                if (
+                    _self_play_interval > 0
+                    and hasattr(opponent_source, "add_snapshot")
+                    and (episode - start_episode) > 0
+                    and (episode - start_episode) % _self_play_interval == 0
+                ):
+                    snap_min_wr = getattr(args, "self_play_snapshot_min_win_rate", 0.0)
+                    window = point_win_rates_history[-_self_play_interval:]
+                    recent_wr = np.mean(window) * 100 if window else 50.0
+                    if recent_wr >= snap_min_wr:
+                        opponent_source.add_snapshot(agent)
+                    else:
+                        print(
+                            f"  [self-play] snapshot skipped: "
+                            f"win rate {recent_wr:.1f}% < {snap_min_wr:.1f}% threshold"
+                        )
+                    snap_epsilon_boost = getattr(args, "self_play_epsilon_boost", 0.0)
+                    if snap_epsilon_boost > 0:
+                        agent.epsilon = max(agent.epsilon, snap_epsilon_boost)
 
                 # Save checkpoint
                 if (
@@ -1088,6 +1310,8 @@ def train_phase(
         print(f"   Episodes: {final_episodes}")
         print(f"   Average reward: {avg_reward:.2f}")
         print(f"   Point win rate: {point_win_rate:.1f}% ({total_goals_for}/{total_goals} points)")
+        if best_model_path is not None:
+            print(f"   Best model (rule-based peak {best_rule_win_rate:.1f}%): {best_model_path}")
 
         # Debug: show some reward statistics
         if rewards:
@@ -1102,6 +1326,8 @@ def train_phase(
         game_config.MAX_SCORE = original_max_score
         if use_mixed_fine_tuning:
             game_config.BONUSES_ENABLED = original_bonuses_enabled
+        if anneal_enabled or fixed_micro_scale is not None:
+            ai_config.MICRO_REWARD_SCALE = 1.0
 
 
 def create_optimized_agent():
@@ -1232,12 +1458,35 @@ def train_single_phase(agent, args):
     training_manager = TrainingManager(
         headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
     )
-    opponent = get_opponent(args.opponent)
+
+    self_play_interval = getattr(args, "self_play_interval", 0)
+    if self_play_interval > 0:
+        base_mix = parse_opponent_mix(getattr(args, "self_play_base_mix", DEFAULT_OPPONENT_MIX_CLI))
+        mix_rng = random.Random(getattr(args, "opponent_mix_seed", 0))
+        snap_dir = Path(args.output_dir) / "self_play_snapshots"
+        opponent = SelfPlaySampler(
+            base_mix=base_mix,
+            rng=mix_rng,
+            snapshot_dir=snap_dir,
+            pool_size=args.self_play_pool_size,
+            snapshot_weight=args.self_play_weight,
+        )
+        phase_label = "Self-play training"
+        print(
+            f"[self-play] pool size={args.self_play_pool_size}, "
+            f"snapshot weight={args.self_play_weight:.0%}, "
+            f"update interval={self_play_interval} episodes"
+        )
+        base_summary = ", ".join(f"{w.name}:{w.weight:.2f}" for w in base_mix)
+        print(f"[self-play] base mix: {base_summary}")
+    else:
+        opponent = get_opponent(args.opponent)
+        phase_label = f"Training vs {args.opponent}"
 
     rewards, goals_for, goals, episodes = train_phase(
         agent,
         opponent,
-        f"Training vs {args.opponent}",
+        phase_label,
         args.total_episodes,
         training_manager,
         args,
@@ -1254,8 +1503,10 @@ def train_single_phase(agent, args):
     if args.save_plots:
         create_single_phase_plots(rewards, goals_for / goals * 100 if goals > 0 else 50.0, args)
 
-    # Cleanup training manager
+    # Cleanup
     training_manager.cleanup()
+    if isinstance(opponent, SelfPlaySampler):
+        opponent.cleanup()
 
     maybe_save_checkpoint_evaluation(
         final_model_path,
@@ -2393,8 +2644,116 @@ def parse_arguments(argv: list[str] | None = None):
         "--opponent",
         type=str,
         default="follow_ball",
-        choices=AI_TYPES,
-        help="Opponent type for single phase training",
+        help=(
+            "Opponent for single phase training. Either a named type "
+            f"({', '.join(AI_TYPES)}) or 'dqn:<path>' to use a frozen DQN checkpoint."
+        ),
+    )
+
+    # Self-play settings
+    parser.add_argument(
+        "--self_play_interval",
+        type=int,
+        default=0,
+        help=(
+            "Take a DQN snapshot every N episodes and add it to the opponent pool. "
+            "0 = disabled (default). Only applies to --mode single."
+        ),
+    )
+    parser.add_argument(
+        "--self_play_pool_size",
+        type=int,
+        default=5,
+        help="Maximum number of DQN snapshots kept in the self-play pool (oldest evicted first).",
+    )
+    parser.add_argument(
+        "--self_play_weight",
+        type=float,
+        default=0.5,
+        help=(
+            "Fraction of opponent sampling weight given to DQN snapshots (0.0–1.0). "
+            "The remainder goes to rule-based AIs from --self_play_base_mix."
+        ),
+    )
+    parser.add_argument(
+        "--self_play_base_mix",
+        type=str,
+        default=DEFAULT_OPPONENT_MIX_CLI,
+        help=(
+            "Rule-based AI mix used alongside DQN snapshots, in the same "
+            "'<name>:<weight>' format as --opponent_mix."
+        ),
+    )
+    parser.add_argument(
+        "--self_play_snapshot_min_win_rate",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum recent blended win rate (%%) required to add a self-play snapshot. "
+            "Prevents adding snapshots when the agent is regressing. "
+            "E.g. 68.0 means skip the snapshot unless recent win rate >= 68%%. "
+            "0 = always add (default, original behavior)."
+        ),
+    )
+    parser.add_argument(
+        "--self_play_epsilon_boost",
+        type=float,
+        default=0.0,
+        help=(
+            "After adding a self-play snapshot, set epsilon to at least this value "
+            "so the agent can re-explore against the new, harder opponent. "
+            "E.g. 0.15 gives a short burst of exploration. 0 = disabled (default)."
+        ),
+    )
+
+    # Best model tracking
+    parser.add_argument(
+        "--no_save_best_model",
+        dest="save_best_model",
+        action="store_false",
+        default=True,
+        help="Disable saving a separate _best.pth at the peak rule-based win rate (enabled by default).",
+    )
+
+    # Domain randomization
+    parser.add_argument(
+        "--domain_rand_noise",
+        type=float,
+        default=0.0,
+        help=(
+            "Per-episode game parameter randomization: each of BALL_SPEED, PADDLE_SPEED, "
+            "FIELD_HEIGHT is sampled uniformly in [base*(1-noise), base*(1+noise)]. "
+            "0.0 = disabled (default). 0.2 = ±20%%."
+        ),
+    )
+
+    # Reward annealing
+    parser.add_argument(
+        "--anneal_micro_rewards",
+        action="store_true",
+        help=(
+            "Linearly decay micro-rewards (hits, bonuses) to zero over training. "
+            "Only +1/-1 goal rewards remain at the end."
+        ),
+    )
+    parser.add_argument(
+        "--micro_reward_anneal_episodes",
+        type=int,
+        default=0,
+        help=(
+            "Number of episodes over which micro-rewards decay to zero. "
+            "Defaults to --total_episodes when --anneal_micro_rewards is set."
+        ),
+    )
+    parser.add_argument(
+        "--micro_reward_scale",
+        type=float,
+        default=None,
+        help=(
+            "Fixed scale for micro-rewards (hits, bonuses) throughout training. "
+            "0.0 = pure goal rewards only, 1.0 = full (default). "
+            "Overridden episode-by-episode when --anneal_micro_rewards is set."
+        ),
     )
 
     # Evaluation settings
@@ -2578,6 +2937,8 @@ def parse_arguments(argv: list[str] | None = None):
         validate_mixed_fine_tuning_args(args)
         validate_pretrain_args(args)
         validate_reward_shaping_args(args)
+        _validate_opponent_arg(args)
+        _validate_self_play_args(args)
         args.parsed_opponent_mix = parse_opponent_mix(args.opponent_mix)
         args.parsed_training_score_targets = parse_training_score_targets(args.training_score_mix)
         args.parsed_eval_gates = parse_eval_gates(args.eval_gates)

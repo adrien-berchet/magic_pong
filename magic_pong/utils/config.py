@@ -249,6 +249,12 @@ class AIConfig(BaseModel):
     PADDLE_HIT_REWARD: float = Field(
         default=0.1, description="Reward for hitting the ball with a paddle"
     )
+    MICRO_REWARD_SCALE: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Scale factor for micro-rewards (hits, bonuses). 1.0 = full, 0.0 = disabled.",
+    )
     USE_PROXIMITY_REWARD: bool = Field(default=False, description="Enable proximity rewards")
     PROXIMITY_REWARD_FACTOR: float = Field(default=0.01, ge=0, description="Proximity reward")
     PROXIMITY_PENALTY_FACTOR: float = Field(default=0.01, ge=0, description="Proximity penalty")
