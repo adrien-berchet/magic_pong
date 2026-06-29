@@ -706,8 +706,10 @@ def _validate_self_play_args(args) -> None:
         raise ValueError("--self_play_interval must be >= 0")
     if interval == 0:
         return
-    if getattr(args, "mode", None) != "single":
-        raise ValueError("--self_play_interval is only supported with --mode single")
+    if getattr(args, "mode", None) not in ("single", "pipeline"):
+        raise ValueError(
+            "--self_play_interval is only supported with --mode single or --mode pipeline"
+        )
     pool_size = getattr(args, "self_play_pool_size", 5)
     if pool_size < 1:
         raise ValueError("--self_play_pool_size must be >= 1")
@@ -1354,6 +1356,133 @@ def create_optimized_agent():
         train_frequency=1,
         min_replay_size=1000,
     )
+
+
+def _pipeline_args(args, **overrides):
+    """Return a shallow copy of args with the given overrides applied."""
+    import copy
+
+    p = copy.copy(args)
+    for k, v in overrides.items():
+        setattr(p, k, v)
+    return p
+
+
+def _pipeline_load_best(agent, path: Path, label: str) -> None:
+    """Load a best-model checkpoint if it exists, otherwise keep current weights."""
+    if path.exists():
+        agent.load_model(str(path))
+        print(f"[pipeline] Loaded {label} best model: {path}")
+    else:
+        print(f"[pipeline] No best model found at {path}, keeping current weights.")
+
+
+def train_pipeline(agent, args):
+    """Full training pipeline: pre-train → curriculum → anneal → self-play.
+
+    Each phase loads the best checkpoint from the previous phase so the
+    final model benefits from the peak of every stage.
+    """
+
+    output_dir = Path(args.output_dir)
+    prefix = args.model_prefix
+
+    def _ep(attr, fallback):
+        v = getattr(args, attr, 0)
+        return v if v > 0 else fallback
+
+    curriculum_ep = _ep("pipeline_curriculum_episodes", args.episodes_per_phase)
+    anneal_ep = _ep("pipeline_anneal_episodes", args.total_episodes)
+    selfplay_ep = _ep("pipeline_selfplay_episodes", args.total_episodes)
+
+    total_ep = 0
+
+    # ── Phase 1: Curriculum ────────────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print("PIPELINE — Phase 1: Curriculum training")
+    print(f"{'=' * 60}")
+    p1_prefix = f"{prefix}_p1_curriculum"
+    p1_args = _pipeline_args(
+        args,
+        mode="curriculum",
+        episodes_per_phase=curriculum_ep,
+        model_prefix=p1_prefix,
+        anneal_micro_rewards=False,
+        micro_reward_scale=None,
+        self_play_interval=0,
+        # disable pretrain here (already handled by caller if needed)
+        pretrain=False,
+    )
+    agent, p1_results = train_with_curriculum(agent, p1_args)
+    total_ep += p1_results.get("total_episodes", 0)
+    _pipeline_load_best(agent, output_dir / f"{p1_prefix}_best.pth", "curriculum")
+
+    # ── Phase 2: Reward annealing ──────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print("PIPELINE — Phase 2: Reward annealing (dense → sparse)")
+    print(f"{'=' * 60}")
+    p2_prefix = f"{prefix}_p2_anneal"
+    anneal_opponent = (
+        getattr(args, "pipeline_anneal_opponent", None)
+        or getattr(args, "phase2_opponent", None)
+        or getattr(args, "opponent", None)
+        or "follow_ball"
+    )
+    p2_args = _pipeline_args(
+        args,
+        mode="single",
+        total_episodes=anneal_ep,
+        model_prefix=p2_prefix,
+        opponent=anneal_opponent,
+        anneal_micro_rewards=True,
+        micro_reward_anneal_episodes=anneal_ep,
+        micro_reward_scale=None,
+        self_play_interval=0,
+        pretrain=False,
+        load_model=None,
+        load_checkpoint=None,
+    )
+    agent, p2_results = train_single_phase(agent, p2_args)
+    total_ep += p2_results.get("total_episodes", 0)
+    _pipeline_load_best(agent, output_dir / f"{p2_prefix}_best.pth", "annealing")
+
+    # ── Phase 3: Self-play ─────────────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print("PIPELINE — Phase 3: Self-play (pure goal rewards)")
+    print(f"{'=' * 60}")
+    p3_prefix = f"{prefix}_p3_selfplay"
+    sp_interval = getattr(args, "self_play_interval", 0) or 500
+    p3_args = _pipeline_args(
+        args,
+        mode="single",
+        total_episodes=selfplay_ep,
+        model_prefix=p3_prefix,
+        anneal_micro_rewards=False,
+        micro_reward_scale=0.0,
+        self_play_interval=sp_interval,
+        pretrain=False,
+        load_model=None,
+        load_checkpoint=None,
+    )
+    agent, p3_results = train_single_phase(agent, p3_args)
+    total_ep += p3_results.get("total_episodes", 0)
+
+    # Copy final best to top-level name for convenience
+    final_best = output_dir / f"{p3_prefix}_best.pth"
+    top_best = output_dir / f"{prefix}_pipeline_best.pth"
+    if final_best.exists():
+        import shutil
+
+        shutil.copy2(str(final_best), str(top_best))
+        print(f"\n[pipeline] Best self-play model → {top_best}")
+
+    return agent, {
+        "total_episodes": total_ep,
+        "final_model_path": p3_results.get("final_model_path", ""),
+        "curriculum_win_rate": p1_results.get("phase2_winrate", p1_results.get("win_rate", 0)),
+        "anneal_win_rate": p2_results.get("win_rate", 0),
+        "selfplay_win_rate": p3_results.get("win_rate", 0),
+    }
 
 
 def train_with_curriculum(agent, args):
@@ -2429,9 +2558,42 @@ def parse_arguments(argv: list[str] | None = None):
     # Training mode
     parser.add_argument(
         "--mode",
-        choices=["curriculum", "single", "continue", "progressive"],
+        choices=["curriculum", "single", "continue", "progressive", "pipeline"],
         default="curriculum",
-        help="Training mode: curriculum learning (2 phases), single phase, continue from checkpoint, or progressive (4 phases)",
+        help=(
+            "Training mode: "
+            "pipeline = full sequence (curriculum → anneal → self-play); "
+            "curriculum = 2-phase rule-based curriculum; "
+            "single = one training phase; "
+            "continue = resume from checkpoint; "
+            "progressive = 4-phase progressive curriculum."
+        ),
+    )
+
+    # Pipeline mode settings
+    parser.add_argument(
+        "--pipeline_curriculum_episodes",
+        type=int,
+        default=0,
+        help="Episodes for the curriculum phase in pipeline mode (0 = use --episodes_per_phase).",
+    )
+    parser.add_argument(
+        "--pipeline_anneal_episodes",
+        type=int,
+        default=0,
+        help="Episodes for the reward-annealing phase in pipeline mode (0 = use --total_episodes).",
+    )
+    parser.add_argument(
+        "--pipeline_selfplay_episodes",
+        type=int,
+        default=0,
+        help="Episodes for the self-play phase in pipeline mode (0 = use --total_episodes).",
+    )
+    parser.add_argument(
+        "--pipeline_anneal_opponent",
+        type=str,
+        default=None,
+        help="Opponent for the annealing phase in pipeline mode (default: --phase2_opponent).",
     )
 
     # Model and checkpoint management
@@ -3086,7 +3248,9 @@ def main(argv: list[str] | None = None):
         agent.epsilon = saved_epsilon
 
     # Training
-    if args.mode == "curriculum":
+    if args.mode == "pipeline":
+        agent, training_results = train_pipeline(agent, args)
+    elif args.mode == "curriculum":
         agent, training_results = train_with_curriculum(agent, args)
     elif args.mode == "single":
         agent, training_results = train_single_phase(agent, args)
@@ -3108,7 +3272,11 @@ def main(argv: list[str] | None = None):
     print(f"Training time: {training_time / 60:.1f} minutes")
     print(f"Total episodes: {training_results['total_episodes']}")
 
-    if args.mode == "curriculum":
+    if args.mode == "pipeline":
+        print(f"Curriculum win rate:  {training_results.get('curriculum_win_rate', 0):.1f}%")
+        print(f"Annealing win rate:   {training_results.get('anneal_win_rate', 0):.1f}%")
+        print(f"Self-play win rate:   {training_results.get('selfplay_win_rate', 0):.1f}%")
+    elif args.mode == "curriculum":
         print(
             f"Phase 1 - Avg reward: {training_results['phase1_avg']:.2f}, Win rate: {training_results['phase1_winrate']:.1f}%"
         )
