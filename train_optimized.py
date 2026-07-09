@@ -199,6 +199,8 @@ def create_agent_from_args(args):
         memory_size=args.memory_size,
         train_frequency=getattr(args, "train_frequency", 10),
         min_replay_size=getattr(args, "min_replay_size", 1000),
+        hidden_size=getattr(args, "hidden_size", 256),
+        layer_size=getattr(args, "layer_size", 2),
     )
 
 
@@ -467,9 +469,15 @@ def get_opponent(opponent_type, player_id=2):
     """
     if opponent_type.startswith("dqn:"):
         model_path = opponent_type[len("dqn:") :]
+        from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
+
+        ckpt = safe_torch_load(model_path)
+        hp = ckpt.get("hyperparameters", {})
         opponent = DQNAgent(
             state_size=EXPECTED_STATE_SIZE,
             action_size=EXPECTED_ACTION_SIZE,
+            hidden_size=int(hp.get("hidden_size", 256)),
+            layer_size=int(hp.get("layer_size", 2)),
         )
         opponent.load_model(model_path)
         opponent.set_training_mode(False)
@@ -1109,6 +1117,16 @@ def train_phase(
         best_model_path: Path | None = None
         episodes_since_improvement = 0
 
+        # Extended metric tracking
+        episode_lengths: list[int] = []
+        draw_flags: list[bool] = []
+        match_wins: list[bool] = []
+        goals_for_per_ep: list[int] = []
+        goals_against_per_ep: list[int] = []
+        _metric_snapshots: list[dict] = []
+        _probe_states = None  # torch.Tensor once populated
+        _track_q = getattr(args, "track_q_values", True)
+
         best_model_enabled = getattr(args, "save_best_model", True)
         _best_model_file = (
             Path(getattr(args, "output_dir", "."))
@@ -1181,6 +1199,28 @@ def train_phase(
                 total_goals_for += ep_goals_for
                 total_goals += ep_total
 
+                # Extended per-episode tracking
+                episode_lengths.append(episode_stats.get("steps", 0))
+                draw_flags.append(episode_stats.get("winner", 0) == 0 and ep_total == 0)
+                match_wins.append(episode_stats.get("winner", 0) == 1)
+                goals_for_per_ep.append(ep_goals_for)
+                goals_against_per_ep.append(ep_goals_against)
+
+                # Q-value probe: capture batch once the buffer is warm
+                if (
+                    _track_q
+                    and _probe_states is None
+                    and len(agent.memory) >= agent.min_replay_size
+                ):
+                    import torch
+
+                    from magic_pong.ai.models.dqn_ai import device as _dqn_device
+
+                    probe_samples = agent.memory.sample(min(256, len(agent.memory)))
+                    _probe_states = torch.FloatTensor(
+                        np.array([t.state for t in probe_samples])
+                    ).to(_dqn_device)
+
                 # Debug info for troubleshooting
                 if args.verbose:
                     winner = episode_stats.get("winner", 0)
@@ -1243,6 +1283,57 @@ def train_phase(
                             print(
                                 f"    ★ New best model saved ({current_rule_wr:.1f}% rule-based win rate)"
                             )
+
+                    # Collect interval snapshot for metrics JSON / detailed plot
+                    _ws = slice(-args.log_interval, None)
+                    mean_q_val = None
+                    if _track_q and _probe_states is not None:
+                        import torch
+
+                        with torch.no_grad():
+                            agent.q_network.eval()
+                            mean_q_val = float(
+                                agent.q_network(_probe_states).max(dim=1).values.mean().item()
+                            )
+                            agent.q_network.train()
+                    _metric_snapshots.append(
+                        {
+                            "episode": episode,
+                            "avg_reward": float(avg_reward),
+                            "point_win_rate": float(recent_win_rate / 100),
+                            "match_win_rate": (
+                                float(np.mean(match_wins[_ws])) if match_wins else None
+                            ),
+                            "rule_based_win_rate": (
+                                float(np.mean(recent_rb)) if recent_rb else None
+                            ),
+                            "snap_win_rate": (float(np.mean(recent_dqn)) if recent_dqn else None),
+                            "draw_rate": (float(np.mean(draw_flags[_ws])) if draw_flags else 0.0),
+                            "avg_goals_for": (
+                                float(np.mean(goals_for_per_ep[_ws])) if goals_for_per_ep else 0.0
+                            ),
+                            "avg_goals_against": (
+                                float(np.mean(goals_against_per_ep[_ws]))
+                                if goals_against_per_ep
+                                else 0.0
+                            ),
+                            "avg_episode_length": (
+                                float(np.mean(episode_lengths[_ws])) if episode_lengths else 0.0
+                            ),
+                            "epsilon": float(agent.epsilon),
+                            "td_loss": (
+                                float(np.mean(agent.loss_history[-100:]))
+                                if agent.loss_history
+                                else None
+                            ),
+                            "grad_norm": (
+                                float(np.mean(agent.grad_norm_history[-100:]))
+                                if agent.grad_norm_history
+                                else None
+                            ),
+                            "mean_q": mean_q_val,
+                        }
+                    )
 
                 # Self-play snapshot update
                 _self_play_interval = getattr(args, "self_play_interval", 0)
@@ -1330,7 +1421,7 @@ def train_phase(
                 f"   Reward stats: min={min(rewards):.2f}, max={max(rewards):.2f}, std={np.std(rewards):.2f}"
             )
 
-        return rewards, total_goals_for, total_goals, final_episodes
+        return rewards, total_goals_for, total_goals, final_episodes, _metric_snapshots
 
     finally:
         # Restaurer la configuration originale
@@ -1492,6 +1583,7 @@ def train_with_curriculum(agent, args):
     Phase 2: Advanced training (with bonuses and complexity)
     """
     print("=== CURRICULUM LEARNING TRAINING ===")
+    _t_start = time.time()
 
     # Get ball configuration
     ball_direction, ball_angle = get_ball_config_from_args(args)
@@ -1501,7 +1593,7 @@ def train_with_curriculum(agent, args):
 
     # Phase 1: Basic training
     phase1_opponent = get_opponent(args.phase1_opponent)
-    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes = train_phase(
+    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes, phase1_snapshots = train_phase(
         agent,
         phase1_opponent,
         f"Basic learning vs {args.phase1_opponent}",
@@ -1524,7 +1616,7 @@ def train_with_curriculum(agent, args):
         agent.epsilon_decay = 0.999
 
     phase2_opponent = get_opponent(args.phase2_opponent)
-    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes = train_phase(
+    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes, phase2_snapshots = train_phase(
         agent,
         phase2_opponent,
         f"Advanced learning vs {args.phase2_opponent}",
@@ -1549,6 +1641,20 @@ def train_with_curriculum(agent, args):
             phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
             phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
             args,
+        )
+        all_snapshots = phase1_snapshots + phase2_snapshots
+        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
+
+    if getattr(args, "save_metrics", True):
+        all_snapshots = phase1_snapshots + phase2_snapshots
+        save_metrics_json(
+            Path(args.output_dir),
+            args.model_prefix,
+            agent,
+            args,
+            all_snapshots,
+            time.time() - _t_start,
+            phase1_episodes + phase2_episodes,
         )
 
     # Cleanup training manager
@@ -1590,6 +1696,7 @@ def train_with_curriculum(agent, args):
 def train_single_phase(agent, args):
     """Training with a single phase (no curriculum)"""
     print("=== SINGLE PHASE TRAINING ===")
+    _t_start = time.time()
 
     # Get ball configuration
     ball_direction, ball_angle = get_ball_config_from_args(args)
@@ -1621,7 +1728,7 @@ def train_single_phase(agent, args):
         opponent = get_opponent(args.opponent)
         phase_label = f"Training vs {args.opponent}"
 
-    rewards, goals_for, goals, episodes = train_phase(
+    rewards, goals_for, goals, episodes, metric_snapshots = train_phase(
         agent,
         opponent,
         phase_label,
@@ -1640,6 +1747,18 @@ def train_single_phase(agent, args):
     # Create training plots
     if args.save_plots:
         create_single_phase_plots(rewards, goals_for / goals * 100 if goals > 0 else 50.0, args)
+        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, metric_snapshots)
+
+    if getattr(args, "save_metrics", True):
+        save_metrics_json(
+            Path(args.output_dir),
+            args.model_prefix,
+            agent,
+            args,
+            metric_snapshots,
+            time.time() - _t_start,
+            episodes,
+        )
 
     # Cleanup
     training_manager.cleanup()
@@ -1680,6 +1799,7 @@ def train_progressive_curriculum(agent, args):
     Phase 4: Master game with bonuses (vs predictive AI with bonuses enabled)
     """
     print("=== PROGRESSIVE 4-PHASE CURRICULUM LEARNING ===")
+    _t_start = time.time()
     print("Phase 1: Learning to hit the ball (vs stationary opponent)")
     print("Phase 2: Learning to return the ball")
     print("Phase 3: Playing vs intelligent AI")
@@ -1729,7 +1849,7 @@ def train_progressive_curriculum(agent, args):
     game_config.FPS = 300.0
 
     phase1_opponent = get_opponent(args.phase1_training_opponent)
-    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes = train_phase(
+    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes, phase1_snapshots = train_phase(
         agent,
         phase1_opponent,
         f"Ball contact training vs {args.phase1_training_opponent.replace('_', ' ').title()}",
@@ -1787,7 +1907,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
     phase2_opponent = get_opponent("defensive")
-    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes = train_phase(
+    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes, phase2_snapshots = train_phase(
         agent,
         phase2_opponent,
         "Ball return training vs Defensive AI",
@@ -1834,7 +1954,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
     phase3_opponent = get_opponent("defensive")
-    phase3_rewards, phase3_goals_for, phase3_goals, phase3_episodes = train_phase(
+    phase3_rewards, phase3_goals_for, phase3_goals, phase3_episodes, phase3_snapshots = train_phase(
         agent,
         phase3_opponent,
         "Strategic play vs Defensive AI (no bonuses)",
@@ -1880,7 +2000,7 @@ def train_progressive_curriculum(agent, args):
         print(f"Final epsilon: {agent.epsilon:.3f}")
 
     phase4_opponent = get_opponent("aggressive")
-    phase4_rewards, phase4_goals_for, phase4_goals, phase4_episodes = train_phase(
+    phase4_rewards, phase4_goals_for, phase4_goals, phase4_episodes, phase4_snapshots = train_phase(
         agent,
         phase4_opponent,
         "Master training vs Aggressive AI + Bonuses",
@@ -1916,6 +2036,20 @@ def train_progressive_curriculum(agent, args):
     # Create comprehensive training plots
     if args.save_plots:
         create_progressive_training_plots(all_phase_data, args)
+        all_snapshots = phase1_snapshots + phase2_snapshots + phase3_snapshots + phase4_snapshots
+        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
+
+    if getattr(args, "save_metrics", True):
+        all_snapshots = phase1_snapshots + phase2_snapshots + phase3_snapshots + phase4_snapshots
+        save_metrics_json(
+            Path(args.output_dir),
+            args.model_prefix,
+            agent,
+            args,
+            all_snapshots,
+            time.time() - _t_start,
+            total_episodes_count,
+        )
 
     # Cleanup training manager
     training_manager.cleanup()
@@ -2461,6 +2595,181 @@ def create_single_phase_plots(rewards, win_rate, args):
     print(f"📊 Training plots saved: {plots_path}")
 
 
+def save_metrics_json(
+    output_dir: Path,
+    model_prefix: str,
+    agent: DQNAgent,
+    args: Any,
+    snapshots: list[dict],
+    training_time_seconds: float,
+    total_episodes: int,
+) -> Path:
+    """Save per-interval training metrics to a JSON file for later analysis."""
+    path = output_dir / f"{model_prefix}_metrics.json"
+    keys = list(snapshots[0].keys()) if snapshots else []
+    per_interval = {k: [s[k] for s in snapshots] for k in keys}
+    payload = {
+        "metadata": {
+            "model_prefix": model_prefix,
+            "mode": getattr(args, "mode", "single"),
+            "architecture": {
+                "hidden_size": agent.hidden_size,
+                "layer_size": agent.layer_size,
+                "param_count": agent.param_count,
+            },
+            "hyperparameters": {
+                "lr": getattr(args, "lr", 0.001),
+                "gamma": getattr(args, "gamma", 0.99),
+                "batch_size": getattr(args, "batch_size", 64),
+                "epsilon_min": getattr(args, "epsilon_min", 0.01),
+                "memory_size": getattr(args, "memory_size", 10000),
+            },
+            "training_time_seconds": round(training_time_seconds, 1),
+            "total_episodes": total_episodes,
+            "inference_us": round(agent.benchmark_inference(), 2),
+        },
+        "per_interval": per_interval,
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(f"📊 Metrics saved: {path}")
+    return path
+
+
+def create_detailed_metrics_plot(
+    output_dir: Path,
+    model_prefix: str,
+    snapshots: list[dict],
+) -> None:
+    """Save a 4×2 detailed metrics plot covering all tracked training signals."""
+    if not snapshots:
+        return
+
+    plt = get_pyplot()
+    episodes = [s["episode"] for s in snapshots]
+
+    def _series(key: str) -> list:
+        return [s.get(key) for s in snapshots]
+
+    def _smooth(values: list, w: int = 5) -> list:
+        result = []
+        for i, v in enumerate(values):
+            if v is None:
+                result.append(None)
+                continue
+            window = [x for x in values[max(0, i - w + 1) : i + 1] if x is not None]
+            result.append(float(np.mean(window)) if window else None)
+        return result
+
+    def _plot_series(ax, x, y, label, color=None, secondary_ax=None, secondary_label=None):
+        valid = [(xi, yi) for xi, yi in zip(x, y) if yi is not None]
+        if not valid:
+            ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes, fontsize=14)
+            return
+        xs, ys = zip(*valid)
+        ax.plot(xs, ys, alpha=0.35, linewidth=0.8, color=color)
+        ax.plot(xs, _smooth(list(ys)), linewidth=1.5, label=label, color=color)
+
+    fig, axes = plt.subplots(4, 2, figsize=(14, 16))
+    fig.suptitle(f"Training Metrics — {model_prefix}", fontsize=14, fontweight="bold")
+
+    # [0,0] Point win rate
+    ax = axes[0, 0]
+    _plot_series(ax, episodes, _series("point_win_rate"), "Point win rate", color="steelblue")
+    rb = _series("rule_based_win_rate")
+    if any(v is not None for v in rb):
+        _plot_series(ax, episodes, rb, "vs rule-based", color="green")
+    sn = _series("snap_win_rate")
+    if any(v is not None for v in sn):
+        _plot_series(ax, episodes, sn, "vs snapshot", color="orange")
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax.set_ylim(0, 1)
+    ax.set_title("Point Win Rate")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Win rate")
+    ax.legend(fontsize=8)
+
+    # [0,1] Match win rate
+    ax = axes[0, 1]
+    _plot_series(ax, episodes, _series("match_win_rate"), "Match win rate", color="mediumorchid")
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax.set_ylim(0, 1)
+    ax.set_title("Match Win Rate")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Win rate")
+
+    # [1,0] TD loss
+    ax = axes[1, 0]
+    _plot_series(ax, episodes, _series("td_loss"), "TD loss", color="crimson")
+    ax.set_title("TD Loss (Bellman error)")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Loss")
+
+    # [1,1] Mean Q-value
+    ax = axes[1, 1]
+    _plot_series(ax, episodes, _series("mean_q"), "Mean Q", color="teal")
+    ax.set_title("Mean Q-Value (probe batch)")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Q-value")
+
+    # [2,0] Gradient norm
+    ax = axes[2, 0]
+    _plot_series(ax, episodes, _series("grad_norm"), "Grad norm", color="darkorange")
+    ax.set_title("Gradient Norm (pre-clip)")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("L2 norm")
+
+    # [2,1] Epsilon
+    ax = axes[2, 1]
+    _plot_series(ax, episodes, _series("epsilon"), "Epsilon", color="slategray")
+    ax.set_ylim(0, 1)
+    ax.set_title("Epsilon (exploration rate)")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Epsilon")
+
+    # [3,0] Draw rate + episode length (dual y-axis)
+    ax = axes[3, 0]
+    draw_valid = [
+        (e, s["draw_rate"]) for e, s in zip(episodes, snapshots) if s.get("draw_rate") is not None
+    ]
+    if draw_valid:
+        dx, dy = zip(*draw_valid)
+        ax.plot(dx, dy, color="salmon", alpha=0.5, linewidth=0.8)
+        ax.plot(dx, _smooth(list(dy)), color="salmon", linewidth=1.5, label="Draw rate")
+    ax.set_ylabel("Draw rate", color="salmon")
+    ax2 = ax.twinx()
+    len_valid = [
+        (e, s["avg_episode_length"])
+        for e, s in zip(episodes, snapshots)
+        if s.get("avg_episode_length") is not None
+    ]
+    if len_valid:
+        lx, ly = zip(*len_valid)
+        ax2.plot(lx, ly, color="royalblue", alpha=0.5, linewidth=0.8)
+        ax2.plot(lx, _smooth(list(ly)), color="royalblue", linewidth=1.5, label="Ep. length")
+        ax2.set_ylabel("Avg episode length", color="royalblue")
+    ax.set_title("Draw Rate & Episode Length")
+    ax.set_xlabel("Episode")
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
+
+    # [3,1] Goals for / against
+    ax = axes[3, 1]
+    _plot_series(ax, episodes, _series("avg_goals_for"), "Goals for", color="mediumseagreen")
+    _plot_series(ax, episodes, _series("avg_goals_against"), "Goals against", color="tomato")
+    ax.set_title("Avg Goals For / Against")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Goals per episode")
+    ax.legend(fontsize=8)
+
+    plt.tight_layout()
+    out_path = output_dir / f"{model_prefix}_detail.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"📊 Detailed metrics plot saved: {out_path}")
+
+
 def evaluate_final_performance(agent, args):
     """Final performance evaluation of the agent"""
     print(f"\n🎯 FINAL EVALUATION ({args.eval_episodes} episodes)")
@@ -2669,6 +2978,18 @@ def parse_arguments(argv: list[str] | None = None):
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
     parser.add_argument(
         "--memory_size", type=int, default=20000, help="Size of the replay memory buffer"
+    )
+    parser.add_argument(
+        "--hidden_size",
+        type=int,
+        default=256,
+        help="Hidden layer width of the Q-network (first layer; subsequent layers halve geometrically)",
+    )
+    parser.add_argument(
+        "--layer_size",
+        type=int,
+        default=2,
+        help="Number of hidden layers in the Q-network",
     )
     # Training configuration
     parser.add_argument(
@@ -3046,6 +3367,18 @@ def parse_arguments(argv: list[str] | None = None):
     # Output and logging
     parser.add_argument(
         "--save_plots", action="store_true", default=True, help="Save training progress plots"
+    )
+    parser.add_argument(
+        "--save_metrics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save per-interval metrics to {prefix}_metrics.json (default: on)",
+    )
+    parser.add_argument(
+        "--track_q_values",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Track mean Q-value on a probe batch during training (default: on)",
     )
     parser.add_argument(
         "--log_interval", type=int, default=50, help="Print progress every N episodes"

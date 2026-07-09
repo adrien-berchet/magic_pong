@@ -104,6 +104,8 @@ class DQNAgent(AIPlayer):
         train_frequency: int = 10,
         min_replay_size: int = 1000,
         target_update_frequency: int = 1000,
+        hidden_size: int = 256,
+        layer_size: int = 2,
         name: str = "DQN AI",
     ):
         """
@@ -147,9 +149,15 @@ class DQNAgent(AIPlayer):
         self._last_chosen_action: int | None = None
 
         self.step_count = 0
+        self.hidden_size = hidden_size
+        self.layer_size = layer_size
 
-        self.q_network = DQNNetwork(state_size, output_size=action_size).to(device)
-        self.target_network = DQNNetwork(state_size, output_size=action_size).to(device)
+        self.q_network = DQNNetwork(
+            state_size, hidden_size=hidden_size, output_size=action_size, layer_size=layer_size
+        ).to(device)
+        self.target_network = DQNNetwork(
+            state_size, hidden_size=hidden_size, output_size=action_size, layer_size=layer_size
+        ).to(device)
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
 
@@ -160,6 +168,7 @@ class DQNAgent(AIPlayer):
         self.training_step = 0
         self.loss_history: list[float] = []
         self.reward_history: list[float] = []
+        self.grad_norm_history: list[float] = []
 
     def get_action(self, observation: dict[str, Any] | None, explore: bool | None = None) -> Action:
         """Convert observation to action via the Q-network (or epsilon-greedy)."""
@@ -413,7 +422,8 @@ class DQNAgent(AIPlayer):
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+        self.grad_norm_history.append(float(grad_norm))
         self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
@@ -439,6 +449,7 @@ class DQNAgent(AIPlayer):
                 "step_count": self.step_count,
                 "loss_history": self.loss_history[-1000:],
                 "reward_history": self.reward_history[-1000:],
+                "grad_norm_history": self.grad_norm_history[-1000:],
                 "metadata": build_dqn_checkpoint_metadata(
                     state_size=self.state_size,
                     action_size=self.action_size,
@@ -451,6 +462,8 @@ class DQNAgent(AIPlayer):
                     "epsilon_min": self.epsilon_min,
                     "epsilon_decay": self.epsilon_decay,
                     "batch_size": self.batch_size,
+                    "hidden_size": self.hidden_size,
+                    "layer_size": self.layer_size,
                 },
             },
             filepath,
@@ -469,6 +482,7 @@ class DQNAgent(AIPlayer):
         self.step_count = checkpoint.get("step_count", 0)
         self.loss_history = checkpoint["loss_history"]
         self.reward_history = checkpoint["reward_history"]
+        self.grad_norm_history = checkpoint.get("grad_norm_history", [])
 
         if "hyperparameters" in checkpoint:
             hyperparams = checkpoint["hyperparameters"]
@@ -479,6 +493,8 @@ class DQNAgent(AIPlayer):
             self.epsilon_min = hyperparams["epsilon_min"]
             self.epsilon_decay = hyperparams["epsilon_decay"]
             self.batch_size = hyperparams["batch_size"]
+            self.hidden_size = hyperparams.get("hidden_size", 256)
+            self.layer_size = hyperparams.get("layer_size", 2)
 
         self._clear_pending_transition()
 
@@ -497,6 +513,23 @@ class DQNAgent(AIPlayer):
             ),
             "current_lr": self.optimizer.param_groups[0]["lr"],
         }
+
+    @property
+    def param_count(self) -> int:
+        """Total number of trainable parameters in the Q-network."""
+        return sum(p.numel() for p in self.q_network.parameters())
+
+    def benchmark_inference(self, n: int = 500) -> float:
+        """Return mean inference time in microseconds over n forward passes."""
+        import time
+
+        obs = np.zeros(self.state_size, dtype=np.float32)
+        for _ in range(10):
+            self.act(obs)
+        t0 = time.perf_counter()
+        for _ in range(n):
+            self.act(obs)
+        return (time.perf_counter() - t0) / n * 1e6
 
 
 # Actions mapped according to the game interface

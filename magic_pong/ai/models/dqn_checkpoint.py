@@ -60,6 +60,24 @@ EXPECTED_DQN_STATE_DICT_SHAPES = {
 EXPECTED_DQN_PARAMETER_COUNT = len(EXPECTED_DQN_STATE_DICT_SHAPES)
 
 
+def _compute_state_dict_shapes(
+    hidden_size: int,
+    layer_size: int,
+    state_size: int = EXPECTED_STATE_SIZE,
+    action_size: int = EXPECTED_ACTION_SIZE,
+) -> dict[str, tuple[int, ...]]:
+    """Return the expected state-dict key→shape mapping for a given architecture."""
+    layer_sizes = [hidden_size // (2**i) for i in range(layer_size)]
+    shapes: dict[str, tuple[int, ...]] = {}
+    for i in range(layer_size):
+        in_features = state_size if i == 0 else layer_sizes[i - 1]
+        shapes[f"fc_layers.{i}.weight"] = (layer_sizes[i], in_features)
+        shapes[f"fc_layers.{i}.bias"] = (layer_sizes[i],)
+    shapes["output_layer.weight"] = (action_size, layer_sizes[-1])
+    shapes["output_layer.bias"] = (action_size,)
+    return shapes
+
+
 class DQNCheckpointError(ValueError):
     """Raised when a DQN checkpoint does not match the supported contract."""
 
@@ -134,11 +152,26 @@ def validate_dqn_checkpoint(checkpoint: Any) -> DQNCheckpointValidation:
 
     hyperparameters = _validate_hyperparameters(checkpoint["hyperparameters"])
     metadata = validate_dqn_checkpoint_metadata(checkpoint.get(METADATA_KEY), hyperparameters)
-    _validate_network_state_dict("q_network_state_dict", checkpoint["q_network_state_dict"])
+    hidden_size: int = int(hyperparameters.get("hidden_size", 256))
+    layer_size: int = int(hyperparameters.get("layer_size", 2))
     _validate_network_state_dict(
-        "target_network_state_dict", checkpoint["target_network_state_dict"]
+        "q_network_state_dict",
+        checkpoint["q_network_state_dict"],
+        hidden_size=hidden_size,
+        layer_size=layer_size,
+        has_explicit_layer_size="layer_size" in hyperparameters,
     )
-    _validate_optimizer_state_dict(checkpoint["optimizer_state_dict"])
+    _validate_network_state_dict(
+        "target_network_state_dict",
+        checkpoint["target_network_state_dict"],
+        hidden_size=hidden_size,
+        layer_size=layer_size,
+        has_explicit_layer_size="layer_size" in hyperparameters,
+    )
+    expected_shapes = _compute_state_dict_shapes(hidden_size, layer_size)
+    _validate_optimizer_state_dict(
+        checkpoint["optimizer_state_dict"], expected_param_count=len(expected_shapes)
+    )
 
     return DQNCheckpointValidation(
         valid=True,
@@ -235,7 +268,13 @@ def _validate_hyperparameters(hyperparameters: Any) -> Mapping[str, Any]:
     return hyperparameters
 
 
-def _validate_network_state_dict(name: str, state_dict: Any) -> None:
+def _validate_network_state_dict(
+    name: str,
+    state_dict: Any,
+    hidden_size: int = 256,
+    layer_size: int = 2,
+    has_explicit_layer_size: bool = False,
+) -> None:
     if not isinstance(state_dict, Mapping):
         raise DQNCheckpointError(f"Invalid DQN checkpoint {name}: expected a mapping")
     if not state_dict:
@@ -249,33 +288,34 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
             "(no normalization). Use warm_start_from_v1_checkpoint to transfer weights."
         )
 
-    # Old 3-layer checkpoints (schema v1/v2) have fc_layers.2.* which no longer exist.
-    # Inputs were also unnormalized then, so weights are incompatible regardless of shape.
-    if "fc_layers.2.weight" in state_dict:
+    # Old schema v1/v2 checkpoints have fc_layers.2.* but no explicit layer_size in
+    # hyperparameters. New checkpoints with layer_size >= 3 declare it explicitly.
+    if "fc_layers.2.weight" in state_dict and not has_explicit_layer_size:
         raise DQNCheckpointError(
             f"Incompatible DQN checkpoint {name}: contains a 3-layer network "
-            "(fc_layers.2.*) from schema v1/v2. The architecture is now 2 layers and "
-            "inputs are normalized. Retrain from scratch."
+            "(fc_layers.2.*) from schema v1/v2 without an explicit layer_size declaration. "
+            "Inputs were also unnormalized then. Retrain from scratch."
         )
 
-    # Old 512-hidden-size checkpoints used hidden_size=512 giving [512, 256] layers.
-    # The architecture is now hidden_size=256 giving [256, 128] layers. Retrain from scratch.
+    # Old hidden_size=512 checkpoints have no explicit hidden_size declaration.
     first_layer = state_dict.get("fc_layers.0.weight")
-    if first_layer is not None and _tensor_shape(first_layer) is not None:
+    if first_layer is not None:
         shape = _tensor_shape(first_layer)
-        if shape is not None and shape[0] == 512:
+        if shape is not None and shape[0] == 512 and hidden_size != 512:
             raise DQNCheckpointError(
-                f"Incompatible DQN checkpoint {name}: contains an old hidden_size=512 network. "
-                "The architecture is now hidden_size=256. Retrain from scratch."
+                f"Incompatible DQN checkpoint {name}: state dict has hidden_size=512 "
+                f"but declared hidden_size={hidden_size}. Retrain from scratch."
             )
 
-    missing_keys = [key for key in EXPECTED_DQN_STATE_DICT_SHAPES if key not in state_dict]
+    expected_shapes = _compute_state_dict_shapes(hidden_size, layer_size)
+
+    missing_keys = [key for key in expected_shapes if key not in state_dict]
     if missing_keys:
         raise DQNCheckpointError(
             f"Invalid DQN checkpoint {name}: missing network weights {', '.join(missing_keys)}"
         )
 
-    unexpected_keys = [key for key in state_dict if key not in EXPECTED_DQN_STATE_DICT_SHAPES]
+    unexpected_keys = [key for key in state_dict if key not in expected_shapes]
     if unexpected_keys:
         raise DQNCheckpointError(
             f"Invalid DQN checkpoint {name}: unexpected network weights "
@@ -283,7 +323,7 @@ def _validate_network_state_dict(name: str, state_dict: Any) -> None:
         )
 
     wrong_shapes = []
-    for key, expected_shape in EXPECTED_DQN_STATE_DICT_SHAPES.items():
+    for key, expected_shape in expected_shapes.items():
         actual_shape = _tensor_shape(state_dict[key])
         if actual_shape != expected_shape:
             wrong_shapes.append(f"{key} expected {expected_shape}, got {actual_shape}")
@@ -305,7 +345,9 @@ def _tensor_shape(value: Any) -> tuple[int, ...] | None:
         return None
 
 
-def _validate_optimizer_state_dict(optimizer_state_dict: Any) -> None:
+def _validate_optimizer_state_dict(
+    optimizer_state_dict: Any, expected_param_count: int = EXPECTED_DQN_PARAMETER_COUNT
+) -> None:
     if not isinstance(optimizer_state_dict, Mapping):
         raise DQNCheckpointError("Invalid DQN checkpoint optimizer_state_dict: expected a mapping")
 
@@ -342,10 +384,10 @@ def _validate_optimizer_state_dict(optimizer_state_dict: Any) -> None:
         raise DQNCheckpointError(
             "Invalid DQN checkpoint optimizer_state_dict.param_groups[0].params: expected a list"
         )
-    if len(params) != EXPECTED_DQN_PARAMETER_COUNT:
+    if len(params) != expected_param_count:
         raise DQNCheckpointError(
             "Invalid DQN checkpoint optimizer_state_dict.param_groups[0].params: "
-            f"expected {EXPECTED_DQN_PARAMETER_COUNT} parameters, got {len(params)}"
+            f"expected {expected_param_count} parameters, got {len(params)}"
         )
 
 
