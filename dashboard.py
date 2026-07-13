@@ -75,12 +75,12 @@ def _plot_metric(ax, runs: list[dict], key: str, title: str, ylabel: str, ylim=N
     has_data = False
     for run in runs:
         meta = run["metadata"]
-        label = (
-            f"{meta['model_prefix']} "
-            f"(h={meta['architecture']['hidden_size']}, "
-            f"l={meta['architecture']['layer_size']}, "
-            f"{meta['architecture']['param_count']}p)"
-        )
+        arch = meta["architecture"]
+        if arch.get("hidden_layers"):
+            arch_str = "x".join(str(w) for w in arch["hidden_layers"])
+        else:
+            arch_str = f"h={arch['hidden_size']}, l={arch['layer_size']}"
+        label = f"{meta['model_prefix']} ({arch_str}, {arch['param_count']}p)"
         episodes = run["per_interval"].get("episode", [])
         series = run["per_interval"].get(key, [None] * len(episodes))
         xs, ys = _valid_xy(episodes, series)

@@ -50,6 +50,28 @@ def test_dqn_network_single_and_batched_forward_match() -> None:
     assert torch.allclose(single_output, batched_output, atol=1e-6)
 
 
+def test_dqn_network_hidden_layers_overrides_hidden_size_and_layer_size() -> None:
+    torch = pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNNetwork
+
+    network = DQNNetwork(
+        input_size=32,
+        hidden_size=999,
+        layer_size=99,
+        output_size=3,
+        hidden_layers=[64, 32, 16],
+    )
+
+    widths = [layer.out_features for layer in network.fc_layers]
+    assert widths == [64, 32, 16]
+    assert network.output_layer.in_features == 16
+
+    sample = torch.linspace(-1.0, 1.0, steps=32).unsqueeze(0)
+    with torch.no_grad():
+        output = network(sample)
+    assert output.shape == (1, 3)
+
+
 def test_dqn_replay_loss_is_deterministic() -> None:
     torch = pytest.importorskip("torch")
     from magic_pong.ai.models.dqn_ai import DQNAgent
@@ -118,3 +140,23 @@ def test_eval_action_selection_does_not_mutate_replay_or_training_state() -> Non
     assert agent.reward_history == []
     assert agent.last_state is None
     assert agent.last_action is None
+
+
+def test_load_model_rebuilds_non_default_architecture(tmp_path: Any) -> None:
+    """A checkpoint saved with a non-default architecture must load into an
+    agent constructed with different (e.g. default) architecture arguments --
+    load_model must rebuild the networks to match the checkpoint, not assume
+    the caller already guessed the right shapes."""
+    pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNAgent
+
+    checkpoint_path = tmp_path / "small_arch.pth"
+    small_agent = DQNAgent(hidden_size=16, layer_size=1, name="Small")
+    small_agent.save_model(str(checkpoint_path))
+
+    big_agent = DQNAgent(name="Big")  # defaults: hidden_size=256, layer_size=2
+    big_agent.load_model(str(checkpoint_path))
+
+    assert big_agent.hidden_size == 16
+    assert big_agent.layer_size == 1
+    assert [layer.out_features for layer in big_agent.q_network.fc_layers] == [16]

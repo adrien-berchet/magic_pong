@@ -185,6 +185,19 @@ def get_pyplot():
     return plt
 
 
+def parse_hidden_layers(value: str) -> list[int]:
+    """Parse a comma-separated '--hidden_layers' argument into a list of positive ints."""
+    try:
+        widths = [int(part.strip()) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid --hidden_layers value: {value!r}") from exc
+    if not widths or any(w <= 0 for w in widths):
+        raise argparse.ArgumentTypeError(
+            f"--hidden_layers must be a comma-separated list of positive integers: {value!r}"
+        )
+    return widths
+
+
 def create_agent_from_args(args):
     """Create a DQN agent with parameters from command line arguments"""
     return DQNAgent(
@@ -201,6 +214,7 @@ def create_agent_from_args(args):
         min_replay_size=getattr(args, "min_replay_size", 1000),
         hidden_size=getattr(args, "hidden_size", 256),
         layer_size=getattr(args, "layer_size", 2),
+        hidden_layers=getattr(args, "hidden_layers", None),
     )
 
 
@@ -473,11 +487,13 @@ def get_opponent(opponent_type, player_id=2):
 
         ckpt = safe_torch_load(model_path)
         hp = ckpt.get("hyperparameters", {})
+        raw_hidden_layers = hp.get("hidden_layers")
         opponent = DQNAgent(
             state_size=EXPECTED_STATE_SIZE,
             action_size=EXPECTED_ACTION_SIZE,
             hidden_size=int(hp.get("hidden_size", 256)),
             layer_size=int(hp.get("layer_size", 2)),
+            hidden_layers=[int(w) for w in raw_hidden_layers] if raw_hidden_layers else None,
         )
         opponent.load_model(model_path)
         opponent.set_training_mode(False)
@@ -2615,6 +2631,7 @@ def save_metrics_json(
             "architecture": {
                 "hidden_size": agent.hidden_size,
                 "layer_size": agent.layer_size,
+                "hidden_layers": agent.hidden_layers,
                 "param_count": agent.param_count,
             },
             "hyperparameters": {
@@ -2990,6 +3007,15 @@ def parse_arguments(argv: list[str] | None = None):
         type=int,
         default=2,
         help="Number of hidden layers in the Q-network",
+    )
+    parser.add_argument(
+        "--hidden_layers",
+        type=parse_hidden_layers,
+        default=None,
+        help=(
+            "Comma-separated explicit hidden layer widths, e.g. '256,128,64'. "
+            "Overrides --hidden_size/--layer_size with a fully manual architecture."
+        ),
     )
     # Training configuration
     parser.add_argument(

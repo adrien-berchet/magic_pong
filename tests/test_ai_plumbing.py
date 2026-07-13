@@ -764,6 +764,22 @@ def test_dqn_transition_uses_decision_time_state_and_stores_terminal(
     assert agent.last_action is None
 
 
+def test_dqn_checkpoint_custom_hidden_layers_round_trips(tmp_path: Any) -> None:
+    pytest.importorskip("torch")
+    from magic_pong.ai.models.dqn_ai import DQNAgent
+
+    model_path = tmp_path / "custom_arch_dqn.pth"
+    saved_agent = DQNAgent(hidden_layers=[64, 32, 16], batch_size=8, min_replay_size=1000)
+    saved_agent.save_model(str(model_path))
+
+    loading_agent = DQNAgent(hidden_layers=[64, 32, 16], batch_size=8, min_replay_size=1000)
+    loading_agent.load_model(str(model_path))
+
+    assert loading_agent.hidden_layers == [64, 32, 16]
+    widths = [layer.out_features for layer in loading_agent.q_network.fc_layers]
+    assert widths == [64, 32, 16]
+
+
 def test_dqn_checkpoint_valid_metadata_loads_and_resets_pending_buffers(
     tmp_path: Any,
 ) -> None:

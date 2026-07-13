@@ -498,6 +498,7 @@ class MagicPongApp:
             hyperparams = model_info.get("hyperparameters", {})
             state_size = hyperparams.get("state_size", EXPECTED_STATE_SIZE)
             action_size = hyperparams.get("action_size", EXPECTED_ACTION_SIZE)
+            raw_hidden_layers = hyperparams.get("hidden_layers")
 
             # Create DQN agent with correct parameters
             from magic_pong.ai.models.dqn_ai import DQNAgent
@@ -505,6 +506,9 @@ class MagicPongApp:
             agent = DQNAgent(
                 state_size=state_size,
                 action_size=action_size,
+                hidden_size=int(hyperparams.get("hidden_size", 256)),
+                layer_size=int(hyperparams.get("layer_size", 2)),
+                hidden_layers=[int(w) for w in raw_hidden_layers] if raw_hidden_layers else None,
                 name="Trained DQN AI",
             )
 

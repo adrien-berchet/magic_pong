@@ -44,6 +44,9 @@ ai = [
 viz = [
     "matplotlib>=3.7.0",
 ]
+search = [
+    "optuna>=3.6.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -54,7 +57,7 @@ dev = [
     "pre-commit>=3.0.0",
 ]
 all = [
-    "magic-pong[ai,viz,dev]"
+    "magic-pong[ai,viz,search,dev]"
 ]
 
 [project.urls]

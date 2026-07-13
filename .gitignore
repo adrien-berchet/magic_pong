@@ -1,5 +1,6 @@
 /debug
 /models
+/search_runs
 *.code-workspace
 test_models
 .codex

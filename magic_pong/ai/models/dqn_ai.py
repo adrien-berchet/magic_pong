@@ -28,6 +28,20 @@ Transition = namedtuple("Transition", ("state", "action", "reward", "next_state"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def resolve_layer_widths(
+    hidden_size: int, layer_size: int, hidden_layers: list[int] | None = None
+) -> list[int]:
+    """Return the per-layer neuron counts for a DQN network.
+
+    If ``hidden_layers`` is given, it is used verbatim (fully manual
+    architecture). Otherwise widths are derived from ``hidden_size``
+    (first layer) by halving geometrically for ``layer_size`` layers.
+    """
+    if hidden_layers:
+        return list(hidden_layers)
+    return [hidden_size // (2**i) for i in range(layer_size)]
+
+
 class DQNNetwork(nn.Module):
     """Deep Q-Network: stack of Linear→ReLU layers."""
 
@@ -37,14 +51,15 @@ class DQNNetwork(nn.Module):
         hidden_size: int = 256,
         output_size: int = 9,
         layer_size: int = 2,
+        hidden_layers: list[int] | None = None,
     ):
         super().__init__()
-        layer_sizes = [hidden_size // (2**i) for i in range(layer_size)]
+        layer_sizes = resolve_layer_widths(hidden_size, layer_size, hidden_layers)
 
         self.fc_layers = nn.ModuleList()
-        for i in range(layer_size):
+        for i, width in enumerate(layer_sizes):
             in_features = input_size if i == 0 else layer_sizes[i - 1]
-            self.fc_layers.append(nn.Linear(in_features, layer_sizes[i]))
+            self.fc_layers.append(nn.Linear(in_features, width))
 
         self.output_layer = nn.Linear(layer_sizes[-1], output_size)
         self._initialize_weights()
@@ -106,6 +121,7 @@ class DQNAgent(AIPlayer):
         target_update_frequency: int = 1000,
         hidden_size: int = 256,
         layer_size: int = 2,
+        hidden_layers: list[int] | None = None,
         name: str = "DQN AI",
     ):
         """
@@ -124,6 +140,10 @@ class DQNAgent(AIPlayer):
             train_frequency: Steps between training updates
             min_replay_size: Buffer must hold this many transitions before training begins
             target_update_frequency: Training steps between hard target-network copies
+            hidden_size: Width of the first hidden layer (ignored if hidden_layers is set)
+            layer_size: Number of hidden layers (ignored if hidden_layers is set)
+            hidden_layers: Explicit per-layer neuron counts, e.g. [256, 128, 64].
+                Overrides hidden_size/layer_size with a fully manual architecture.
             name: Agent display name
         """
         super().__init__(name)
@@ -149,14 +169,18 @@ class DQNAgent(AIPlayer):
         self._last_chosen_action: int | None = None
 
         self.step_count = 0
-        self.hidden_size = hidden_size
-        self.layer_size = layer_size
+        self.hidden_layers = list(hidden_layers) if hidden_layers else None
+        layer_widths = resolve_layer_widths(hidden_size, layer_size, self.hidden_layers)
+        # Kept for display/summary purposes (dashboard, checkpoint metadata) even when
+        # hidden_layers overrides the actual per-layer widths.
+        self.hidden_size = layer_widths[0]
+        self.layer_size = len(layer_widths)
 
         self.q_network = DQNNetwork(
-            state_size, hidden_size=hidden_size, output_size=action_size, layer_size=layer_size
+            state_size, output_size=action_size, hidden_layers=layer_widths
         ).to(device)
         self.target_network = DQNNetwork(
-            state_size, hidden_size=hidden_size, output_size=action_size, layer_size=layer_size
+            state_size, output_size=action_size, hidden_layers=layer_widths
         ).to(device)
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
@@ -464,6 +488,7 @@ class DQNAgent(AIPlayer):
                     "batch_size": self.batch_size,
                     "hidden_size": self.hidden_size,
                     "layer_size": self.layer_size,
+                    "hidden_layers": self.hidden_layers,
                 },
             },
             filepath,
@@ -474,16 +499,6 @@ class DQNAgent(AIPlayer):
         checkpoint = safe_torch_load(filepath, map_location=device)
         validate_dqn_checkpoint(checkpoint)
 
-        self.q_network.load_state_dict(checkpoint["q_network_state_dict"])
-        self.target_network.load_state_dict(checkpoint["target_network_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.epsilon = checkpoint["epsilon"]
-        self.training_step = checkpoint["training_step"]
-        self.step_count = checkpoint.get("step_count", 0)
-        self.loss_history = checkpoint["loss_history"]
-        self.reward_history = checkpoint["reward_history"]
-        self.grad_norm_history = checkpoint.get("grad_norm_history", [])
-
         if "hyperparameters" in checkpoint:
             hyperparams = checkpoint["hyperparameters"]
             self.state_size = hyperparams["state_size"]
@@ -493,8 +508,36 @@ class DQNAgent(AIPlayer):
             self.epsilon_min = hyperparams["epsilon_min"]
             self.epsilon_decay = hyperparams["epsilon_decay"]
             self.batch_size = hyperparams["batch_size"]
-            self.hidden_size = hyperparams.get("hidden_size", 256)
-            self.layer_size = hyperparams.get("layer_size", 2)
+            self.hidden_layers = hyperparams.get("hidden_layers")
+            # Rebuild the networks to match the checkpoint's own architecture:
+            # hidden_size/layer_size/hidden_layers only describe the network
+            # actually built at __init__ time, so a checkpoint saved with a
+            # different architecture than this instance's constructor defaults
+            # would otherwise fail to load_state_dict below on a shape mismatch.
+            layer_widths = resolve_layer_widths(
+                hyperparams.get("hidden_size", 256),
+                hyperparams.get("layer_size", 2),
+                self.hidden_layers,
+            )
+            self.hidden_size = layer_widths[0]
+            self.layer_size = len(layer_widths)
+            self.q_network = DQNNetwork(
+                self.state_size, output_size=self.action_size, hidden_layers=layer_widths
+            ).to(device)
+            self.target_network = DQNNetwork(
+                self.state_size, output_size=self.action_size, hidden_layers=layer_widths
+            ).to(device)
+            self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
+
+        self.q_network.load_state_dict(checkpoint["q_network_state_dict"])
+        self.target_network.load_state_dict(checkpoint["target_network_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.epsilon = checkpoint["epsilon"]
+        self.training_step = checkpoint["training_step"]
+        self.step_count = checkpoint.get("step_count", 0)
+        self.loss_history = checkpoint["loss_history"]
+        self.reward_history = checkpoint["reward_history"]
+        self.grad_norm_history = checkpoint.get("grad_norm_history", [])
 
         self._clear_pending_transition()
 
