@@ -29,13 +29,25 @@ Re-run the final tournament only (e.g. with a different --top-n), without
 further training:
     python search_hyperparameters.py --study-name my_search --tournament-only
 
-Parallel workers (separate OS processes sharing one sqlite-backed study --
-training mutates process-global config, so this must be processes, not
-in-process threads/Optuna n_jobs):
-    for i in 1 2 3 4; do
-        python search_hyperparameters.py --study-name my_search --n-trials 15 &
-    done
-    wait
+Parallel workers (automatic, single machine):
+    python search_hyperparameters.py --study-name my_search --n-trials 50 \
+        --n-workers 4
+This spawns 4 subprocess workers -- each an independent OS process, since
+training mutates process-global config (ai_config/game_config), so this must
+be separate processes, never in-process threads or Optuna's n_jobs -- splits
+--n-trials across them, and has them all train against the same sqlite-backed
+study concurrently. Each worker's training output is written to
+<output-root>/<study-name>/worker_<i>.log; the parent prints concise
+started/finished/exit-code lines only. If a GPU is present, workers default
+to CPU-only (dqn_ai.py auto-detects a single GPU with no coordination across
+processes, so sharing it risks contention/OOM for comparatively little
+benefit given how small these networks are) -- pass --allow-gpu-workers to
+opt back into GPU sharing.
+
+Scaling beyond one machine (manual, multiple shell invocations sharing one
+sqlite study over a shared filesystem) is still possible by running this
+script directly (with --n-workers omitted/1) from several hosts/shells
+pointed at the same --output-root/--study-name.
 
 Requires the "search" extra: pip install -e ".[search,ai]"
 """
@@ -44,7 +56,10 @@ from __future__ import annotations
 
 import argparse
 import functools
+import os
 import statistics
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -53,10 +68,23 @@ import optuna
 import train_optimized
 from magic_pong.ai import evaluation
 from magic_pong.ai import tournament
+from magic_pong.ai.models.dqn_ai import device as dqn_device
 
 DEFAULT_OPPONENTS = ("random", "follow_ball", "defensive", "aggressive", "predictive")
 ARCHITECTURE_HIDDEN_SIZES = (64, 128, 256, 512)
 ARCHITECTURE_LAYER_WIDTHS = (32, 64, 128, 256, 512)
+
+
+def split_trial_count(n_trials: int, n_workers: int) -> list[int]:
+    """Split n_trials as evenly as possible across n_workers workers.
+
+    Returns a list of length n_workers giving each worker's trial count. The
+    remainder is front-loaded onto the first `n_trials % n_workers` workers,
+    so counts differ by at most 1. If n_trials < n_workers, trailing workers
+    get 0 -- callers should skip launching workers with a 0 count.
+    """
+    base, remainder = divmod(n_trials, n_workers)
+    return [base + 1 if i < remainder else base for i in range(n_workers)]
 
 
 def build_search_space(trial: optuna.Trial) -> dict[str, Any]:
@@ -305,11 +333,149 @@ def parse_search_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip training and just (re-)run the final tournament for an existing study.",
     )
+    parser.add_argument(
+        "--n-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel OS-process workers to spawn for training trials "
+            "(each worker re-invokes this script as a subprocess against the "
+            "same sqlite-backed study). Default 1 trains in-process, unchanged "
+            "from single-worker behavior."
+        ),
+    )
+    parser.add_argument(
+        "--allow-gpu-workers",
+        action="store_true",
+        help=(
+            "When used with --n-workers > 1 and a GPU is present, allow workers "
+            "to share it (default is to force worker subprocesses to CPU-only, "
+            "since dqn_ai.py's GPU auto-detect has no cross-process coordination "
+            "and these networks are small enough that GPU contention/OOM risk "
+            "usually isn't worth it). No effect when --n-workers <= 1 or no GPU "
+            "is present."
+        ),
+    )
+    parser.add_argument("--skip-tournament", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
+
+
+def run_study_optimize(study: optuna.Study, args: argparse.Namespace, output_root: Path) -> None:
+    """Run study.optimize in-process with args' training-relevant settings.
+
+    Used both by the single-process path (--n-workers <= 1) and by each
+    worker subprocess spawned by run_parallel_workers (which calls main()
+    again with its own slice of --n-trials and offset --seed already baked
+    into its own argv).
+    """
+    study.optimize(
+        functools.partial(
+            objective,
+            curriculum_episodes=args.curriculum_episodes,
+            anneal_episodes=args.anneal_episodes,
+            selfplay_episodes=args.selfplay_episodes,
+            max_steps_per_episode=args.max_steps_per_episode,
+            eval_episodes=args.eval_episodes,
+            output_root=output_root,
+        ),
+        n_trials=args.n_trials,
+        timeout=args.timeout_seconds,
+    )
+
+
+def build_worker_argv(args: argparse.Namespace, *, n_trials: int, seed: int) -> list[str]:
+    """Build one worker subprocess's argv: the parent's training flags, with
+    --n-trials/--seed overridden and --skip-tournament forwarded so only the
+    parent runs the final tournament once all workers finish."""
+    argv = [
+        "--study-name",
+        args.study_name,
+        "--output-root",
+        args.output_root,
+        "--n-trials",
+        str(n_trials),
+        "--curriculum-episodes",
+        str(args.curriculum_episodes),
+        "--anneal-episodes",
+        str(args.anneal_episodes),
+        "--selfplay-episodes",
+        str(args.selfplay_episodes),
+        "--max-steps-per-episode",
+        str(args.max_steps_per_episode),
+        "--eval-episodes",
+        str(args.eval_episodes),
+        "--seed",
+        str(seed),
+        "--skip-tournament",
+    ]
+    if args.timeout_seconds is not None:
+        argv += ["--timeout-seconds", str(args.timeout_seconds)]
+    return argv
+
+
+def run_parallel_workers(args: argparse.Namespace, output_root: Path) -> None:
+    """Spawn args.n_workers subprocess workers, each training a slice of
+    args.n_trials against the shared sqlite-backed study, then wait for all
+    to finish. Does not run the final tournament itself -- the caller (main())
+    is responsible for that once this returns."""
+    trial_counts = split_trial_count(args.n_trials, args.n_workers)
+    launched = sum(1 for count in trial_counts if count > 0)
+    if launched < args.n_workers:
+        print(
+            f"[search] only {launched}/{args.n_workers} worker(s) have trials to "
+            f"run ({args.n_trials} trials split across {args.n_workers} workers)."
+        )
+
+    gpu_present = dqn_device.type == "cuda"
+    force_cpu_for_workers = gpu_present and not args.allow_gpu_workers
+    if force_cpu_for_workers:
+        print(
+            "[search] GPU detected; defaulting workers to CPU-only to avoid "
+            "context/memory contention (pass --allow-gpu-workers to override)."
+        )
+
+    processes: list[tuple[int, subprocess.Popen, Path]] = []
+    for i, n_trials in enumerate(trial_counts):
+        if n_trials == 0:
+            continue
+        worker_env = os.environ.copy()
+        if force_cpu_for_workers:
+            worker_env["CUDA_VISIBLE_DEVICES"] = ""
+        worker_argv = build_worker_argv(args, n_trials=n_trials, seed=args.seed + i)
+        log_path = output_root / f"worker_{i}.log"
+        print(
+            f"[search] launching worker {i} ({n_trials} trials, seed={args.seed + i}) -> log: {log_path}"
+        )
+        with log_path.open("w") as log_file:
+            proc = subprocess.Popen(
+                [sys.executable, __file__, *worker_argv],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=worker_env,
+            )
+        processes.append((i, proc, log_path))
+
+    failed: list[tuple[int, Path]] = []
+    for i, proc, log_path in processes:
+        exit_code = proc.wait()
+        status = "OK" if exit_code == 0 else f"FAILED (exit {exit_code})"
+        print(f"[search] worker {i} finished: {status}")
+        if exit_code != 0:
+            failed.append((i, log_path))
+
+    if failed:
+        print(
+            f"[search] WARNING: {len(failed)}/{len(processes)} worker(s) failed -- "
+            "proceeding to tournament with whatever trials completed. Failed worker logs:"
+        )
+        for i, log_path in failed:
+            print(f"  worker {i}: {log_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_search_args(argv)
+    if args.n_workers < 1:
+        raise SystemExit("--n-workers must be >= 1")
     output_root = Path(args.output_root) / args.study_name
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -322,27 +488,19 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if not args.tournament_only:
-        study.optimize(
-            functools.partial(
-                objective,
-                curriculum_episodes=args.curriculum_episodes,
-                anneal_episodes=args.anneal_episodes,
-                selfplay_episodes=args.selfplay_episodes,
-                max_steps_per_episode=args.max_steps_per_episode,
-                eval_episodes=args.eval_episodes,
-                output_root=output_root,
-            ),
-            n_trials=args.n_trials,
-            timeout=args.timeout_seconds,
-        )
+        if args.n_workers > 1:
+            run_parallel_workers(args, output_root)
+        else:
+            run_study_optimize(study, args, output_root)
 
-    ratings = run_final_tournament(
-        study,
-        top_n=args.top_n,
-        episodes_per_match=args.episodes_per_match,
-        output_root=output_root,
-    )
-    print(tournament.format_leaderboard(ratings))
+    if not args.skip_tournament:
+        ratings = run_final_tournament(
+            study,
+            top_n=args.top_n,
+            episodes_per_match=args.episodes_per_match,
+            output_root=output_root,
+        )
+        print(tournament.format_leaderboard(ratings))
 
 
 if __name__ == "__main__":

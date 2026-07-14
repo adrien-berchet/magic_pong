@@ -7,11 +7,13 @@ keep this suite fast.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 optuna = pytest.importorskip("optuna")
 
@@ -122,7 +124,9 @@ def test_objective_wires_training_and_evaluation(
 
     monkeypatch.setattr(search_module, "run_trial_training", fake_run_trial_training)
     monkeypatch.setattr(
-        search_module.evaluation, "evaluate_checkpoint", lambda path, config: fake_result
+        search_module.evaluation,
+        "evaluate_checkpoint",
+        lambda path, config: fake_result,
     )
     monkeypatch.setattr(search_module.evaluation, "result_to_dict", lambda result: {"fake": True})
 
@@ -187,3 +191,284 @@ def test_run_final_tournament_selects_top_n_and_builtins(
         "/models/trial_2.pth",
     }
     assert len(builtin_participants) == len(tournament.BUILTIN_AI_TYPES)
+
+
+def test_split_trial_count_even() -> None:
+    assert search_module.split_trial_count(100, 4) == [25, 25, 25, 25]
+
+
+def test_split_trial_count_remainder_goes_to_first_workers() -> None:
+    assert search_module.split_trial_count(10, 3) == [4, 3, 3]
+
+
+def test_split_trial_count_single_worker() -> None:
+    assert search_module.split_trial_count(7, 1) == [7]
+
+
+def test_split_trial_count_more_workers_than_trials() -> None:
+    assert search_module.split_trial_count(2, 5) == [1, 1, 0, 0, 0]
+
+
+def _make_fake_popen(
+    exit_codes: list[int] | None = None,
+) -> tuple[list[dict[str, Any]], Any]:
+    """Build a fake subprocess.Popen substitute that records every call's
+    argv/env instead of spawning a real process."""
+    calls: list[dict[str, Any]] = []
+
+    class _FakeProcess:
+        def __init__(self, code: int) -> None:
+            self._code = code
+
+        def wait(self) -> int:
+            return self._code
+
+    def fake_popen(argv: list[str], *, stdout: Any, stderr: Any, env: dict[str, str]) -> Any:
+        index = len(calls)
+        calls.append({"argv": argv, "stdout": stdout, "stderr": stderr, "env": env})
+        code = exit_codes[index] if exit_codes is not None else 0
+        return _FakeProcess(code)
+
+    return calls, fake_popen
+
+
+def test_main_with_n_workers_spawns_subprocesses_and_runs_tournament_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+
+    tournament_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        search_module,
+        "run_final_tournament",
+        lambda study, **kwargs: tournament_calls.append(kwargs) or {},
+    )
+
+    search_module.main(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "10",
+            "--n-workers",
+            "3",
+        ]
+    )
+
+    assert len(calls) == 3
+    for call in calls:
+        assert call["argv"][0] == sys.executable
+        assert call["argv"][1] == search_module.__file__
+
+    n_trials_per_call = [call["argv"][call["argv"].index("--n-trials") + 1] for call in calls]
+    assert n_trials_per_call == ["4", "3", "3"]
+
+    seeds = [call["argv"][call["argv"].index("--seed") + 1] for call in calls]
+    assert seeds == ["0", "1", "2"]
+
+    for call in calls:
+        assert "--skip-tournament" in call["argv"]
+        assert "--n-workers" not in call["argv"]
+
+    assert len(tournament_calls) == 1
+
+
+def test_run_parallel_workers_forces_cpu_by_default_when_gpu_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cuda"))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "2",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    assert len(calls) == 2
+    for call in calls:
+        assert call["env"]["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_run_parallel_workers_allow_gpu_workers_leaves_env_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cuda"))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "2",
+            "--allow-gpu-workers",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    assert len(calls) == 2
+    for call in calls:
+        assert "CUDA_VISIBLE_DEVICES" not in call["env"]
+
+
+def test_run_parallel_workers_no_gpu_leaves_env_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "2",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    assert len(calls) == 2
+    for call in calls:
+        assert "CUDA_VISIBLE_DEVICES" not in call["env"]
+
+
+def test_run_parallel_workers_reports_failed_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, fake_popen = _make_fake_popen(exit_codes=[0, 1])
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "2",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    del calls
+    captured = capsys.readouterr()
+    assert "worker 1" in captured.out
+    assert "FAILED" in captured.out
+    assert str(output_root / "worker_1.log") in captured.out
+
+
+def test_main_runs_tournament_despite_failed_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _calls, fake_popen = _make_fake_popen(exit_codes=[1, 0])
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+
+    tournament_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        search_module,
+        "run_final_tournament",
+        lambda study, **kwargs: tournament_calls.append(kwargs) or {},
+    )
+
+    search_module.main(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "2",
+        ]
+    )
+
+    assert len(tournament_calls) == 1
+
+
+def test_main_single_worker_never_spawns_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("subprocess.Popen should not be called when --n-workers <= 1")
+
+    monkeypatch.setattr(search_module.subprocess, "Popen", fail_if_called)
+
+    optimize_calls: list[int] = []
+    monkeypatch.setattr(
+        search_module,
+        "run_study_optimize",
+        lambda study, args, output_root: optimize_calls.append(1),
+    )
+    monkeypatch.setattr(search_module, "run_final_tournament", lambda study, **kwargs: {})
+
+    search_module.main(["--study-name", "s1", "--output-root", str(tmp_path), "--n-trials", "3"])
+    search_module.main(
+        [
+            "--study-name",
+            "s2",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "3",
+            "--n-workers",
+            "1",
+        ]
+    )
+
+    assert len(optimize_calls) == 2
+
+
+def test_main_rejects_zero_workers(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        search_module.main(
+            [
+                "--study-name",
+                "s",
+                "--output-root",
+                str(tmp_path),
+                "--n-trials",
+                "3",
+                "--n-workers",
+                "0",
+            ]
+        )
