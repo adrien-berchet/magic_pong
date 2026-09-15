@@ -22,6 +22,15 @@ skills that annealing and self-play then build on, so an imbalanced split
 (e.g. a tiny curriculum budget next to huge annealing/self-play budgets)
 under-prepares the agent for the harder later stages.
 
+Pass --early-stopping N to let a plateaued stage stop before consuming its
+full episode budget (train_optimized.py's existing --early_stopping: stop
+after N episodes without a new best rolling-average reward). Applies
+independently to each of the three pipeline stages -- an early stop in
+curriculum has no effect on annealing's or self-play's own patience clock.
+Set N as a multiple of --log_interval (train_optimized.py's own default 50)
+for predictable behavior, since the patience counter only advances in
+log_interval-sized steps.
+
 Usage:
     python search_hyperparameters.py --study-name my_search --n-trials 50
 
@@ -42,7 +51,12 @@ started/finished/exit-code lines only. If a GPU is present, workers default
 to CPU-only (dqn_ai.py auto-detects a single GPU with no coordination across
 processes, so sharing it risks contention/OOM for comparatively little
 benefit given how small these networks are) -- pass --allow-gpu-workers to
-opt back into GPU sharing.
+opt back into GPU sharing. Each worker is also pinned to a fair share of CPU
+threads (os.cpu_count() // n_workers, via OMP_NUM_THREADS and friends) --
+otherwise every worker's PyTorch backend independently defaults to using
+every core, and N workers each doing that oversubscribes the machine N-fold,
+which in practice starved some workers to a near-standstill for hours on a
+large run without this pinning.
 
 Scaling beyond one machine (manual, multiple shell invocations sharing one
 sqlite study over a shared filesystem) is still possible by running this
@@ -74,6 +88,26 @@ DEFAULT_OPPONENTS = ("random", "follow_ball", "defensive", "aggressive", "predic
 ARCHITECTURE_HIDDEN_SIZES = (64, 128, 256, 512)
 ARCHITECTURE_LAYER_WIDTHS = (32, 64, 128, 256, 512)
 
+# Fixed rather than searched: an Optuna-dashboard importance analysis on a
+# 125-trial run showed low variance-based importance for both (dominated by
+# learning_rate), and every top-scoring trial in that run independently
+# converged on exactly these values regardless of learning_rate -- a
+# consistent empirical winner, not an arbitrary default.
+FIXED_BATCH_SIZE = 32
+FIXED_MEMORY_SIZE = 100000
+
+# PyTorch/NumPy's BLAS backends default to using every available CPU core for
+# their internal thread pool -- fine for a single process, but N worker
+# processes each doing that oversubscribes the machine N-fold (observed in
+# practice: 4 workers x 32 threads each = 128 threads competing for 20 cores,
+# starving some workers to a crawl). Pin each worker to a fair share instead.
+THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+
 
 def split_trial_count(n_trials: int, n_workers: int) -> list[int]:
     """Split n_trials as evenly as possible across n_workers workers.
@@ -100,11 +134,13 @@ def build_search_space(trial: optuna.Trial) -> dict[str, Any]:
     secondary effect compared to learning_rate/architecture. Both are left
     at train_optimized.py's own CLI defaults (0.99 / 0.998 / 0.05) by simply
     not passing --gamma/--epsilon_decay/--epsilon_min in build_trial_argv.
+
+    batch_size and memory_size are also not searched -- fixed to
+    FIXED_BATCH_SIZE/FIXED_MEMORY_SIZE (see module-level comment) based on
+    empirical evidence from a prior 125-trial run, not just a domain guess.
     """
     params: dict[str, Any] = {
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True),
-        "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128, 256]),
-        "memory_size": trial.suggest_categorical("memory_size", [10000, 20000, 50000, 100000]),
         "train_frequency": trial.suggest_int("train_frequency", 1, 8),
         "architecture_mode": trial.suggest_categorical(
             "architecture_mode", ["geometric", "explicit"]
@@ -134,6 +170,7 @@ def build_trial_argv(
     anneal_episodes: int,
     selfplay_episodes: int,
     max_steps_per_episode: int,
+    early_stopping: int = 0,
 ) -> list[str]:
     """Translate sampled hyperparameters into train_optimized.py CLI arguments.
 
@@ -146,6 +183,10 @@ def build_trial_argv(
     train_optimized.py's --total_episodes, which only feeds the annealing and
     self-play stages and leaves curriculum pinned to a small, unrelated
     default -- the exact mismatch this function exists to avoid.
+
+    early_stopping (0 disables it) is passed through to every stage
+    independently -- each of the three pipeline stages gets its own fresh
+    patience clock, so a plateau in one stage doesn't affect the others.
     """
     argv = [
         "--mode",
@@ -165,11 +206,13 @@ def build_trial_argv(
         "--learning_rate",
         str(params["learning_rate"]),
         "--batch_size",
-        str(params["batch_size"]),
+        str(FIXED_BATCH_SIZE),
         "--memory_size",
-        str(params["memory_size"]),
+        str(FIXED_MEMORY_SIZE),
         "--train_frequency",
         str(params["train_frequency"]),
+        "--early_stopping",
+        str(early_stopping),
         "--headless",
         # Dense reward shaping (conservative default weights) so the DQN gets
         # a useful learning signal within a search trial's short episode budget,
@@ -221,6 +264,7 @@ def objective(
     max_steps_per_episode: int,
     eval_episodes: int,
     output_root: Path,
+    early_stopping: int = 0,
 ) -> float:
     """Train and score one hyperparameter/architecture configuration.
 
@@ -238,6 +282,7 @@ def objective(
         anneal_episodes=anneal_episodes,
         selfplay_episodes=selfplay_episodes,
         max_steps_per_episode=max_steps_per_episode,
+        early_stopping=early_stopping,
     )
 
     checkpoint_path = run_trial_training(argv)
@@ -324,6 +369,19 @@ def parse_search_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Episode budget for the self-play (pure goal rewards) phase.",
     )
     parser.add_argument("--max-steps-per-episode", type=int, default=500)
+    parser.add_argument(
+        "--early-stopping",
+        type=int,
+        default=0,
+        help=(
+            "Stop a pipeline stage after N episodes without a new best rolling-"
+            "average reward (0 disables, train_optimized.py's own default). "
+            "Applies independently to each of the three pipeline stages. Set as "
+            "a multiple of train_optimized.py's --log_interval (default 50) for "
+            "predictable behavior, since the patience counter only advances in "
+            "log_interval-sized steps."
+        ),
+    )
     parser.add_argument("--eval-episodes", type=int, default=20)
     parser.add_argument("--top-n", type=int, default=8)
     parser.add_argument("--episodes-per-match", type=int, default=20)
@@ -377,6 +435,7 @@ def run_study_optimize(study: optuna.Study, args: argparse.Namespace, output_roo
             max_steps_per_episode=args.max_steps_per_episode,
             eval_episodes=args.eval_episodes,
             output_root=output_root,
+            early_stopping=args.early_stopping,
         ),
         n_trials=args.n_trials,
         timeout=args.timeout_seconds,
@@ -402,6 +461,8 @@ def build_worker_argv(args: argparse.Namespace, *, n_trials: int, seed: int) -> 
         str(args.selfplay_episodes),
         "--max-steps-per-episode",
         str(args.max_steps_per_episode),
+        "--early-stopping",
+        str(args.early_stopping),
         "--eval-episodes",
         str(args.eval_episodes),
         "--seed",
@@ -434,6 +495,13 @@ def run_parallel_workers(args: argparse.Namespace, output_root: Path) -> None:
             "context/memory contention (pass --allow-gpu-workers to override)."
         )
 
+    cpu_count = os.cpu_count() or 1
+    threads_per_worker = max(1, cpu_count // args.n_workers)
+    print(
+        f"[search] pinning each worker to {threads_per_worker} CPU thread(s) "
+        f"({cpu_count} CPU(s) / {args.n_workers} workers) to avoid oversubscription."
+    )
+
     processes: list[tuple[int, subprocess.Popen, Path]] = []
     for i, n_trials in enumerate(trial_counts):
         if n_trials == 0:
@@ -441,6 +509,8 @@ def run_parallel_workers(args: argparse.Namespace, output_root: Path) -> None:
         worker_env = os.environ.copy()
         if force_cpu_for_workers:
             worker_env["CUDA_VISIBLE_DEVICES"] = ""
+        for var in THREAD_LIMIT_ENV_VARS:
+            worker_env[var] = str(threads_per_worker)
         worker_argv = build_worker_argv(args, n_trials=n_trials, seed=args.seed + i)
         log_path = output_root / f"worker_{i}.log"
         print(

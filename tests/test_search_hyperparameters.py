@@ -23,8 +23,6 @@ from magic_pong.ai import tournament  # noqa: E402
 
 BASE_TRIAL_PARAMS = {
     "learning_rate": 0.001,
-    "batch_size": 64,
-    "memory_size": 20000,
     "train_frequency": 4,
 }
 
@@ -45,10 +43,13 @@ def test_build_search_space_geometric_mode() -> None:
     assert params["hidden_size"] == 128
     assert params["layer_size"] == 2
     assert "widths" not in params
-    # gamma/epsilon_decay/epsilon_min are deliberately not part of the search space.
+    # gamma/epsilon_decay/epsilon_min/batch_size/memory_size are deliberately
+    # not part of the search space.
     assert "gamma" not in params
     assert "epsilon_decay" not in params
     assert "epsilon_min" not in params
+    assert "batch_size" not in params
+    assert "memory_size" not in params
 
     argv = search_module.build_trial_argv(
         params,
@@ -57,6 +58,7 @@ def test_build_search_space_geometric_mode() -> None:
         anneal_episodes=20,
         selfplay_episodes=30,
         max_steps_per_episode=50,
+        early_stopping=150,
     )
     assert "--gamma" not in argv
     assert "--epsilon_decay" not in argv
@@ -70,6 +72,7 @@ def test_build_search_space_geometric_mode() -> None:
     assert args.pipeline_curriculum_episodes == 10
     assert args.pipeline_anneal_episodes == 20
     assert args.pipeline_selfplay_episodes == 30
+    assert args.early_stopping == 150
     assert args.hidden_size == 128
     assert args.layer_size == 2
     assert args.hidden_layers is None
@@ -77,6 +80,9 @@ def test_build_search_space_geometric_mode() -> None:
     assert args.gamma == pytest.approx(0.99)
     assert args.epsilon_decay == pytest.approx(0.998)
     assert args.epsilon_min == pytest.approx(0.05)
+    # Fixed to the empirically best values, not searched.
+    assert args.batch_size == search_module.FIXED_BATCH_SIZE
+    assert args.memory_size == search_module.FIXED_MEMORY_SIZE
 
 
 def test_build_search_space_explicit_mode() -> None:
@@ -105,6 +111,9 @@ def test_build_search_space_explicit_mode() -> None:
     )
     args = train_optimized.parse_arguments(argv)
     assert args.hidden_layers == [128, 64]
+    # early_stopping defaults to 0 (disabled) when omitted -- no behavior
+    # change for callers that don't pass it.
+    assert args.early_stopping == 0
 
 
 def test_objective_wires_training_and_evaluation(
@@ -147,6 +156,7 @@ def test_objective_wires_training_and_evaluation(
         max_steps_per_episode=50,
         eval_episodes=5,
         output_root=tmp_path,
+        early_stopping=100,
     )
 
     assert score == pytest.approx(0.75)
@@ -256,6 +266,8 @@ def test_main_with_n_workers_spawns_subprocesses_and_runs_tournament_once(
             "10",
             "--n-workers",
             "3",
+            "--early-stopping",
+            "200",
         ]
     )
 
@@ -273,6 +285,7 @@ def test_main_with_n_workers_spawns_subprocesses_and_runs_tournament_once(
     for call in calls:
         assert "--skip-tournament" in call["argv"]
         assert "--n-workers" not in call["argv"]
+        assert call["argv"][call["argv"].index("--early-stopping") + 1] == "200"
 
     assert len(tournament_calls) == 1
 
@@ -363,6 +376,65 @@ def test_run_parallel_workers_no_gpu_leaves_env_untouched(
     assert len(calls) == 2
     for call in calls:
         assert "CUDA_VISIBLE_DEVICES" not in call["env"]
+
+
+def test_run_parallel_workers_pins_thread_count_per_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+    monkeypatch.setattr(search_module.os, "cpu_count", lambda: 20)
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "4",
+            "--n-workers",
+            "4",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    assert len(calls) == 4
+    for call in calls:
+        for var in search_module.THREAD_LIMIT_ENV_VARS:
+            assert call["env"][var] == "5"  # 20 cpus // 4 workers
+
+
+def test_run_parallel_workers_thread_pinning_rounds_down_to_at_least_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_popen = _make_fake_popen()
+    monkeypatch.setattr(search_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search_module, "dqn_device", torch.device("cpu"))
+    monkeypatch.setattr(search_module.os, "cpu_count", lambda: 2)
+
+    args = search_module.parse_search_args(
+        [
+            "--study-name",
+            "s",
+            "--output-root",
+            str(tmp_path),
+            "--n-trials",
+            "8",
+            "--n-workers",
+            "8",
+        ]
+    )
+    output_root = tmp_path / "s"
+    output_root.mkdir()
+    search_module.run_parallel_workers(args, output_root)
+
+    assert len(calls) == 8
+    for call in calls:
+        assert call["env"]["OMP_NUM_THREADS"] == "1"  # max(1, 2 // 8)
 
 
 def test_run_parallel_workers_reports_failed_worker(
