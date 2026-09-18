@@ -11,6 +11,9 @@ An advanced Pong game specifically designed for artificial intelligence training
   - Opponent paddle shrinking
   - Additional rotating paddle
 - **Realistic physics** with bounces and effects
+- **Accelerating rallies**: every paddle bounce multiplies the ball speed by
+  `BALL_SPEED_INCREASE` (1.05) up to `MAX_BALL_SPEED` (900 px/s, above the paddle
+  speed so long rallies can beat a defender); each serve restarts at `BALL_SPEED`
 
 ### AI Interface
 - **Framework agnostic architecture**: Compatible with different AI frameworks (PyTorch, TensorFlow, etc.)
@@ -25,6 +28,15 @@ An advanced Pong game specifically designed for artificial intelligence training
 - **DefensiveAI**: Defensive strategy
 - **AggressiveAI**: Seeks bonuses and attacks
 - **PredictiveAI**: Predicts ball trajectory
+- **GoalLineTrackerAI** (`tracker`): holds the goal line and shadows the ball; a near-perfect defender
+- **EdgeStrikerAI** (`striker`): goal-line defender that predicts the intercept and returns with the paddle edge
+- **PlannerAI**: lookahead player that scores each move on rollouts of the real physics
+  (real-time with the `fast` extra, see below); the strongest opponent and the
+  teacher for distillation
+
+All rule-based opponents reason about the paddle centre. They are registered in
+`BUILTIN_OPPONENTS`, so the competitive benchmark, the league and the GUI's
+"Watch AI vs AI" menu know them; the GUI also offers "1 vs Planner".
 
 ## Installation
 
@@ -41,6 +53,9 @@ pip install -e ".[dev]"
 
 # Complete installation (all dependencies)
 pip install -e ".[all]"
+
+# Compiled physics rollouts (numba) for the real-time planner and fast distillation
+pip install -e ".[fast]"
 ```
 
 ### Installation with Make
@@ -75,6 +90,47 @@ print(f"Winner: Player {stats['winner']}")
 ```bash
 cd magic_pong
 python examples/ai_vs_ai.py --mode tournament
+```
+
+### Training (vectorised, numba-backed)
+
+`magic_pong.ai.vector_training` is the training loop: 128 matches advance in one
+compiled call per decision, each decision holds an action for 4 frames, the replay
+is a 1M-transition ring with 3-step returns, the loss is Huber on Double-DQN
+targets, opponents mix all built-ins, frozen self-play snapshots and the planner,
+and evaluation plays 20 seeds per cell (720 matches) on the same engine. It runs at
+roughly 50k frames per second on one core, so 40M frames take about a quarter of
+an hour. Checkpoints are ordinary `DQNAgent` files.
+
+```bash
+pip install -e ".[fast]"   # numba
+python -m magic_pong.ai.vector_training --output models/run1 --total_frames 40000000 --final_panel
+# warm start from a distilled network, gentler exploration
+python -m magic_pong.ai.vector_training --output models/run2 --total_frames 40000000 \
+  --initial_checkpoint models/distilled/agent.pth --epsilon_start 0.2 --epsilon_decay_frames 2000000
+```
+
+`train_optimized.py` and the frame pipeline remain for the legacy episode-based
+loops; new experiments should use the vectorised trainer.
+
+### Planner and Distillation
+
+```python
+from magic_pong.ai.models.planner_ai import PlannerAI
+from magic_pong.ai.models.simple_ai import create_ai
+from magic_pong.core.game_engine import TrainingManager
+
+# The engine binds the live physics to the planner; rollouts never advance it.
+TrainingManager(headless=True).train_episode(PlannerAI(), create_ai("striker"), max_steps=18000)
+```
+
+```bash
+# Imitate the planner with DAgger on real matches, then run the competitive panel
+python -m magic_pong.ai.distillation --labels 300000 \
+  --output models/distilled/agent.pth --evaluate
+
+# Or as the pretraining stage of the training pipeline
+python train_optimized.py --mode pipeline --pretrain --pretrain_mode distill --pretrain_steps 300000 ...
 ```
 
 ### Simple Training
@@ -196,8 +252,8 @@ observation = {
 - **+1.0**: Score a point
 - **-1.0**: Concede a point
 - **+0.1**: Collect a bonus
-- **+0.01**: Touch the ball
-- **+0.02**: Use a rotating paddle
+- **+0.1**: Touch the ball
+- **+0.2**: Use a rotating paddle
 
 ## Performance
 

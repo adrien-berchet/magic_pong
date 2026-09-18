@@ -377,8 +377,6 @@ def test_player2_dqn_info_filters_contacts_to_canonical_agent_frame() -> None:
 def test_heuristic_ai_raw_and_normalized_observations_match_direction(
     ai_player: Any, monkeypatch: Any
 ) -> None:
-    monkeypatch.setattr("magic_pong.ai.models.simple_ai.time.time", lambda: 123.0)
-
     raw_action = ai_player.get_action(_raw_heuristic_observation())
     normalized_action = ai_player.get_action(_normalized_heuristic_observation())
 

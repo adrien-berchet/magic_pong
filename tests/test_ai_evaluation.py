@@ -218,8 +218,8 @@ def test_eval_mode_snapshot_and_restore_for_dqn_like_agent() -> None:
     assert agent.training_enabled is True
     assert agent.exploration_enabled is False
     assert agent.epsilon == pytest.approx(0.9)
-    assert agent.training_mode_calls == [False, True]
-    assert agent.exploration_mode_calls == [True, False]
+    assert agent.training_mode_calls == []
+    assert agent.exploration_mode_calls == []
 
 
 def test_evaluation_restores_dqn_like_episode_and_replay_state() -> None:
@@ -306,9 +306,43 @@ def test_game_config_restored_after_exception() -> None:
     assert game_config.BONUSES_ENABLED is original_bonuses_enabled
 
 
-def test_training_dummy_is_rejected_as_non_deterministic_opponent() -> None:
-    with pytest.raises(ValueError, match="training_dummy.*not deterministic"):
-        EvaluationConfig(opponents=("training_dummy",))
+def test_training_dummy_can_be_evaluated_with_simulation_time() -> None:
+    assert EvaluationConfig(opponents=("training_dummy",)).opponents == ("training_dummy",)
+
+
+def test_evaluation_freezes_reused_opponent_and_restores_random_streams() -> None:
+    opponent = FakeStatefulDQNLikeAgent()
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+
+    class MutatingManager:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def train_episode(
+            self, _agent: Any, active_opponent: Any, max_steps: int
+        ) -> dict[str, Any]:
+            assert active_opponent is opponent
+            assert not active_opponent.training_enabled
+            assert not active_opponent.exploration_enabled
+            assert active_opponent.epsilon == 0
+            active_opponent.episode_buffer[0]["state"] = "changed"
+            active_opponent.memory.buffer.append("eval transition")
+            random.random()
+            np.random.random()
+            return {"winner": 0, "steps": max_steps}
+
+    evaluate_agent(
+        FakeAgent(),
+        EvaluationConfig(opponents=("random",), episodes=2),
+        opponent_factory=lambda *args, **kwargs: opponent,
+        training_manager_factory=MutatingManager,
+    )
+    assert opponent.training_enabled
+    assert opponent.episode_buffer == [{"state": "pending"}]
+    assert list(opponent.memory.buffer) == ["transition-1"]
+    assert random.getstate() == python_state
+    np.testing.assert_array_equal(np.random.get_state()[1], numpy_state[1])
 
 
 def test_winner_zero_is_timeout_draw_not_loss() -> None:

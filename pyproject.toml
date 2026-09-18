@@ -47,6 +47,9 @@ viz = [
 search = [
     "optuna>=3.6.0",
 ]
+fast = [
+    "numba>=0.60.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -57,7 +60,7 @@ dev = [
     "pre-commit>=3.0.0",
 ]
 all = [
-    "magic-pong[ai,viz,search,dev]"
+    "magic-pong[ai,viz,search,fast,dev]"
 ]
 
 [project.urls]
@@ -129,8 +132,22 @@ module = [
     "torch.*",
     "matplotlib",
     "matplotlib.*",
+    "numba",
+    "numba.*",
 ]
 ignore_missing_imports = true
+
+# numba kernels are compiled from untyped signatures; the wrapper API stays typed.
+[[tool.mypy.overrides]]
+module = "magic_pong.core.fast_physics"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+
+# Numba's decorators have no stubs; keep checking the annotated kernel bodies.
+[[tool.mypy.overrides]]
+module = ["magic_pong.ai.fast_policies", "magic_pong.ai.vector_env"]
+disallow_untyped_decorators = false
 
 # Configuration for pytest
 [tool.pytest.ini_options]

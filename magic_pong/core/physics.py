@@ -98,13 +98,26 @@ class PhysicsEngine:
             game_config.PADDLE_MARGIN,
             self.field_height / 2 - game_config.PADDLE_HEIGHT / 2,
             1,
+            field_width=self.field_width,
+            field_height=self.field_height,
         )
 
         self.player2 = Paddle(
             self.field_width - game_config.PADDLE_MARGIN - game_config.PADDLE_WIDTH,
             self.field_height / 2 - game_config.PADDLE_HEIGHT / 2,
             2,
+            field_width=self.field_width,
+            field_height=self.field_height,
         )
+
+    def configure_geometry(self, field_width: float, field_height: float) -> None:
+        """Set episode geometry. Call reset_game before continuing simulation."""
+        if not all(math.isfinite(value) and value > 0 for value in (field_width, field_height)):
+            raise ValueError("Field dimensions must be finite and positive")
+        self.field_width = field_width
+        self.field_height = field_height
+        self.bonus_spawner = BonusSpawner(field_width, field_height)
+        self.reset_paddles()
 
     def reset_ball(self, direction: int = 0, angle: float | None = None) -> None:
         """Resets the ball to center with optional specific angle"""
@@ -129,21 +142,40 @@ class PhysicsEngine:
         self.reset_ball(direction, angle_radians)
 
     def update(self, dt: float, player1_action: Action, player2_action: Action) -> dict:
-        """Updates game physics"""
-        # Apply speed multiplier
-        effective_dt = dt  # / game_config.GAME_SPEED_MULTIPLIER
+        """Advance one decision, substepping explicit long intervals for stable collisions.
+
+        Actions remain fixed for the whole decision. Rendering mode never changes
+        simulation time; ordinary gameplay intervals still use one physics step.
+        """
+        if not math.isfinite(dt) or dt < 0:
+            raise ValueError("dt must be finite and nonnegative")
+        steps = max(1, math.ceil(dt * game_config.FPS - 1e-12))
+        step_dt = dt / steps
+        events: dict[str, list] = {}
+        for _ in range(steps):
+            for key, values in self._update_substep(
+                step_dt, player1_action, player2_action
+            ).items():
+                events.setdefault(key, []).extend(values)
+            if self.is_game_over():
+                break
+        return events
+
+    def _update_substep(
+        self, effective_dt: float, player1_action: Action, player2_action: Action
+    ) -> dict:
+        """Advance entities and resolve collisions for one bounded interval."""
         self.game_time += effective_dt
 
-        # Move players
-        if player1_action:
-            self.player1.move(player1_action.move_x, player1_action.move_y, effective_dt)
-        if player2_action:
-            self.player2.move(player2_action.move_x, player2_action.move_y, effective_dt)
-
-        # Update entities
-        self.ball.update(effective_dt)
+        # Expire size effects before taking movement snapshots. Resizing can
+        # constrain the top-left position; that correction is not paddle motion.
         self.player1.update(effective_dt)
         self.player2.update(effective_dt)
+        for paddle, action in ((self.player1, player1_action), (self.player2, player2_action)):
+            action = action or Action(0, 0)
+            paddle.move(action.move_x, action.move_y, effective_dt)
+
+        self.ball.update(effective_dt)
 
         # Update rotating paddles
         self.rotating_paddles = [rp for rp in self.rotating_paddles if rp.update(effective_dt)]
@@ -271,6 +303,7 @@ class PhysicsEngine:
                 (rp.center.x, rp.center.y, rp.angle) for rp in self.rotating_paddles
             ],
             "score": self.score.copy(),
+            "match_target": game_config.MAX_SCORE,
             "time_elapsed": self.game_time,
             "field_bounds": (0, self.field_width, 0, self.field_height),
         }
@@ -293,6 +326,7 @@ class PhysicsEngine:
         self.game_time = 0.0
         self.bonuses.clear()
         self.rotating_paddles.clear()
+        self.bonus_spawner = BonusSpawner(self.field_width, self.field_height)
 
         # Reset paddles to their initial position
         self.reset_paddles()

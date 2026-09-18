@@ -81,7 +81,15 @@ def tournament() -> None:
     game_config.GAME_SPEED_MULTIPLIER = 10.0
 
     # AI types to test
-    ai_types = ["random", "follow_ball", "defensive", "aggressive", "predictive"]
+    ai_types = [
+        "random",
+        "follow_ball",
+        "defensive",
+        "aggressive",
+        "predictive",
+        "tracker",
+        "striker",
+    ]
     results: dict[str, dict[str, Any]] = {}
 
     trainer = TrainingManager(headless=True)

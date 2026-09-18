@@ -65,6 +65,8 @@ def phase_args(**overrides: Any) -> SimpleNamespace:
         "headless": True,
         "evaluate_checkpoints": False,
         "checkpoint_eval_episodes": 0,
+        "track_q_values": False,
+        "save_metrics": False,
     }
     args.update(overrides)
     return SimpleNamespace(**args)
@@ -217,11 +219,11 @@ def test_progressive_curriculum_uses_paddle_hit_reward_config(
         phase_num: int,
         total_phases: int,
         start_episode: int = 0,
-    ) -> tuple[list[float], int, int, int]:
+    ) -> tuple[list[float], int, int, int, list]:
         assert total_phases == 4
         assert start_episode >= 0
         observed_rewards.append((phase_num, ai_config.PADDLE_HIT_REWARD))
-        return [1.0], 1, 2, 1
+        return [1.0], 1, 2, 1, []
 
     monkeypatch.setattr(train_optimized, "TrainingManager", FakeTrainingManager)
     monkeypatch.setattr(train_optimized, "get_opponent", lambda name: FakeOpponent(name))
@@ -275,7 +277,7 @@ def test_train_phase_samples_opponent_and_score_and_restores_config(
                 "events": [{"player": 1}, {"player": 1}],
             }
 
-    rewards, goals_for, goals, episodes = train_optimized.train_phase(
+    rewards, goals_for, goals, episodes, _snapshots = train_optimized.train_phase(
         FakeAgent(),
         FakeOpponent("fixed"),
         "mixed fine tuning",

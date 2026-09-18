@@ -11,7 +11,7 @@ This document provides comprehensive guidance for AI assistants (like Claude) wo
 - **AI-first design**: Headless mode, fast training (up to 1000x speed), framework-agnostic interface
 - **Modern Python architecture**: Type hints, modular design, comprehensive testing
 
-**Tech Stack**: Python 3.10+, pygame, numpy, pydantic, PyTorch (optional), Gymnasium (optional)
+**Tech Stack**: Python 3.10+, pygame, numpy, pydantic, PyTorch (optional), Gymnasium (optional), numba (optional `fast` extra for compiled rollouts)
 
 ## Repository Structure
 
@@ -23,20 +23,30 @@ magic_pong/
 │   │   ├── physics.py           # Physics engine and collision detection
 │   │   ├── game_engine.py       # Main game orchestration
 │   │   ├── collision.py         # Advanced collision algorithms
+│   │   ├── fast_physics.py      # numba rollouts of the same physics (planning, labels)
 │   │   └── interfaces/          # Protocol definitions
 │   │       ├── player.py        # PlayerProtocol for polymorphic players
 │   │       ├── physics.py       # PhysicsEngine protocol
 │   │       └── renderer.py      # Renderer protocol
 │   ├── ai/                       # AI interface and implementations
 │   │   ├── interface.py         # Base AIPlayer class (backward compat)
-│   │   ├── pretraining.py       # Pretraining utilities
+│   │   ├── pretraining.py       # Pretraining utilities and create_pretrainer()
+│   │   ├── physics_teacher.py   # Python rollout teacher (reference implementation)
+│   │   ├── fast_teacher.py      # Same teacher on the numba kernels
+│   │   ├── distillation.py      # DAgger distillation of the planner into the DQN
+│   │   ├── fast_policies.py     # numba ports of the rule-based opponents
+│   │   ├── vector_env.py        # Vectorised matches on the numba physics (exact DQN encoding)
+│   │   ├── vector_training.py   # The training loop: n-step Huber Double-DQN, self-play, eval
+│   │   ├── competitive.py       # Fixed competitive benchmark (all built-ins, both sides)
+│   │   ├── league.py            # Persistent opponent league for self-play
 │   │   ├── interfaces/          # Protocol-based interfaces
 │   │   │   ├── observation.py   # ObservationBuilder protocol
 │   │   │   └── reward.py        # RewardCalculator protocol
 │   │   ├── environment/         # Environment creation and management
 │   │   │   └── factory.py       # EnvironmentFactory for easy setup
 │   │   └── models/              # AI implementations (formerly examples/)
-│   │       ├── simple_ai.py     # Rule-based AIs (Random, Defensive, etc.)
+│   │       ├── simple_ai.py     # Rule-based AIs incl. tracker/striker (BUILTIN_OPPONENTS)
+│   │       ├── planner_ai.py    # Lookahead planner player (needs the live engine)
 │   │       ├── dqn_ai.py        # Deep Q-Network implementation
 │   │       ├── ai_vs_ai.py      # AI tournament and training scripts
 │   │       └── train_dqn.py     # DQN training script
@@ -86,11 +96,26 @@ magic_pong/
 - Handles all game physics, collisions, and bonus management
 - Separates concerns between physics simulation and rendering
 - Manages events (goals, hits, bonus collection) for AI reward calculation
+- Rule: a genuine paddle bounce multiplies the ball speed by `BALL_SPEED_INCREASE`
+  (1.05) up to `MAX_BALL_SPEED` (900); pushes never change velocity; serves reset to
+  `BALL_SPEED`. A goal-line defender at paddle speed 500 is unbeatable at constant speed,
+  which is why rallies accelerate.
+
+**Fast physics** (`magic_pong/core/fast_physics.py`):
+- numba kernels mirroring `_update_substep` on flat arrays; `snapshot(engine)` copies a
+  live engine, `simulate()` replays explicit actions, `evaluate_actions()` scores the nine
+  discrete first actions with the teacher rollout (about 0.25 ms per decision)
+- `tests/core/test_fast_physics.py` checks frame-by-frame agreement with the Python engine;
+  keep both implementations in sync when changing collision rules
+- Known approximations: no bonus spawns inside a rollout, deterministic rotating-paddle
+  placement, rollouts stop at the first goal
 
 **Game Engine** (`magic_pong/core/game_engine.py`):
 - Orchestrates game flow and player interactions
 - `TrainingManager`: Optimized headless training mode
 - Supports variable speed for fast AI training
+- `set_players` calls the optional `bind_physics(engine, player_id)` hook so planning
+  players (`PlannerAI`, the DAgger learner) can read the live state without touching it
 
 **Core Interfaces** (`magic_pong/core/interfaces/`):
 - `PlayerProtocol`: Enables polymorphic player handling (human, AI, random)
@@ -344,6 +369,35 @@ make test          # Ensure tests pass
 2. Implement `get_action()` and `on_step()` methods
 3. Add example usage in `magic_pong/ai/models/ai_vs_ai.py`
 4. Document in README.md
+5. For a rule-based opponent: register it in `BUILTIN_OPPONENTS` and `create_ai()` in
+   `simple_ai.py` (the benchmark, league and hyperparameter search enumerate that tuple),
+   in `train_optimized.AI_TYPES`/`DEFAULT_OPPONENT_MIX`, in `tournament.BUILTIN_AI_TYPES`
+   and in the GUI watch list `_WATCH_AI_TYPES`. Use `UnitObservationMixin`, whose
+   `player_pos` is the paddle centre (the raw observation gives the top-left corner).
+
+**Training loop** (`magic_pong/ai/vector_training.py`, `vector_env.py`):
+- `VectorEnv` steps `n_envs` matches per call on the numba kernels; a decision holds an
+  action for `action_repeat` frames and ends early at a goal. Opponents are numba built-ins
+  (`fast_policies.py`, parity-tested against `simple_ai.py`), frozen self-play snapshots
+  (actions supplied by the trainer) or the lookahead planner.
+- `encode_observation` reproduces `ObservationProcessor` + `to_player1_dqn_observation` +
+  `DQNAgent._observation_to_state` exactly (`tests/test_vector_env.py`), so checkpoints
+  stay compatible with the GUI, the league and `competitive.py`.
+- `ReplayBuffer` is a lock-step ring (one row per decision, one column per env) with n-step
+  returns computed at sampling time; truncations bootstrap from the pre-reset state.
+- Defaults: 128 envs, repeat 4, gamma 0.99, 3-step, Huber, Adam 1e-4, batch 256, replay 1M,
+  8 gradient samples per transition, hard target copy every 200k frames, epsilon 1 → 0.05
+  over 4M frames, goals terminate the return (`--full_match_returns` to bootstrap through).
+- Evaluation: 20 seeds × 9 built-ins × 2 sides × 2 bonus modes on the vectorised engine,
+  ranked like `competitive_rank`; draws (frame cap) are reported separately. `best.pth` is
+  the top-ranked checkpoint; `--final_panel` runs the exact Python panel on it.
+- Legacy loops (`train_optimized.py`, `scheduled_training.py`, `pilot.py`) still work but
+  are 10× slower and evaluate on three deterministic matches per cell.
+
+**Built-in opponents** (`BUILTIN_OPPONENTS`): `random`, `dummy`, `training_dummy`,
+`follow_ball`, `defensive`, `aggressive`, `predictive`, `tracker` (goal-line tracker,
+near-unbeatable defender), `striker` (goal-line defender aiming with the paddle edge).
+`PlannerAI` is not rule-based and is created directly; it needs the live engine.
 
 **Using the new protocol-based interfaces**:
 ```python
@@ -479,9 +533,11 @@ def test_new_bonus_effect():
 ### Physics Simulation
 
 - Fixed timestep: 1/60 second (60 FPS)
-- Fast mode multiplies dt for accelerated training
+- Explicit longer timesteps are split into physics substeps of at most one frame
 - Velocity-based movement with constraints
-- Bounce mechanics preserve momentum with optional acceleration
+- Paddle bounces reflect about a contact-dependent normal (edge hits steer the ball) and
+  multiply speed by `BALL_SPEED_INCREASE` up to `MAX_BALL_SPEED`; walls preserve speed;
+  a paddle catching an outgoing ball only pushes it (position-only correction)
 
 ### Module Dependencies
 
@@ -654,7 +710,7 @@ Before submitting changes:
 
 ---
 
-**Last Updated**: 2025-11-26 (Post-refactoring to protocol-based architecture)
+**Last Updated**: 2026-09-18 (Accelerating rallies, tracker/striker opponents, numba planner, DAgger distillation)
 
 This document should be updated when:
 - Major architectural changes occur

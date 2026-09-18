@@ -39,6 +39,7 @@ class GameMode(Enum):
     MENU = "menu"
     ONE_VS_ONE = "1v1"
     ONE_VS_AI = "1vAI"
+    ONE_VS_PLANNER = "1vPlanner"
     LOAD_MODEL = "load_model"
     AI_DEMO = "demo"
     WATCH_AI = "watch_ai"
@@ -114,10 +115,13 @@ class GameOverMenuAction:
 
 _WATCH_AI_TYPES: tuple[tuple[str, str], ...] = (
     ("dqn", "Load DQN Model..."),
+    ("planner", "Planner AI (lookahead)"),
     ("follow_ball", "Follow Ball AI"),
     ("defensive", "Defensive AI"),
     ("aggressive", "Aggressive AI"),
     ("predictive", "Predictive AI"),
+    ("tracker", "Goal-line Tracker AI"),
+    ("striker", "Edge Striker AI"),
     ("random", "Random AI"),
     ("dummy", "Dummy AI"),
 )
@@ -159,6 +163,17 @@ class MagicPongApp:
                 "Practice against the built-in defensive computer opponent.",
                 (
                     ("Players", "Human vs Simple AI"),
+                    ("Controls", "Player uses WASD"),
+                    ("Status", "Ready"),
+                ),
+            ),
+            MainMenuOption(
+                "1 vs Planner",
+                GameMode.ONE_VS_PLANNER,
+                "Player vs Lookahead Planner",
+                "Face the strongest built-in opponent: it plans on rollouts of the real physics.",
+                (
+                    ("Players", "Human vs Planner AI"),
                     ("Controls", "Player uses WASD"),
                     ("Status", "Ready"),
                 ),
@@ -346,6 +361,12 @@ class MagicPongApp:
             # Human vs AI
             ai_players[2] = SimpleAI("Simple AI")
 
+        elif mode == GameMode.ONE_VS_PLANNER:
+            # Human vs the lookahead planner (compiled rollouts when numba is installed)
+            from magic_pong.ai.models.planner_ai import PlannerAI
+
+            ai_players[2] = PlannerAI(name="Planner AI")
+
         elif mode == GameMode.LOAD_MODEL:
             # Human vs Trained AI
             if not self.selected_model_path:
@@ -375,6 +396,10 @@ class MagicPongApp:
             ) -> Player | None:
                 if type_key == "dqn":
                     return self._create_trained_ai(model_path or "")
+                if type_key == "planner":
+                    from magic_pong.ai.models.planner_ai import PlannerAI
+
+                    return PlannerAI(name=label)
                 return create_ai(type_key, name=label)
 
             p1_label = watch_types.get(self._watch_p1_type, self._watch_p1_type)
@@ -1174,7 +1199,7 @@ class MagicPongApp:
                 {"key": "UP/DOWN", "action": "Player 2 up/down"},
                 {"key": "LEFT/RIGHT", "action": "Player 2 left/right"},
             ]
-        if self.current_mode in {GameMode.ONE_VS_AI, GameMode.LOAD_MODEL}:
+        if self.current_mode in {GameMode.ONE_VS_AI, GameMode.ONE_VS_PLANNER, GameMode.LOAD_MODEL}:
             return [
                 {"key": wasd_vertical, "action": "Player up/down"},
                 {"key": wasd_horizontal, "action": "Player left/right"},
@@ -1199,6 +1224,7 @@ class MagicPongApp:
             GameMode.MENU: "Menu",
             GameMode.ONE_VS_ONE: "1 vs 1",
             GameMode.ONE_VS_AI: "1 vs AI",
+            GameMode.ONE_VS_PLANNER: "1 vs Planner",
             GameMode.LOAD_MODEL: "Trained Model",
             GameMode.AI_DEMO: "AI Demo",
             GameMode.WATCH_AI: "Watch AI vs AI",
@@ -1407,10 +1433,13 @@ class MagicPongApp:
                 available = True
                 status = "Ready"
                 descriptions = {
+                    "planner": "Plans each move on rollouts of the real physics. Strongest.",
                     "follow_ball": "Chases the ball directly. Fast but predictable.",
                     "defensive": "Stays near its goal and predicts the ball trajectory.",
                     "aggressive": "Pursues bonuses and attacks aggressively.",
                     "predictive": "Predicts future ball position and intercepts it.",
+                    "tracker": "Holds the goal line and shadows the ball. Hard to beat.",
+                    "striker": "Goal-line defender that aims returns with the paddle edge.",
                     "random": "Moves completely at random. Good as a baseline.",
                     "dummy": "Never moves. Useful to test the opponent's attack.",
                 }

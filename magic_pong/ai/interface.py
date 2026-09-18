@@ -129,6 +129,9 @@ class ObservationProcessor:
         ]
         observation["field_width"] = self.field_width
         observation["field_height"] = self.field_height
+        # The contract travels with the observation, including stored/replayed data.
+        observation["positions_normalized"] = ai_config.NORMALIZE_POSITIONS
+        observation["max_ball_speed"] = game_config.MAX_BALL_SPEED
 
         # Ball velocity
         vel_x, vel_y = game_state["ball_velocity"]
@@ -162,6 +165,10 @@ class ObservationProcessor:
 
         # Score differential
         score = game_state["score"]
+        observation["own_score"] = score[player_id - 1]
+        observation["opponent_score"] = score[2 - player_id]
+        if "match_target" in game_state:
+            observation["match_target"] = game_state["match_target"]
         if player_id == 1:
             observation["score_diff"] = score[0] - score[1]
         else:
@@ -235,10 +242,11 @@ class RewardCalculator:
             return reward
 
         if ai_config.REWARD_SHAPING_MODE == "phase3":
-            reward += self._calculate_phase3_reward(game_state, events, player_id)
+            # Advance shaping history even when its current contribution is zero.
+            reward += micro_scale * self._calculate_phase3_reward(game_state, events, player_id)
         elif ai_config.USE_PROXIMITY_REWARD:
             proximity_reward = self._calculate_proximity_reward(game_state, player_id)
-            reward += proximity_reward
+            reward += micro_scale * proximity_reward
 
         return reward
 
@@ -1083,6 +1091,12 @@ class GameEnvironment:
         self.step_count = 0
         self.max_steps = ai_config.MAX_EPISODE_STEPS
 
+    def configure_geometry(self, field_width: float, field_height: float) -> None:
+        """Synchronize geometry before resetting an episode with new field dimensions."""
+        self.physics_engine.configure_geometry(field_width, field_height)
+        self.observation_processor.field_width = self.physics_engine.field_width
+        self.observation_processor.field_height = self.physics_engine.field_height
+
     def reset(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """
         Resets the environment
@@ -1091,6 +1105,8 @@ class GameEnvironment:
             Tuple: (observation_player1, observation_player2)
         """
         self.physics_engine.reset_game()
+        self.observation_processor.field_width = self.physics_engine.field_width
+        self.observation_processor.field_height = self.physics_engine.field_height
         self.step_count = 0
 
         for calc in self.reward_calculators.values():
@@ -1126,8 +1142,6 @@ class GameEnvironment:
         # Update physics
         if dt is None:
             dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
-            if self.headless or ai_config.HEADLESS_MODE:
-                dt *= ai_config.FAST_MODE_MULTIPLIER
 
         events = self.physics_engine.update(dt, action1, action2)
         game_state = self.physics_engine.get_game_state()
@@ -1138,8 +1152,11 @@ class GameEnvironment:
 
         self.step_count += 1
 
-        # Check if episode is finished
-        done = self.physics_engine.is_game_over() or self.step_count >= self.max_steps
+        # Check if episode is finished. A true game ending takes precedence
+        # over a same-frame step-budget cutoff.
+        terminated = self.physics_engine.is_game_over()
+        truncated = not terminated and self.step_count >= self.max_steps
+        done = terminated or truncated
 
         # Create observations
         obs1 = self.observation_processor.process_game_state(game_state, 1)
@@ -1149,8 +1166,10 @@ class GameEnvironment:
         info = {
             "events": events,
             "game_state": game_state,
-            "winner": self.physics_engine.get_winner() if done else 0,
+            "winner": self.physics_engine.get_winner() if terminated else 0,
             "step_count": self.step_count,
+            "terminated": terminated,
+            "truncated": truncated,
             "optimal_points": {
                 1: self.reward_calculators[1].get_optimal_points().get(1),
                 2: self.reward_calculators[2].get_optimal_points().get(2),

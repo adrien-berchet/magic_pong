@@ -11,7 +11,6 @@ from copy import deepcopy
 from typing import Any
 
 from magic_pong.core.entities import Action
-from magic_pong.utils.config import ai_config
 from magic_pong.utils.config import game_config
 
 DQN_PLAYER1_FRAME_ATTR = "uses_player1_dqn_frame"
@@ -193,13 +192,13 @@ def _mirror_angle(angle: float) -> float:
 
 
 def _x_extent(observation: dict[str, Any]) -> float:
-    if ai_config.NORMALIZE_POSITIONS:
+    if observation.get("positions_normalized", False):
         return 1.0
     return float(observation.get("field_width", game_config.FIELD_WIDTH))
 
 
 def _paddle_width_extent(observation: dict[str, Any]) -> float:
-    if ai_config.NORMALIZE_POSITIONS:
+    if observation.get("positions_normalized", False):
         field_width = float(observation.get("field_width", game_config.FIELD_WIDTH))
         return game_config.PADDLE_WIDTH / field_width
     return game_config.PADDLE_WIDTH

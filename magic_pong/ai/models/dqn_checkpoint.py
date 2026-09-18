@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from os import PathLike
 from typing import Any
+from typing import BinaryIO
 
 CHECKPOINT_SCHEMA_VERSION = 4
 EXPECTED_MODEL_TYPE = "magic_pong.dqn"
@@ -13,6 +15,11 @@ EXPECTED_OBSERVATION_FRAME = "player1_dqn_frame"
 EXPECTED_ACTION_FRAME = "player1_dqn_frame"
 EXPECTED_STATE_SIZE = 30
 EXPECTED_ACTION_SIZE = 9
+SCORE_CONTEXT_STATE_SIZE = 33
+SCORE_CONTEXT_SCHEMA_VERSION = 5
+SCORE_CONTEXT_STATE_SCHEMA = "magic_pong.dqn_state.v5_score_context"
+SCORE_CONTEXT_FEATURES = ("own_score", "opponent_score", "match_target")
+SCORE_CONTEXT_NORMALIZER = 11.0
 # Network first-layer input equals the observation size (vanilla DQN, no history)
 EXPECTED_NETWORK_INPUT_SIZE = EXPECTED_STATE_SIZE
 
@@ -66,6 +73,7 @@ def _compute_state_dict_shapes(
     state_size: int = EXPECTED_STATE_SIZE,
     action_size: int = EXPECTED_ACTION_SIZE,
     hidden_layers: list[int] | None = None,
+    score_context: bool = False,
 ) -> dict[str, tuple[int, ...]]:
     """Return the expected state-dict key→shape mapping for a given architecture.
 
@@ -78,11 +86,15 @@ def _compute_state_dict_shapes(
     )
     shapes: dict[str, tuple[int, ...]] = {}
     for i, width in enumerate(layer_sizes):
-        in_features = state_size if i == 0 else layer_sizes[i - 1]
+        in_features = (
+            (EXPECTED_STATE_SIZE if score_context else state_size) if i == 0 else layer_sizes[i - 1]
+        )
         shapes[f"fc_layers.{i}.weight"] = (width, in_features)
         shapes[f"fc_layers.{i}.bias"] = (width,)
     shapes["output_layer.weight"] = (action_size, layer_sizes[-1])
     shapes["output_layer.bias"] = (action_size,)
+    if score_context:
+        shapes["score_context_weight"] = (layer_sizes[0], len(SCORE_CONTEXT_FEATURES))
     return shapes
 
 
@@ -118,21 +130,35 @@ class DQNCheckpointValidation:
 
 
 def build_dqn_checkpoint_metadata(
-    *, state_size: int = EXPECTED_STATE_SIZE, action_size: int = EXPECTED_ACTION_SIZE
+    *,
+    state_size: int = EXPECTED_STATE_SIZE,
+    action_size: int = EXPECTED_ACTION_SIZE,
+    score_context: bool = False,
 ) -> dict[str, Any]:
     """Build metadata identifying the persisted DQN contract."""
-    return {
-        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+    metadata = {
+        "schema_version": (
+            SCORE_CONTEXT_SCHEMA_VERSION if score_context else CHECKPOINT_SCHEMA_VERSION
+        ),
         "model_type": EXPECTED_MODEL_TYPE,
-        "state_schema": EXPECTED_STATE_SCHEMA,
+        "state_schema": SCORE_CONTEXT_STATE_SCHEMA if score_context else EXPECTED_STATE_SCHEMA,
         "observation_frame": EXPECTED_OBSERVATION_FRAME,
         "action_frame": EXPECTED_ACTION_FRAME,
         "state_size": state_size,
         "action_size": action_size,
     }
+    if score_context:
+        metadata.update(
+            legacy_state_size=EXPECTED_STATE_SIZE,
+            score_context_size=len(SCORE_CONTEXT_FEATURES),
+            score_context_enabled=True,
+            score_context_features=list(SCORE_CONTEXT_FEATURES),
+            score_context_normalizer=SCORE_CONTEXT_NORMALIZER,
+        )
+    return metadata
 
 
-def safe_torch_load(filepath: str, *, map_location: Any = "cpu") -> Any:
+def safe_torch_load(filepath: str | PathLike[str] | BinaryIO, *, map_location: Any = "cpu") -> Any:
     """
     Load a torch checkpoint with safe weights-only loading when available.
 
@@ -160,6 +186,7 @@ def validate_dqn_checkpoint(checkpoint: Any) -> DQNCheckpointValidation:
 
     hyperparameters = _validate_hyperparameters(checkpoint["hyperparameters"])
     metadata = validate_dqn_checkpoint_metadata(checkpoint.get(METADATA_KEY), hyperparameters)
+    score_context = hyperparameters.get("score_context", False)
     hidden_size: int = int(hyperparameters.get("hidden_size", 256))
     layer_size: int = int(hyperparameters.get("layer_size", 2))
     raw_hidden_layers = hyperparameters.get("hidden_layers")
@@ -173,6 +200,7 @@ def validate_dqn_checkpoint(checkpoint: Any) -> DQNCheckpointValidation:
         layer_size=layer_size,
         has_explicit_layer_size="layer_size" in hyperparameters,
         hidden_layers=hidden_layers,
+        score_context=score_context,
     )
     _validate_network_state_dict(
         "target_network_state_dict",
@@ -181,9 +209,10 @@ def validate_dqn_checkpoint(checkpoint: Any) -> DQNCheckpointValidation:
         layer_size=layer_size,
         has_explicit_layer_size="layer_size" in hyperparameters,
         hidden_layers=hidden_layers,
+        score_context=score_context,
     )
     expected_shapes = _compute_state_dict_shapes(
-        hidden_size, layer_size, hidden_layers=hidden_layers
+        hidden_size, layer_size, hidden_layers=hidden_layers, score_context=score_context
     )
     _validate_optimizer_state_dict(
         checkpoint["optimizer_state_dict"], expected_param_count=len(expected_shapes)
@@ -235,23 +264,45 @@ def validate_dqn_checkpoint_metadata(
     if missing_keys:
         raise DQNCheckpointError(f"Missing DQN checkpoint metadata: {', '.join(missing_keys)}")
 
+    score_context = metadata["state_schema"] == SCORE_CONTEXT_STATE_SCHEMA
+    state_size = SCORE_CONTEXT_STATE_SIZE if score_context else EXPECTED_STATE_SIZE
     _validate_expected_value(
-        "schema_version", metadata["schema_version"], CHECKPOINT_SCHEMA_VERSION
+        "schema_version",
+        metadata["schema_version"],
+        SCORE_CONTEXT_SCHEMA_VERSION if score_context else CHECKPOINT_SCHEMA_VERSION,
     )
     _validate_expected_value("model_type", metadata["model_type"], EXPECTED_MODEL_TYPE)
-    _validate_expected_value("state_schema", metadata["state_schema"], EXPECTED_STATE_SCHEMA)
+    _validate_expected_value(
+        "state_schema",
+        metadata["state_schema"],
+        SCORE_CONTEXT_STATE_SCHEMA if score_context else EXPECTED_STATE_SCHEMA,
+    )
     _validate_expected_value(
         "observation_frame", metadata["observation_frame"], EXPECTED_OBSERVATION_FRAME
     )
     _validate_expected_value("action_frame", metadata["action_frame"], EXPECTED_ACTION_FRAME)
-    _validate_expected_value("state_size", metadata["state_size"], EXPECTED_STATE_SIZE)
+    _validate_expected_value("state_size", metadata["state_size"], state_size)
     _validate_expected_value("action_size", metadata["action_size"], EXPECTED_ACTION_SIZE)
 
+    if score_context:
+        for key, expected in {
+            "legacy_state_size": EXPECTED_STATE_SIZE,
+            "score_context_size": len(SCORE_CONTEXT_FEATURES),
+            "score_context_enabled": True,
+            "score_context_features": list(SCORE_CONTEXT_FEATURES),
+            "score_context_normalizer": SCORE_CONTEXT_NORMALIZER,
+        }.items():
+            _validate_expected_value(key, metadata.get(key), expected)
     if hyperparameters is not None:
+        _validate_expected_value(
+            "hyperparameters.score_context",
+            hyperparameters.get("score_context", False),
+            score_context,
+        )
         _validate_expected_value(
             "hyperparameters.state_size",
             hyperparameters.get("state_size"),
-            EXPECTED_STATE_SIZE,
+            state_size,
         )
         _validate_expected_value(
             "hyperparameters.action_size",
@@ -272,8 +323,13 @@ def _validate_hyperparameters(hyperparameters: Any) -> Mapping[str, Any]:
     if missing_hyperparameters:
         raise DQNCheckpointError(f"Missing hyperparameters: {', '.join(missing_hyperparameters)}")
 
+    score_context = hyperparameters.get("score_context", False)
+    if not isinstance(score_context, bool):
+        raise DQNCheckpointError("hyperparameters.score_context must be boolean")
     _validate_expected_value(
-        "hyperparameters.state_size", hyperparameters["state_size"], EXPECTED_STATE_SIZE
+        "hyperparameters.state_size",
+        hyperparameters["state_size"],
+        SCORE_CONTEXT_STATE_SIZE if score_context else EXPECTED_STATE_SIZE,
     )
     _validate_expected_value(
         "hyperparameters.action_size",
@@ -291,6 +347,7 @@ def _validate_network_state_dict(
     layer_size: int = 2,
     has_explicit_layer_size: bool = False,
     hidden_layers: list[int] | None = None,
+    score_context: bool = False,
 ) -> None:
     if not isinstance(state_dict, Mapping):
         raise DQNCheckpointError(f"Invalid DQN checkpoint {name}: expected a mapping")
@@ -328,7 +385,7 @@ def _validate_network_state_dict(
                 )
 
     expected_shapes = _compute_state_dict_shapes(
-        hidden_size, layer_size, hidden_layers=hidden_layers
+        hidden_size, layer_size, hidden_layers=hidden_layers, score_context=score_context
     )
 
     missing_keys = [key for key in expected_shapes if key not in state_dict]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import io
@@ -26,11 +27,13 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 from magic_pong.ai.models.simple_ai import create_ai  # noqa: E402
 from magic_pong.core.game_engine import TrainingManager  # noqa: E402
+from magic_pong.utils.config import _restore_config  # noqa: E402
+from magic_pong.utils.config import ai_config  # noqa: E402
 from magic_pong.utils.config import game_config  # noqa: E402
 
 SCHEMA_VERSION = "magic_pong.evaluation.v1"
 DEFAULT_OPPONENTS = ("follow_ball",)
-NON_DETERMINISTIC_OPPONENTS = frozenset({"training_dummy"})
+NON_DETERMINISTIC_OPPONENTS: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,7 @@ def evaluate_agent(
     opponents = _normalize_opponents(config.opponents)
 
     with (
+        preserve_global_rng_state(),
         _temporary_game_config(config),
         _temporary_agent_state(agent),
         _temporary_eval_mode(agent, config.eval_epsilon),
@@ -153,13 +157,17 @@ def evaluate_agent(
                     opponent_name,
                     name=f"EvaluationOpponent_{opponent_name}_{episode_index}",
                 )
-                manager = _create_training_manager(training_manager_factory, config)
-                try:
-                    stats = manager.train_episode(agent, opponent, max_steps=config.max_steps)
-                finally:
-                    cleanup = getattr(manager, "cleanup", None)
-                    if callable(cleanup):
-                        cleanup()
+                with (
+                    _temporary_agent_state(opponent),
+                    _temporary_eval_mode(opponent, 0.0),
+                ):
+                    manager = _create_training_manager(training_manager_factory, config)
+                    try:
+                        stats = manager.train_episode(agent, opponent, max_steps=config.max_steps)
+                    finally:
+                        cleanup = getattr(manager, "cleanup", None)
+                        if callable(cleanup):
+                            cleanup()
 
                 all_episodes.append(
                     _episode_from_stats(
@@ -182,10 +190,10 @@ def evaluate_checkpoint(path: str | Path, config: EvaluationConfig) -> Evaluatio
     from magic_pong.ai.models.dqn_ai import DQNAgent
 
     checkpoint_path = Path(path)
-    agent = DQNAgent(name="DQN Evaluation Agent")
-    agent.load_model(str(checkpoint_path))
-
-    result = evaluate_agent(agent, config)
+    with preserve_global_rng_state():
+        agent = DQNAgent(name="DQN Evaluation Agent")
+        agent.load_model(str(checkpoint_path))
+        result = evaluate_agent(agent, config)
     return EvaluationResult(
         config=result.config,
         opponents=result.opponents,
@@ -341,11 +349,46 @@ def _seed_everything(seed: int) -> None:
 
 
 @contextmanager
+def preserve_global_rng_state() -> Any:
+    """Make evaluation invisible to Python, NumPy and PyTorch training RNGs."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    torch_state = torch.get_rng_state() if torch is not None else None
+    cuda_state = (
+        torch.cuda.get_rng_state_all() if torch is not None and torch.cuda.is_available() else None
+    )
+    try:
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        if torch is not None and torch_state is not None:
+            torch.set_rng_state(torch_state)
+            if cuda_state is not None:
+                torch.cuda.set_rng_state_all(cuda_state)
+
+
+@contextmanager
 def _temporary_eval_mode(agent: Any, eval_epsilon: float) -> Any:
     missing = object()
     original_training_enabled = getattr(agent, "training_enabled", missing)
     original_exploration_enabled = getattr(agent, "exploration_enabled", missing)
     original_epsilon = getattr(agent, "epsilon", missing)
+    # Preserve each submodule's flag: a training network can contain frozen layers.
+    modules = (
+        {
+            module: module.training
+            for value in vars(agent).values()
+            if callable(getattr(value, "modules", None))
+            for module in value.modules()
+        }
+        if hasattr(agent, "__dict__")
+        else {}
+    )
 
     try:
         set_training_mode = getattr(agent, "set_training_mode", None)
@@ -362,6 +405,8 @@ def _temporary_eval_mode(agent: Any, eval_epsilon: float) -> Any:
             set_exploration_mode(eval_epsilon > 0.0)
         elif original_exploration_enabled is not missing:
             agent.exploration_enabled = eval_epsilon > 0.0
+        for module in modules:
+            module.training = False
 
         yield
     finally:
@@ -381,30 +426,30 @@ def _temporary_eval_mode(agent: Any, eval_epsilon: float) -> Any:
 
         if original_epsilon is not missing:
             agent.epsilon = original_epsilon
+        for module, training in modules.items():
+            module.training = training
 
 
 @contextmanager
 def _temporary_agent_state(agent: Any) -> Any:
+    # Networks/optimizer are read-only with training disabled; replay has its own
+    # efficient snapshot. Copy all remaining state so rule-based and recurrent
+    # agents are covered too, including nested histories and private RNG objects.
+    excluded = {"memory", "optimizer"}
+    original_attrs = set(vars(agent)) if hasattr(agent, "__dict__") else set()
     attr_snapshots = {
         attr_name: _copy_agent_attr(getattr(agent, attr_name))
-        for attr_name in (
-            "current_episode_reward",
-            "episode_rewards",
-            "episode_buffer",
-            "last_state",
-            "last_action",
-            "training_step",
-            "step_count",
-            "loss_history",
-            "reward_history",
-        )
-        if hasattr(agent, attr_name)
+        for attr_name in original_attrs - excluded
+        if not callable(getattr(getattr(agent, attr_name), "modules", None))
     }
     replay_snapshot = _snapshot_replay_memory(agent)
 
     try:
         yield
     finally:
+        if hasattr(agent, "__dict__"):
+            for attr_name in set(vars(agent)) - original_attrs:
+                delattr(agent, attr_name)
         for attr_name, value in attr_snapshots.items():
             _restore_agent_attr(agent, attr_name, value)
         _restore_replay_memory(agent, replay_snapshot)
@@ -412,28 +457,21 @@ def _temporary_agent_state(agent: Any) -> Any:
 
 @contextmanager
 def _temporary_game_config(config: EvaluationConfig) -> Any:
-    touched: dict[str, Any] = {}
+    original_game = game_config.model_copy(deep=True)
+    original_ai = ai_config.model_copy(deep=True)
     try:
         if config.max_score is not None and hasattr(game_config, "MAX_SCORE"):
-            touched["MAX_SCORE"] = game_config.MAX_SCORE
             game_config.MAX_SCORE = config.max_score
         if config.bonuses_enabled is not None and hasattr(game_config, "BONUSES_ENABLED"):
-            touched["BONUSES_ENABLED"] = game_config.BONUSES_ENABLED
             game_config.BONUSES_ENABLED = config.bonuses_enabled
         yield
     finally:
-        for name, value in touched.items():
-            setattr(game_config, name, value)
+        _restore_config(game_config, original_game)
+        _restore_config(ai_config, original_ai)
 
 
 def _copy_agent_attr(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        return value.copy()
-    if isinstance(value, list):
-        return list(value)
-    if isinstance(value, tuple):
-        return tuple(value)
-    return value
+    return copy.deepcopy(value)
 
 
 def _restore_agent_attr(agent: Any, attr_name: str, value: Any) -> None:

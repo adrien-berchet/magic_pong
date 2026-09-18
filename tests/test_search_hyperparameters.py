@@ -126,18 +126,25 @@ def test_objective_wires_training_and_evaluation(
         checkpoint_path.touch()
         return checkpoint_path
 
-    fake_opponent = MagicMock()
-    fake_opponent.win_rate = 0.75
     fake_result = MagicMock()
-    fake_result.opponents = [fake_opponent]
+    configs = []
+
+    def evaluate(path, config):
+        configs.append(config)
+        return fake_result
 
     monkeypatch.setattr(search_module, "run_trial_training", fake_run_trial_training)
     monkeypatch.setattr(
-        search_module.evaluation,
-        "evaluate_checkpoint",
-        lambda path, config: fake_result,
+        search_module.competitive,
+        "evaluate_competitive_checkpoint",
+        evaluate,
     )
-    monkeypatch.setattr(search_module.evaluation, "result_to_dict", lambda result: {"fake": True})
+    monkeypatch.setattr(
+        search_module.competitive, "competitive_result_to_dict", lambda result: {"fake": True}
+    )
+    monkeypatch.setattr(
+        search_module.competitive, "competitive_rank", lambda result: (0.55, 0.75, 1.0, 0.9)
+    )
 
     trial = optuna.trial.FixedTrial(
         {
@@ -159,9 +166,13 @@ def test_objective_wires_training_and_evaluation(
         early_stopping=100,
     )
 
-    assert score == pytest.approx(0.75)
+    assert score == pytest.approx(0.55)
     assert trial.user_attrs["checkpoint_path"] == str(checkpoint_path)
     assert trial.user_attrs["eval_result"] == {"fake": True}
+    assert configs[0].seeds == (101, 102, 103, 104, 105)
+    assert configs[0].player_sides == (1, 2)
+    assert configs[0].bonus_modes == (False, True)
+    assert configs[0].max_score == 11
 
 
 def test_run_final_tournament_selects_top_n_and_builtins(
@@ -544,3 +555,21 @@ def test_main_rejects_zero_workers(tmp_path: Path) -> None:
                 "0",
             ]
         )
+
+
+def test_study_resume_rejects_legacy_objective_and_changed_protocol() -> None:
+    legacy = optuna.create_study(direction="maximize")
+    legacy.add_trial(optuna.trial.create_trial(value=0.95))
+    with pytest.raises(ValueError, match="new study"):
+        search_module.ensure_study_protocol(legacy, eval_episodes=3)
+
+    study = optuna.create_study(direction="maximize")
+    search_module.ensure_study_protocol(study, eval_episodes=3)
+    search_module.ensure_study_protocol(study, eval_episodes=3)
+    with pytest.raises(ValueError, match="new study"):
+        search_module.ensure_study_protocol(study, eval_episodes=10)
+
+
+def test_search_rejects_empty_validation_before_training() -> None:
+    with pytest.raises(SystemExit):
+        search_module.parse_search_args(["--study-name", "invalid", "--eval-episodes", "0"])

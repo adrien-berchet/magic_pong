@@ -127,3 +127,63 @@ def test_phase3_reward_shaping_clears_stale_optimal_point_when_ball_not_approach
         )
 
     assert calculator.get_optimal_points() == {}
+
+
+@pytest.mark.parametrize("mode", ["legacy", "phase3"])
+@pytest.mark.parametrize("scale", [0.0, 0.35])
+def test_all_auxiliary_rewards_obey_micro_reward_scale(mode: str, scale: float) -> None:
+    initial = player1_state(player_y=360.0, previous_player_y=400.0)
+    closer = player1_state(player_y=260.0, previous_player_y=360.0)
+    events = {
+        "paddle_hits": [{"player": 1}],
+        "rotating_paddle_hits": [{"player": 1}],
+        "bonus_collected": [{"player": 1}],
+    }
+
+    def reward_at(factor: float) -> float:
+        calculator = RewardCalculator()
+        with ai_config_tmp(
+            REWARD_SHAPING_MODE=mode,
+            USE_PROXIMITY_REWARD=True,
+            MICRO_REWARD_SCALE=factor,
+        ):
+            calculator.calculate_reward(initial, {}, player_id=1)
+            return calculator.calculate_reward(closer, events, player_id=1)
+
+    full_reward = reward_at(1.0)
+    assert full_reward != 0.0
+    assert reward_at(scale) == pytest.approx(scale * full_reward)
+
+
+@pytest.mark.parametrize("mode", ["legacy", "phase3"])
+@pytest.mark.parametrize("scorer", [1, 2])
+def test_zero_shaping_scale_preserves_only_goal_outcome(mode: str, scorer: int) -> None:
+    events = {
+        "goals": [{"player": scorer}],
+        "paddle_hits": [{"player": 1}],
+        "rotating_paddle_hits": [{"player": 1}],
+        "bonus_collected": [{"player": 1}],
+    }
+    with ai_config_tmp(REWARD_SHAPING_MODE=mode, USE_PROXIMITY_REWARD=True, MICRO_REWARD_SCALE=0.0):
+        reward = RewardCalculator().calculate_reward(
+            player1_state(player_y=260.0, previous_player_y=360.0), events, player_id=1
+        )
+    expected = ai_config.SCORE_REWARD if scorer == 1 else ai_config.LOSE_PENALTY
+    assert reward == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("mode", ["legacy", "phase3"])
+def test_shaping_history_still_advances_while_scale_is_zero(mode: str) -> None:
+    always_enabled = RewardCalculator()
+    temporarily_disabled = RewardCalculator()
+    initial = player1_state(player_y=360.0, previous_player_y=400.0)
+    closer = player1_state(player_y=260.0, previous_player_y=360.0)
+    with ai_config_tmp(REWARD_SHAPING_MODE=mode, USE_PROXIMITY_REWARD=True):
+        with ai_config_tmp(MICRO_REWARD_SCALE=1.0):
+            always_enabled.calculate_reward(initial, {}, player_id=1)
+        with ai_config_tmp(MICRO_REWARD_SCALE=0.0):
+            temporarily_disabled.calculate_reward(initial, {}, player_id=1)
+        with ai_config_tmp(MICRO_REWARD_SCALE=1.0):
+            expected = always_enabled.calculate_reward(closer, {}, player_id=1)
+            actual = temporarily_disabled.calculate_reward(closer, {}, player_id=1)
+    assert actual == pytest.approx(expected)

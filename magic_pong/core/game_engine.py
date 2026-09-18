@@ -60,6 +60,10 @@ class GameEngine:
         self.player1 = player1
         self.player2 = player2
 
+        # Planning players need the live engine; rule-based and neural players ignore this.
+        _call_player_hook(player1, "bind_physics", self.physics_engine, 1)
+        _call_player_hook(player2, "bind_physics", self.physics_engine, 2)
+
         # Notify AI players of episode start
         _call_player_hook(player1, "on_episode_start")
         _call_player_hook(player2, "on_episode_start")
@@ -290,6 +294,8 @@ class TrainingManager:
         episode_stats: dict[str, Any] = {
             "steps": 0,
             "winner": 0,
+            "terminated": False,
+            "truncated": False,
             "total_reward_p1": 0.0,
             "total_reward_p2": 0.0,
             "events": [],
@@ -340,6 +346,8 @@ class TrainingManager:
 
             if result["done"]:
                 episode_stats["winner"] = result["info"].get("winner", 0)
+                episode_stats["terminated"] = bool(result["info"].get("terminated", False))
+                episode_stats["truncated"] = bool(result["info"].get("truncated", False))
                 break
 
         # Update training statistics

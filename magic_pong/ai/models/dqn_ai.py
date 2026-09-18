@@ -6,7 +6,9 @@ Vanilla DQN with Double DQN action selection (van Hasselt et al., 2015).
 import random
 from collections import deque
 from collections import namedtuple
+from os import PathLike
 from typing import Any
+from typing import BinaryIO
 from typing import cast
 
 import numpy as np
@@ -16,9 +18,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_FEATURES
+from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_NORMALIZER
+from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_STATE_SIZE
 from magic_pong.ai.models.dqn_checkpoint import build_dqn_checkpoint_metadata
 from magic_pong.ai.models.dqn_checkpoint import safe_torch_load
 from magic_pong.ai.models.dqn_checkpoint import validate_dqn_checkpoint
+from magic_pong.ai.policy_anchor import PolicyAnchor
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import game_config
 
@@ -45,6 +51,8 @@ def resolve_layer_widths(
 class DQNNetwork(nn.Module):
     """Deep Q-Network: stack of Linear→ReLU layers."""
 
+    score_context_weight: nn.Parameter | None
+
     def __init__(
         self,
         input_size: int,
@@ -52,17 +60,37 @@ class DQNNetwork(nn.Module):
         output_size: int = 9,
         layer_size: int = 2,
         hidden_layers: list[int] | None = None,
+        score_context: bool = False,
     ):
         super().__init__()
         layer_sizes = resolve_layer_widths(hidden_size, layer_size, hidden_layers)
+        if score_context and input_size != SCORE_CONTEXT_STATE_SIZE:
+            raise ValueError("Score-context networks require 33 input values")
+        legacy_input_size = (
+            input_size - len(SCORE_CONTEXT_FEATURES) if score_context else input_size
+        )
 
         self.fc_layers = nn.ModuleList()
         for i, width in enumerate(layer_sizes):
-            in_features = input_size if i == 0 else layer_sizes[i - 1]
+            in_features = legacy_input_size if i == 0 else layer_sizes[i - 1]
             self.fc_layers.append(nn.Linear(in_features, width))
 
         self.output_layer = nn.Linear(layer_sizes[-1], output_size)
         self._initialize_weights()
+        # Allocate after legacy initialization; adding context must consume no RNG.
+        self.register_parameter("score_context_weight", None)
+        if score_context:
+            self.enable_score_context()
+
+    def enable_score_context(self) -> None:
+        """Add a zero projection without changing the existing layers or RNG."""
+        if self.score_context_weight is None:
+            first = self.fc_layers[0]
+            if first.in_features != 30:
+                raise ValueError("Score context can only extend a 30-input network")
+            self.score_context_weight = nn.Parameter(
+                first.weight.new_zeros((first.out_features, len(SCORE_CONTEXT_FEATURES)))
+            )
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
@@ -71,6 +99,16 @@ class DQNNetwork(nn.Module):
                 nn.init.constant_(m.bias, 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.score_context_weight is not None:
+            # Keep the legacy matrix shape and strides for bitwise initial parity.
+            context = x[..., 30:]
+            x = F.relu(
+                self.fc_layers[0](x[..., :30].contiguous())
+                + F.linear(context, self.score_context_weight)
+            )
+            for i in range(1, len(self.fc_layers)):
+                x = F.relu(self.fc_layers[i](x))
+            return self.output_layer(x)
         for fc in self.fc_layers:
             x = F.relu(fc(x))
         return self.output_layer(x)
@@ -123,6 +161,8 @@ class DQNAgent(AIPlayer):
         layer_size: int = 2,
         hidden_layers: list[int] | None = None,
         name: str = "DQN AI",
+        terminal_on_goal: bool = False,
+        score_context: bool = False,
     ):
         """
         Vanilla DQN agent.
@@ -145,10 +185,16 @@ class DQNAgent(AIPlayer):
             hidden_layers: Explicit per-layer neuron counts, e.g. [256, 128, 64].
                 Overrides hidden_size/layer_size with a fully manual architecture.
             name: Agent display name
+            terminal_on_goal: Stop the learning return at every goal without ending the match.
+            score_context: Append own score, opponent score and match target (33 inputs).
         """
         super().__init__(name)
 
-        self.state_size = state_size
+        if score_context and state_size not in (30, SCORE_CONTEXT_STATE_SIZE):
+            raise ValueError("Score context extends the 30-input observation contract")
+        self.score_context = score_context
+        self.state_size = SCORE_CONTEXT_STATE_SIZE if score_context else state_size
+        state_size = self.state_size
         self.action_size = action_size
         self.lr = lr
         self.gamma = gamma
@@ -159,6 +205,9 @@ class DQNAgent(AIPlayer):
         self.train_frequency = train_frequency
         self.min_replay_size = min(memory_size, min_replay_size)
         self.target_update_frequency = target_update_frequency
+        self.terminal_on_goal = terminal_on_goal
+        # Training-only auxiliary state is owned and checkpointed by the frame runner.
+        self.policy_anchor: PolicyAnchor | None = None
 
         # Decision-time state/action waiting for the environment step result
         self.last_state: np.ndarray | None = None
@@ -177,10 +226,16 @@ class DQNAgent(AIPlayer):
         self.layer_size = len(layer_widths)
 
         self.q_network = DQNNetwork(
-            state_size, output_size=action_size, hidden_layers=layer_widths
+            state_size,
+            output_size=action_size,
+            hidden_layers=layer_widths,
+            score_context=score_context,
         ).to(device)
         self.target_network = DQNNetwork(
-            state_size, output_size=action_size, hidden_layers=layer_widths
+            state_size,
+            output_size=action_size,
+            hidden_layers=layer_widths,
+            score_context=score_context,
         ).to(device)
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
@@ -193,6 +248,19 @@ class DQNAgent(AIPlayer):
         self.loss_history: list[float] = []
         self.reward_history: list[float] = []
         self.grad_norm_history: list[float] = []
+
+    def enable_score_context(self) -> None:
+        """Upgrade a weights-only warm start; empty replay and a fresh optimizer are required."""
+        if self.score_context:
+            return
+        if self.state_size != 30 or len(self.memory):
+            raise ValueError("Score-context migration requires a 30-input agent with empty replay")
+        self.q_network.enable_score_context()
+        self.target_network.enable_score_context()
+        self.score_context = True
+        self.state_size = SCORE_CONTEXT_STATE_SIZE
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
+        self._clear_pending_transition()
 
     def get_action(self, observation: dict[str, Any] | None, explore: bool | None = None) -> Action:
         """Convert observation to action via the Q-network (or epsilon-greedy)."""
@@ -217,9 +285,23 @@ class DQNAgent(AIPlayer):
     ) -> None:
         """Store transition and train when conditions are met."""
         current_state = self._observation_to_state(observation)
+        transition_done = bool(done)
+        if "terminated" in info or "truncated" in info:
+            transition_done = bool(
+                info.get("terminated", done and not info.get("truncated", False))
+            )
+
+        if self.terminal_on_goal and info.get("events", {}).get("goals"):
+            transition_done = True
 
         if self.training_enabled and self.last_state is not None and self.last_action is not None:
-            self.remember(self.last_state, self.last_action, reward, current_state, done)
+            self.remember(
+                self.last_state,
+                self.last_action,
+                reward,
+                current_state,
+                transition_done,
+            )
             self.step_count += 1
 
             if (
@@ -233,13 +315,22 @@ class DQNAgent(AIPlayer):
 
     def _observation_to_state(self, observation: dict[str, Any]) -> np.ndarray:
         """
-        Convert a game observation dict to a 30-dimensional state vector.
+        Convert an observation to 30 legacy values, optionally followed by 3 score values.
 
         Dimensions: 10 base + 5 extra + 9 bonus (3×3) + 6 rotating paddle (2×3) = 30
         """
-        _fw = float(game_config.FIELD_WIDTH)
-        _fh = float(game_config.FIELD_HEIGHT)
-        _ms = float(game_config.MAX_BALL_SPEED)
+        # Legacy unmarked observations are raw. Never infer units from a mutable
+        # global flag, nor normalize observations twice when the producer did it.
+        normalized = observation.get("positions_normalized", False)
+        _fw = 1.0 if normalized else float(observation.get("field_width", game_config.FIELD_WIDTH))
+        _fh = (
+            1.0 if normalized else float(observation.get("field_height", game_config.FIELD_HEIGHT))
+        )
+        _ms = (
+            1.0
+            if normalized
+            else float(observation.get("max_ball_speed", game_config.MAX_BALL_SPEED))
+        )
 
         # Base state: 10 dimensions
         base_state = [
@@ -294,6 +385,23 @@ class DQNAgent(AIPlayer):
                 rotating_paddle_state.extend([0.0, 0.0, 0.0])
 
         full_state = base_state + extra_state + bonus_state + rotating_paddle_state
+        if self.score_context:
+            try:
+                context = np.asarray(
+                    [observation[k] for k in SCORE_CONTEXT_FEATURES], dtype=np.float32
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Missing or invalid score context in observation") from exc
+            if (
+                context.shape != (3,)
+                or not np.isfinite(context).all()
+                or (context[:2] < 0).any()
+                or context[2] <= 0
+            ):
+                raise ValueError(
+                    "Invalid score context: finite nonnegative scores and positive target required"
+                )
+            full_state.extend(context / SCORE_CONTEXT_NORMALIZER)
         return np.array(full_state, dtype=np.float32)
 
     def _action_to_index(self, action: Action) -> int:
@@ -370,7 +478,11 @@ class DQNAgent(AIPlayer):
             return
         last = self.memory.buffer[-1]
         self.memory.buffer[-1] = Transition(
-            last.state, last.action, last.reward + extra_reward, last.next_state, last.done
+            last.state,
+            last.action,
+            last.reward + extra_reward,
+            last.next_state,
+            last.done,
         )
 
     def act(
@@ -442,7 +554,10 @@ class DQNAgent(AIPlayer):
         experiences = self.memory.sample(self.batch_size)
         weights = torch.ones(len(experiences)).to(device)
 
-        loss = self._compute_dqn_loss(experiences, weights)
+        td_loss = self._compute_dqn_loss(experiences, weights)
+        loss = td_loss
+        if self.policy_anchor is not None and self.policy_anchor.active:
+            loss = loss + self.policy_anchor.loss(self.q_network, self.batch_size, td_loss)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -454,14 +569,14 @@ class DQNAgent(AIPlayer):
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
         self.training_step += 1
-        self.loss_history.append(loss.item())
+        self.loss_history.append(td_loss.item())
 
         if self.training_step % self.target_update_frequency == 0:
             self.update_target_network()
 
         return float(loss.item())
 
-    def save_model(self, filepath: str) -> None:
+    def save_model(self, filepath: str | PathLike[str] | BinaryIO) -> None:
         """Save checkpoint to disk."""
         torch.save(
             {
@@ -477,12 +592,15 @@ class DQNAgent(AIPlayer):
                 "metadata": build_dqn_checkpoint_metadata(
                     state_size=self.state_size,
                     action_size=self.action_size,
+                    score_context=self.score_context,
                 ),
                 "hyperparameters": {
                     "state_size": self.state_size,
                     "action_size": self.action_size,
                     "lr": self.lr,
                     "gamma": self.gamma,
+                    "terminal_on_goal": self.terminal_on_goal,
+                    "score_context": self.score_context,
                     "epsilon_min": self.epsilon_min,
                     "epsilon_decay": self.epsilon_decay,
                     "batch_size": self.batch_size,
@@ -494,14 +612,17 @@ class DQNAgent(AIPlayer):
             filepath,
         )
 
-    def load_model(self, filepath: str) -> None:
+    def load_model(self, filepath: str | PathLike[str] | BinaryIO) -> None:
         """Load checkpoint from disk."""
         checkpoint = safe_torch_load(filepath, map_location=device)
         validate_dqn_checkpoint(checkpoint)
+        self.policy_anchor = None
+        self.terminal_on_goal = checkpoint.get("hyperparameters", {}).get("terminal_on_goal", False)
 
         if "hyperparameters" in checkpoint:
             hyperparams = checkpoint["hyperparameters"]
             self.state_size = hyperparams["state_size"]
+            self.score_context = hyperparams.get("score_context", False)
             self.action_size = hyperparams["action_size"]
             self.lr = hyperparams["lr"]
             self.gamma = hyperparams["gamma"]
@@ -522,10 +643,16 @@ class DQNAgent(AIPlayer):
             self.hidden_size = layer_widths[0]
             self.layer_size = len(layer_widths)
             self.q_network = DQNNetwork(
-                self.state_size, output_size=self.action_size, hidden_layers=layer_widths
+                self.state_size,
+                output_size=self.action_size,
+                hidden_layers=layer_widths,
+                score_context=self.score_context,
             ).to(device)
             self.target_network = DQNNetwork(
-                self.state_size, output_size=self.action_size, hidden_layers=layer_widths
+                self.state_size,
+                output_size=self.action_size,
+                hidden_layers=layer_widths,
+                score_context=self.score_context,
             ).to(device)
             self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
 

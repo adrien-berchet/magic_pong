@@ -4,7 +4,6 @@ Simple AI examples for Magic Pong
 
 import math
 import random
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,10 +11,26 @@ from magic_pong.ai.interface import AIPlayer
 from magic_pong.core.entities import Action
 from magic_pong.utils.config import game_config
 
+BUILTIN_OPPONENTS = (
+    "random",
+    "dummy",
+    "training_dummy",
+    "follow_ball",
+    "defensive",
+    "aggressive",
+    "predictive",
+    "tracker",
+    "striker",
+)
+
 
 @dataclass(frozen=True)
 class UnitObservation:
-    """Observation values converted to unit-coordinate heuristic space."""
+    """Observation values converted to unit-coordinate heuristic space.
+
+    ``player_pos`` is the paddle centre, not the top-left corner reported by the
+    raw observation, so heuristics can compare it directly with the ball.
+    """
 
     ball_pos: tuple[float, float]
     player_pos: tuple[float, float]
@@ -23,6 +38,23 @@ class UnitObservation:
     bonuses: tuple[tuple[Any, ...], ...]
     field_width_extent: float
     field_height_extent: float
+    paddle_height: float = game_config.PADDLE_HEIGHT / game_config.FIELD_HEIGHT
+
+
+@dataclass(frozen=True)
+class PixelObservation:
+    """Observation values in field pixels, for geometry that needs real units."""
+
+    ball_pos: tuple[float, float]
+    ball_vel: tuple[float, float]
+    paddle_centre: tuple[float, float]
+    paddle_height: float
+    field_width: float
+    field_height: float
+
+    @property
+    def side(self) -> int:
+        return 1 if self.paddle_centre[0] < self.field_width / 2 else 2
 
 
 class UnitObservationMixin:
@@ -35,18 +67,85 @@ class UnitObservationMixin:
         ball_pos = observation["ball_pos"]
         player_pos = observation["player_pos"]
         ball_vel = observation.get("ball_vel", [0.0, 0.0])
+        normalized = observation.get("positions_normalized")
+        max_ball_speed = _field_extent(
+            observation.get("max_ball_speed"), game_config.MAX_BALL_SPEED
+        )
+        paddle_height = _paddle_height(
+            observation.get("player_paddle_size"), game_config.PADDLE_HEIGHT
+        )
+        top_left = _unit_xy_position(player_pos, field_width, field_height, normalized)
 
         return UnitObservation(
-            ball_pos=_unit_xy_position(ball_pos, field_width, field_height),
-            player_pos=_unit_xy_position(player_pos, field_width, field_height),
-            ball_vel=(
-                _unit_velocity(float(ball_vel[0])),
-                _unit_velocity(float(ball_vel[1])),
+            ball_pos=_unit_xy_position(ball_pos, field_width, field_height, normalized),
+            player_pos=(
+                top_left[0] + game_config.PADDLE_WIDTH / 2 / field_width,
+                top_left[1] + paddle_height / 2 / field_height,
             ),
-            bonuses=_unit_bonuses(observation.get("bonuses", []), field_width, field_height),
+            ball_vel=(
+                _unit_velocity(float(ball_vel[0]), normalized, max_ball_speed),
+                _unit_velocity(float(ball_vel[1]), normalized, max_ball_speed),
+            ),
+            bonuses=_unit_bonuses(
+                observation.get("bonuses", []), field_width, field_height, normalized
+            ),
             field_width_extent=field_width,
             field_height_extent=field_height,
+            paddle_height=paddle_height / field_height,
         )
+
+    def _pixel_observation(self, observation: dict[str, Any]) -> PixelObservation:
+        unit = self._unit_observation(observation)
+        width, height = unit.field_width_extent, unit.field_height_extent
+        max_ball_speed = _field_extent(
+            observation.get("max_ball_speed"), game_config.MAX_BALL_SPEED
+        )
+        return PixelObservation(
+            ball_pos=(unit.ball_pos[0] * width, unit.ball_pos[1] * height),
+            ball_vel=(unit.ball_vel[0] * max_ball_speed, unit.ball_vel[1] * max_ball_speed),
+            paddle_centre=(unit.player_pos[0] * width, unit.player_pos[1] * height),
+            paddle_height=unit.paddle_height * height,
+            field_width=width,
+            field_height=height,
+        )
+
+
+def _paddle_height(value: Any, fallback: float) -> float:
+    if isinstance(value, list | tuple) and len(value) >= 2:
+        value = value[1]
+    try:
+        height = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(height) or height <= 0:
+        return fallback
+    return height
+
+
+def predict_intercept_y(
+    pixels: PixelObservation, face_x: float | None = None
+) -> tuple[float, float] | None:
+    """Wall-reflected ball y and arrival time at the paddle face, or None if moving away."""
+    radius = game_config.BALL_RADIUS
+    ball_x, ball_y = pixels.ball_pos
+    vel_x, vel_y = pixels.ball_vel
+    if face_x is None:
+        half_width = game_config.PADDLE_WIDTH / 2
+        face_x = (
+            pixels.paddle_centre[0] + half_width + radius
+            if pixels.side == 1
+            else pixels.paddle_centre[0] - half_width - radius
+        )
+    if abs(vel_x) < 1e-9:
+        return None
+    arrival = (face_x - ball_x) / vel_x
+    if arrival < 0:
+        return None
+    span = pixels.field_height - 2 * radius
+    if span <= 0:
+        return pixels.field_height / 2, arrival
+    unfolded = (ball_y + arrival * vel_y - radius) % (2 * span)
+    return radius + min(unfolded, 2 * span - unfolded), arrival
 
 
 def _field_extent(value: Any, fallback: float) -> float:
@@ -59,27 +158,37 @@ def _field_extent(value: Any, fallback: float) -> float:
     return extent
 
 
-def _unit_xy_position(value: Any, field_width: float, field_height: float) -> tuple[float, float]:
+def _unit_xy_position(
+    value: Any, field_width: float, field_height: float, normalized: bool | None = None
+) -> tuple[float, float]:
     return (
-        _unit_position_axis(float(value[0]), field_width),
-        _unit_position_axis(float(value[1]), field_height),
+        _unit_position_axis(float(value[0]), field_width, normalized),
+        _unit_position_axis(float(value[1]), field_height, normalized),
     )
 
 
-def _unit_position_axis(value: float, extent: float) -> float:
+def _unit_position_axis(value: float, extent: float, normalized: bool | None = None) -> float:
+    if normalized is not None:
+        return value if normalized else value / extent
+    # Retain magnitude inference only for legacy unmarked observations.
     if extent > 1.0 and abs(value) > 1.0:
         return value / extent
     return value
 
 
-def _unit_velocity(value: float) -> float:
+def _unit_velocity(
+    value: float, normalized: bool | None = None, max_ball_speed: float | None = None
+) -> float:
+    scale = game_config.MAX_BALL_SPEED if max_ball_speed is None else max_ball_speed
+    if normalized is not None:
+        return value if normalized else value / scale
     if abs(value) > 1.0:
-        return value / game_config.MAX_BALL_SPEED
+        return value / scale
     return value
 
 
 def _unit_bonuses(
-    bonuses: Any, field_width: float, field_height: float
+    bonuses: Any, field_width: float, field_height: float, normalized: bool | None = None
 ) -> tuple[tuple[Any, ...], ...]:
     unit_bonuses = []
     for bonus in bonuses:
@@ -87,8 +196,8 @@ def _unit_bonuses(
             continue
         unit_bonuses.append(
             (
-                _unit_position_axis(float(bonus[0]), field_width),
-                _unit_position_axis(float(bonus[1]), field_height),
+                _unit_position_axis(float(bonus[0]), field_width, normalized),
+                _unit_position_axis(float(bonus[1]), field_height, normalized),
                 *tuple(bonus[2:]),
             )
         )
@@ -168,7 +277,7 @@ class TrainingDummyAI(UnitObservationMixin, AIPlayer):
             self.center_x = 0.25
 
         # Very slow, predictable movement around center position
-        time_factor = time.time() * 0.5  # Slow oscillation
+        time_factor = float(observation.get("time_elapsed", 0.0)) * 0.5
         target_x = self.center_x + (20.0 / unit_observation.field_width_extent) * math.sin(
             time_factor
         )
@@ -407,6 +516,64 @@ class PredictiveAI(UnitObservationMixin, AIPlayer):
         self.current_episode_reward += reward
 
 
+class GoalLineTrackerAI(UnitObservationMixin, AIPlayer):
+    """Hold the goal line and keep the paddle centre on the ball's current y.
+
+    The paddle outruns any ball slower than ``PADDLE_SPEED`` in the vertical
+    direction, so this opponent only concedes to fast, steep returns.
+    """
+
+    def __init__(self, name: str = "GoalLineTrackerAI", **kwargs: Any):
+        super().__init__(name=name, **kwargs)
+
+    def _target_y(self, pixels: PixelObservation) -> float:
+        approaching = pixels.ball_vel[0] < 0 if pixels.side == 1 else pixels.ball_vel[0] > 0
+        return pixels.ball_pos[1] if approaching else pixels.field_height / 2
+
+    def get_action(self, observation: dict[str, Any] | None) -> Action:
+        """Retreat to the goal line and track the target y with proportional control."""
+        if observation is None:
+            return Action(move_x=0.0, move_y=0.0)
+        pixels = self._pixel_observation(observation)
+        step = max(game_config.PADDLE_SPEED / game_config.FPS, 1e-9)
+        move_y = (self._target_y(pixels) - pixels.paddle_centre[1]) / step
+        move_x = -1.0 if pixels.side == 1 else 1.0
+        return Action(move_x=move_x, move_y=max(-1.0, min(1.0, move_y)))
+
+    def on_step(
+        self,
+        observation: dict[str, Any],
+        action: Action,
+        reward: float,
+        done: bool,
+        info: dict[str, Any],
+    ) -> None:
+        """Tracker doesn't learn"""
+        self.current_episode_reward += reward
+
+
+class EdgeStrikerAI(GoalLineTrackerAI):
+    """Goal-line defender that predicts the intercept and returns with the paddle edge.
+
+    Hitting away from the centre tilts the bounce normal, sending the ball
+    across to the far half of the field where a chasing opponent is late.
+    """
+
+    def __init__(self, name: str = "EdgeStrikerAI", edge_offset: float = 0.85, **kwargs: Any):
+        super().__init__(name=name, **kwargs)
+        self.edge_offset = max(0.0, min(1.0, edge_offset))
+
+    def _target_y(self, pixels: PixelObservation) -> float:
+        prediction = predict_intercept_y(pixels)
+        if prediction is None:
+            return pixels.field_height / 2
+        intercept_y, _ = prediction
+        direction = 1.0 if intercept_y < pixels.field_height / 2 else -1.0
+        half_height = pixels.paddle_height / 2
+        target = intercept_y - direction * self.edge_offset * half_height
+        return max(half_height, min(pixels.field_height - half_height, target))
+
+
 class HumanPlayer:
     """Class to represent a human player (for graphical interface)"""
 
@@ -433,7 +600,8 @@ def create_ai(ai_type: str, **kwargs: Any) -> AIPlayer:
     Factory to create AIs
 
     Args:
-        ai_type: AI type ('random', 'follow_ball', 'defensive', 'aggressive', 'predictive', 'dummy', 'training_dummy')
+        ai_type: One of BUILTIN_OPPONENTS ('random', 'dummy', 'training_dummy', 'follow_ball',
+            'defensive', 'aggressive', 'predictive', 'tracker', 'striker')
         **kwargs: Additional arguments for the AI
 
     Returns:
@@ -447,6 +615,8 @@ def create_ai(ai_type: str, **kwargs: Any) -> AIPlayer:
         "defensive": DefensiveAI,
         "aggressive": AggressiveAI,
         "predictive": PredictiveAI,
+        "tracker": GoalLineTrackerAI,
+        "striker": EdgeStrikerAI,
     }
 
     if ai_type not in ai_classes:

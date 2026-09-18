@@ -23,13 +23,10 @@ skills that annealing and self-play then build on, so an imbalanced split
 under-prepares the agent for the harder later stages.
 
 Pass --early-stopping N to let a plateaued stage stop before consuming its
-full episode budget (train_optimized.py's existing --early_stopping: stop
-after N episodes without a new best rolling-average reward). Applies
-independently to each of the three pipeline stages -- an early stop in
-curriculum has no effect on annealing's or self-play's own patience clock.
-Set N as a multiple of --log_interval (train_optimized.py's own default 50)
-for predictable behavior, since the patience counter only advances in
-log_interval-sized steps.
+full episode budget after N episodes without a competitive validation
+improvement. Patience resets for each phase and is checked at validation
+events. Validation uses common seeds, both player sides and both bonus modes;
+the weakest matchup's Wilson lower bound is the optimization objective.
 
 Usage:
     python search_hyperparameters.py --study-name my_search --n-trials 50
@@ -70,21 +67,23 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import os
-import statistics
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import optuna
 
 import train_optimized
-from magic_pong.ai import evaluation
+from magic_pong.ai import competitive
 from magic_pong.ai import tournament
 from magic_pong.ai.models.dqn_ai import device as dqn_device
 
-DEFAULT_OPPONENTS = ("random", "follow_ball", "defensive", "aggressive", "predictive")
+DEFAULT_OPPONENTS = competitive.BUILTIN_OPPONENTS
+OBJECTIVE_SCHEMA = "competitive_worst_matchup_v1"
 ARCHITECTURE_HIDDEN_SIZES = (64, 128, 256, 512)
 ARCHITECTURE_LAYER_WIDTHS = (32, 64, 128, 256, 512)
 
@@ -232,15 +231,7 @@ def build_trial_argv(
 
 
 def run_trial_training(argv: list[str]) -> Path:
-    """Train one DQN agent through the full pipeline, returning its final checkpoint path.
-
-    Reimplements the small setup `train_optimized.main()` normally does before
-    dispatching to a training-mode function (output dir creation, checkpoint
-    dir defaulting) rather than calling `main()` itself, so we can disable plot
-    generation by mutating the parsed Namespace -- there is no CLI flag for
-    that, and `main()` re-parses argv internally, so mutating a separately
-    parsed Namespace would have no effect on it.
-    """
+    """Train a pipeline and return its validated best or current final checkpoint."""
     args = train_optimized.parse_arguments(argv)
     args.save_plots = False
 
@@ -252,7 +243,30 @@ def run_trial_training(argv: list[str]) -> Path:
 
     agent = train_optimized.create_agent_from_args(args)
     _agent, training_results = train_optimized.train_pipeline(agent, args)
-    return Path(training_results["final_model_path"])
+    return Path(training_results.get("best_model_path") or training_results["final_model_path"])
+
+
+def search_validation_config(eval_episodes: int) -> competitive.CompetitiveConfig:
+    """Keep the scoring protocol identical for every trial in a study."""
+    return competitive.CompetitiveConfig(
+        opponents=DEFAULT_OPPONENTS,
+        seeds=tuple(range(101, 101 + eval_episodes)),
+        held_out_seeds=tuple(range(1_000_001, 1_000_001 + eval_episodes)),
+    )
+
+
+def ensure_study_protocol(study: optuna.Study, *, eval_episodes: int) -> None:
+    """Prevent resuming search with incomparable historical objective values."""
+    protocol = json.loads(
+        json.dumps(
+            {"schema": OBJECTIVE_SCHEMA, "config": asdict(search_validation_config(eval_episodes))}
+        )
+    )
+    previous = study.user_attrs.get("competitive_protocol")
+    completed = any(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials)
+    if (previous is None and completed) or (previous is not None and previous != protocol):
+        raise ValueError("Search objective/protocol changed; use a new study name for this run")
+    study.set_user_attr("competitive_protocol", protocol)
 
 
 def objective(
@@ -268,10 +282,9 @@ def objective(
 ) -> float:
     """Train and score one hyperparameter/architecture configuration.
 
-    The score is the mean win rate against a fixed set of builtin AIs
-    (`evaluation.evaluate_checkpoint`) -- Elo ranking against other trials only
-    becomes meaningful once the whole study is done, so it's computed
-    separately by `run_final_tournament`, not per-trial.
+    Optimize the weakest matchup's Wilson lower bound across every built-in,
+    player side, and bonus setting. Every trial uses the same validation seeds;
+    held-out seeds are reserved for testing after model selection.
     """
     params = build_search_space(trial)
     trial_dir = output_root / f"trial_{trial.number:04d}"
@@ -287,21 +300,18 @@ def objective(
 
     checkpoint_path = run_trial_training(argv)
 
-    result = evaluation.evaluate_checkpoint(
+    result = competitive.evaluate_competitive_checkpoint(
         checkpoint_path,
-        evaluation.EvaluationConfig(
-            opponents=DEFAULT_OPPONENTS,
-            episodes=eval_episodes,
-            eval_epsilon=0.0,
-            seed=trial.number,
-        ),
+        search_validation_config(eval_episodes),
     )
-    mean_win_rate = statistics.mean(opponent.win_rate for opponent in result.opponents)
+    rank = competitive.competitive_rank(result)
 
     trial.set_user_attr("checkpoint_path", str(checkpoint_path))
-    trial.set_user_attr("eval_result", evaluation.result_to_dict(result))
+    trial.set_user_attr("eval_result", competitive.competitive_result_to_dict(result))
+    trial.set_user_attr("competitive_rank", list(rank))
+    trial.set_user_attr("objective_schema", OBJECTIVE_SCHEMA)
 
-    return mean_win_rate
+    return rank[0]
 
 
 def run_final_tournament(
@@ -315,7 +325,11 @@ def run_final_tournament(
     completed = [trial for trial in study.trials if trial.state == optuna.trial.TrialState.COMPLETE]
     top_trials = sorted(
         completed,
-        key=lambda trial: trial.value if trial.value is not None else float("-inf"),
+        key=lambda trial: tuple(
+            trial.user_attrs.get(
+                "competitive_rank", (trial.value if trial.value is not None else float("-inf"),)
+            )
+        ),
         reverse=True,
     )[:top_n]
 
@@ -368,21 +382,22 @@ def parse_search_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1000,
         help="Episode budget for the self-play (pure goal rewards) phase.",
     )
-    parser.add_argument("--max-steps-per-episode", type=int, default=500)
+    parser.add_argument("--max-steps-per-episode", type=int, default=5000)
     parser.add_argument(
         "--early-stopping",
         type=int,
         default=0,
         help=(
-            "Stop a pipeline stage after N episodes without a new best rolling-"
-            "average reward (0 disables, train_optimized.py's own default). "
-            "Applies independently to each of the three pipeline stages. Set as "
-            "a multiple of train_optimized.py's --log_interval (default 50) for "
-            "predictable behavior, since the patience counter only advances in "
-            "log_interval-sized steps."
+            "Stop a phase after N episodes without a competitive validation improvement "
+            "(0 disables). Checked at validation events, independently for each phase."
         ),
     )
-    parser.add_argument("--eval-episodes", type=int, default=20)
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=3,
+        help="Matches per opponent/side/bonus validation cell; increase for confirmation",
+    )
     parser.add_argument("--top-n", type=int, default=8)
     parser.add_argument("--episodes-per-match", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
@@ -415,7 +430,12 @@ def parse_search_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--skip-tournament", action="store_true", help=argparse.SUPPRESS)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        search_validation_config(args.eval_episodes)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return args
 
 
 def run_study_optimize(study: optuna.Study, args: argparse.Namespace, output_root: Path) -> None:
@@ -558,6 +578,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if not args.tournament_only:
+        ensure_study_protocol(study, eval_episodes=args.eval_episodes)
         if args.n_workers > 1:
             run_parallel_workers(args, output_root)
         else:

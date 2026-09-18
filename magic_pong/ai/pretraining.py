@@ -8,6 +8,8 @@ point before moving on to more complex training against opponents.
 import random
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Literal
+from typing import overload
 
 import numpy as np
 
@@ -23,7 +25,9 @@ from magic_pong.utils.config import game_config
 from magic_pong.utils.config import game_config_tmp
 
 if TYPE_CHECKING:
+    from magic_pong.ai.distillation import PlannerDistiller
     from magic_pong.ai.models.dqn_ai import DQNAgent
+    from magic_pong.ai.simulator_pretraining import SimulatorPretrainer
 
 
 class OptimalPointPretrainer:
@@ -509,11 +513,36 @@ class OptimalPointPretrainer:
         return final_stats
 
 
-def create_pretrainer(**kwargs: Any) -> OptimalPointPretrainer:
+@overload
+def create_pretrainer(
+    *, mode: Literal["legacy"] = "legacy", **kwargs: Any
+) -> OptimalPointPretrainer: ...
+
+
+@overload
+def create_pretrainer(*, mode: Literal["simulator"], **kwargs: Any) -> "SimulatorPretrainer": ...
+
+
+@overload
+def create_pretrainer(*, mode: Literal["distill"], **kwargs: Any) -> "PlannerDistiller": ...
+
+
+@overload
+def create_pretrainer(
+    *, mode: str, **kwargs: Any
+) -> "OptimalPointPretrainer | SimulatorPretrainer | PlannerDistiller": ...
+
+
+def create_pretrainer(
+    *, mode: str = "legacy", **kwargs: Any
+) -> "OptimalPointPretrainer | SimulatorPretrainer | PlannerDistiller":
     """
     Factory to create a pretrainer with default game configuration.
 
     Args:
+        mode: "legacy" for the visual interception helper; "simulator" for
+            supervised action labels collected from full physics rollouts;
+            "distill" for DAgger imitation of the lookahead planner on real matches.
         **kwargs: Additional arguments for the constructor
 
     Returns:
@@ -530,4 +559,14 @@ def create_pretrainer(**kwargs: Any) -> OptimalPointPretrainer:
     # Merge with provided arguments
     defaults.update(kwargs)
 
+    if mode == "simulator":
+        from magic_pong.ai.simulator_pretraining import SimulatorPretrainer
+
+        return SimulatorPretrainer(**defaults)
+    if mode == "distill":
+        from magic_pong.ai.distillation import PlannerDistiller
+
+        return PlannerDistiller(**defaults)
+    if mode != "legacy":
+        raise ValueError("pretrainer mode must be 'legacy', 'simulator' or 'distill'")
     return OptimalPointPretrainer(**defaults)

@@ -161,7 +161,7 @@ def create_human_players(mode: str) -> dict[int, HumanPlayer | None]:
         players[1] = HumanPlayer("Player 1", "wasd")
         players[2] = HumanPlayer("Player 2", "arrows")
 
-    elif mode in ["1vAI", "load_model"]:
+    elif mode in ["1vAI", "1vPlanner", "load_model"]:
         # One human player vs AI
         players[1] = HumanPlayer("Player", "wasd")
         # players[2] will be set to an AI player elsewhere

@@ -153,6 +153,9 @@ class Paddle:
         player_id: int,
         width: float | None = None,
         height: float | None = None,
+        *,
+        field_width: float | None = None,
+        field_height: float | None = None,
     ):
         self.position = Vector2D(x, y)
         self.prev_position = Vector2D(x, y)
@@ -162,21 +165,23 @@ class Paddle:
         self.height = height if height is not None else game_config.PADDLE_HEIGHT
         self.original_height = self.height
         self.size_effect_timer = 0.0
+        self.field_width = game_config.FIELD_WIDTH if field_width is None else field_width
+        self.field_height = game_config.FIELD_HEIGHT if field_height is None else field_height
 
         # Movement limits according to player
         if player_id == 1:  # Left player
             self.min_x = game_config.PADDLE_MARGIN
-            self.max_x = game_config.FIELD_WIDTH / 2 - self.width - game_config.PADDLE_MARGIN
+            self.max_x = self.field_width / 2 - self.width - game_config.PADDLE_MARGIN
         else:  # Right player
-            self.min_x = game_config.FIELD_WIDTH / 2 + game_config.PADDLE_MARGIN
-            self.max_x = game_config.FIELD_WIDTH - self.width - game_config.PADDLE_MARGIN
+            self.min_x = self.field_width / 2 + game_config.PADDLE_MARGIN
+            self.max_x = self.field_width - self.width - game_config.PADDLE_MARGIN
 
         self.min_y = 0.0
         self._recompute_y_bounds()
 
     def _recompute_y_bounds(self) -> None:
         """Refresh vertical bounds after height changes."""
-        self.max_y = game_config.FIELD_HEIGHT - self.height
+        self.max_y = self.field_height - self.height
 
     def update(self, dt: float) -> None:
         """Updates the paddle (temporary effects)"""
@@ -206,7 +211,7 @@ class Paddle:
             min(
                 self.height * multiplier,
                 self.original_height * 4,
-                game_config.FIELD_HEIGHT * 0.95,
+                self.field_height * 0.95,
             ),
             self.original_height * 0.25,
         )  # Limit min and max size

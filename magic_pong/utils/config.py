@@ -91,9 +91,17 @@ class GameConfig(BaseModel):
 
     # Ball physics
     BALL_RADIUS: float = Field(default=8.0, gt=0, description="Ball radius in pixels")
-    MAX_BALL_SPEED: float = Field(default=500.0, gt=0, description="Maximum ball speed")
-    BALL_SPEED: float = Field(default=300.0, gt=0, description="Initial ball speed")
-    BALL_SPEED_INCREASE: float = Field(default=1.05, gt=0, description="Speed increase factor")
+    MAX_BALL_SPEED: float = Field(
+        default=900.0,
+        gt=0,
+        description="Maximum ball speed; above PADDLE_SPEED so long rallies can beat a defender",
+    )
+    BALL_SPEED: float = Field(default=300.0, gt=0, description="Serve speed after each goal")
+    BALL_SPEED_INCREASE: float = Field(
+        default=1.05,
+        gt=0,
+        description="Speed multiplier applied at every paddle bounce (1.0 keeps speed constant)",
+    )
 
     # Player paddles
     PADDLE_WIDTH: float = Field(default=15.0, gt=0, description="Paddle width in pixels")
@@ -253,7 +261,10 @@ class AIConfig(BaseModel):
         default=1.0,
         ge=0.0,
         le=1.0,
-        description="Scale factor for micro-rewards (hits, bonuses). 1.0 = full, 0.0 = disabled.",
+        description=(
+            "Scale all auxiliary rewards (hits, bonuses, proximity and Phase 3 shaping). "
+            "1.0 = full, 0.0 = goal outcomes only."
+        ),
     )
     USE_PROXIMITY_REWARD: bool = Field(default=False, description="Enable proximity rewards")
     PROXIMITY_REWARD_FACTOR: float = Field(default=0.01, ge=0, description="Proximity reward")

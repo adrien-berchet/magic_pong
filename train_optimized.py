@@ -46,14 +46,20 @@ AI_TYPES = [
     "predictive",
     "dummy",
     "training_dummy",
+    "tracker",
+    "striker",
 ]
 
 DEFAULT_OPPONENT_MIX = {
-    "defensive": 0.35,
-    "follow_ball": 0.20,
-    "predictive": 0.20,
-    "random": 0.15,
-    "dummy": 0.10,
+    "defensive": 0.16,
+    "follow_ball": 0.16,
+    "aggressive": 0.20,
+    "predictive": 0.12,
+    "random": 0.08,
+    "dummy": 0.04,
+    "training_dummy": 0.04,
+    "tracker": 0.10,
+    "striker": 0.10,
 }
 DEFAULT_OPPONENT_MIX_CLI = ",".join(
     f"{name}:{weight:g}" for name, weight in DEFAULT_OPPONENT_MIX.items()
@@ -89,6 +95,34 @@ class EvaluationGate:
     threshold: float
 
 
+@dataclass
+class PhaseTrainingResult:
+    """Training phase result that still unpacks like the legacy five-tuple."""
+
+    rewards: list[float]
+    goals_for: int
+    goals: int
+    episodes: int
+    metric_snapshots: list[dict]
+    best_model_path: Path | None = None
+    best_validation_report_path: Path | None = None
+    selected_best_this_run: bool = False
+
+    def __iter__(self):
+        yield self.rewards
+        yield self.goals_for
+        yield self.goals
+        yield self.episodes
+        yield self.metric_snapshots
+
+
+def _phase_training_result(value) -> PhaseTrainingResult:
+    if isinstance(value, PhaseTrainingResult):
+        return value
+    rewards, goals_for, goals, episodes, metric_snapshots = value
+    return PhaseTrainingResult(rewards, goals_for, goals, episodes, metric_snapshots)
+
+
 class OpponentSampler:
     """Provide a fresh sampled opponent for each training episode."""
 
@@ -102,12 +136,7 @@ class OpponentSampler:
 
 
 class SelfPlaySampler:
-    """Dynamic opponent pool: rule-based AIs + a rolling buffer of DQN snapshots.
-
-    Rule-based AIs provide a stable training baseline from the start. DQN
-    snapshots are added periodically during training (via ``add_snapshot``)
-    and gradually displace the rule-based share as the pool fills up.
-    """
+    """Training adapter for the persistent, adaptive opponent league."""
 
     def __init__(
         self,
@@ -116,66 +145,71 @@ class SelfPlaySampler:
         snapshot_dir: Path,
         pool_size: int,
         snapshot_weight: float,
+        *,
+        champion_size: int = 5,
+        historical_size: int = 5,
+        coverage_floor: float = 0.2,
+        checkpoints: Sequence[str] = (),
+        exploiter_target: str | None = None,
     ) -> None:
+        from magic_pong.ai.league import OpponentLeague
+
         self.base_mix = base_mix
         self.rng = rng
         self.snapshot_dir = snapshot_dir
         self.pool_size = pool_size
         self.snapshot_weight = snapshot_weight
-        self._snapshots: list[str] = []
-        self._snap_counter = 0
-        # DQN opponents are cached after first load so torch.load() only runs once per snapshot.
-        self._dqn_cache: dict[str, object] = {}
-
-    def add_snapshot(self, agent: object) -> None:
-        """Save a frozen copy of *agent* and add it to the opponent pool."""
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        path = self.snapshot_dir / f"snap_{self._snap_counter:04d}.pth"
-        agent.save_model(str(path))  # type: ignore[attr-defined]
-        self._snapshots.append(str(path))
-        self._snap_counter += 1
-        if len(self._snapshots) > self.pool_size:
-            old = self._snapshots.pop(0)
-            self._dqn_cache.pop(old, None)
-            Path(old).unlink(missing_ok=True)
-        print(
-            f"  [self-play] snapshot {self._snap_counter} saved "
-            f"({len(self._snapshots)}/{self.pool_size} in pool)"
+        self.league = OpponentLeague(
+            snapshot_dir,
+            rng=rng,
+            base_weights={item.name: item.weight for item in base_mix},
+            recent_size=pool_size,
+            champion_size=champion_size,
+            historical_size=historical_size,
+            snapshot_weight=snapshot_weight,
+            coverage_floor=coverage_floor,
+            opponent_factory=get_opponent,
+        )
+        for path in checkpoints:
+            self.league.add_checkpoint(path, role="independent")
+        self.exploiter_target_id = (
+            self.league.add_checkpoint(exploiter_target, role="target")
+            if exploiter_target
+            else None
         )
 
-    def _combined_pool(self) -> tuple[WeightedOpponent, ...]:
-        if not self._snapshots:
-            return self.base_mix
-        base_share = 1.0 - self.snapshot_weight
-        renorm = tuple(
-            WeightedOpponent(name=w.name, weight=w.weight * base_share) for w in self.base_mix
-        )
-        snap_each = self.snapshot_weight / len(self._snapshots)
-        snap_entries = tuple(
-            WeightedOpponent(name=f"dqn:{p}", weight=snap_each) for p in self._snapshots
-        )
-        return renorm + snap_entries
-
-    def _get_dqn_opponent(self, path: str) -> object:
-        """Return a cached frozen DQN agent, loading from disk only on first use."""
-        if path not in self._dqn_cache:
-            self._dqn_cache[path] = get_opponent(f"dqn:{path}")
-        return self._dqn_cache[path]
+    def add_snapshot(
+        self,
+        agent: object,
+        *,
+        champion: bool = False,
+        role: str = "snapshot",
+        validation=None,
+    ):
+        metadata = {}
+        if validation is not None:
+            metadata["performance_profile"] = {
+                f"{cell.opponent}:{cell.player_side}:{cell.bonuses_enabled}": cell.win_rate
+                for cell in validation.matchups
+            }
+        if self.exploiter_target_id:
+            metadata["exploiter_target"] = self.exploiter_target_id
+        return self.league.add_snapshot(agent, champion=champion, role=role, metadata=metadata)
 
     def next_opponent(self):
-        selected = sample_weighted_opponent(self._combined_pool(), self.rng)
-        name = selected.name
-        if name.startswith("dqn:"):
-            path = name[len("dqn:") :]
-            return name, self._get_dqn_opponent(path)
-        return name, get_opponent(name)
+        if self.exploiter_target_id:
+            return self.league.next_opponent(only_ids=(self.exploiter_target_id,))
+        return self.league.next_opponent()
+
+    def record_outcome(self, opponent_id: str, *, won: bool, timeout: bool = False):
+        self.league.record_outcome(opponent_id, won=won, timeout=timeout)
+
+    def validation_factories(self):
+        return self.league.benchmark_factories(content_ids=True)
 
     def cleanup(self) -> None:
-        """Delete all saved snapshot files."""
-        for path in self._snapshots:
-            Path(path).unlink(missing_ok=True)
-        self._snapshots.clear()
-        self._dqn_cache.clear()
+        """Persist the league so future runs can reuse its opponents."""
+        self.league.cleanup()
 
 
 def get_pyplot():
@@ -200,6 +234,7 @@ def parse_hidden_layers(value: str) -> list[int]:
 
 def create_agent_from_args(args):
     """Create a DQN agent with parameters from command line arguments"""
+    ai_evaluation._seed_everything(getattr(args, "seed", 0))
     return DQNAgent(
         state_size=EXPECTED_STATE_SIZE,
         action_size=EXPECTED_ACTION_SIZE,
@@ -493,7 +528,7 @@ def get_opponent(opponent_type, player_id=2):
             action_size=EXPECTED_ACTION_SIZE,
             hidden_size=int(hp.get("hidden_size", 256)),
             layer_size=int(hp.get("layer_size", 2)),
-            hidden_layers=[int(w) for w in raw_hidden_layers] if raw_hidden_layers else None,
+            hidden_layers=([int(w) for w in raw_hidden_layers] if raw_hidden_layers else None),
         )
         opponent.load_model(model_path)
         opponent.set_training_mode(False)
@@ -730,10 +765,8 @@ def _validate_self_play_args(args) -> None:
         raise ValueError("--self_play_interval must be >= 0")
     if interval == 0:
         return
-    if getattr(args, "mode", None) not in ("single", "pipeline"):
-        raise ValueError(
-            "--self_play_interval is only supported with --mode single or --mode pipeline"
-        )
+    if getattr(args, "mode", None) not in ("single", "continue", "pipeline"):
+        raise ValueError("--self_play_interval requires --mode single, continue, or pipeline")
     pool_size = getattr(args, "self_play_pool_size", 5)
     if pool_size < 1:
         raise ValueError("--self_play_pool_size must be >= 1")
@@ -863,8 +896,6 @@ def _checkpoint_eval_opponents(args) -> tuple[str, ...]:
     invalid = sorted(set(opponents) - set(AI_TYPES))
     if invalid:
         raise ValueError(f"Unknown checkpoint evaluation opponent(s): {', '.join(invalid)}")
-    if "training_dummy" in opponents:
-        raise ValueError("training_dummy cannot be used for deterministic checkpoint evaluation")
     return opponents
 
 
@@ -872,22 +903,39 @@ _DOMAIN_RAND_PARAMS = ("BALL_SPEED", "PADDLE_SPEED", "FIELD_HEIGHT")
 
 
 @contextmanager
-def _domain_rand_context(args):
+def _domain_rand_context(args, training_manager=None):
     """Per-episode game parameter randomization (domain randomization)."""
     noise = getattr(args, "domain_rand_noise", 0.0)
-    if noise <= 0.0:
-        yield
-        return
-
     originals = {name: getattr(game_config, name) for name in _DOMAIN_RAND_PARAMS}
+    engine = getattr(training_manager, "game_engine", None)
+    environment = getattr(engine, "ai_environment", None)
+
+    def sync_geometry():
+        if environment is not None:
+            environment.configure_geometry(game_config.FIELD_WIDTH, game_config.FIELD_HEIGHT)
+
     try:
-        for name, base in originals.items():
-            factor = 1.0 + random.uniform(-noise, noise)
-            setattr(game_config, name, type(base)(base * factor))
+        if noise > 0.0:
+            sampled_values = {}
+            for name, base in originals.items():
+                factor = 1.0 + random.uniform(-noise, noise)
+                value = max(float(base) * factor, 1e-6)
+                if name == "BALL_SPEED":
+                    value = min(value, float(game_config.MAX_BALL_SPEED))
+                elif name == "FIELD_HEIGHT":
+                    value = max(value, float(game_config.PADDLE_HEIGHT + 50))
+                sampled_values[name] = type(base)(value)
+            type(game_config)(**{**game_config.model_dump(), **sampled_values})
+            for name in ("FIELD_HEIGHT", "BALL_SPEED", "PADDLE_SPEED"):
+                if name in sampled_values:
+                    setattr(game_config, name, sampled_values[name])
+        sync_geometry()
         yield
     finally:
-        for name, val in originals.items():
+        for name in ("FIELD_HEIGHT", "BALL_SPEED", "PADDLE_SPEED"):
+            val = originals[name]
             setattr(game_config, name, val)
+        sync_geometry()
 
 
 def checkpoint_evaluation_enabled(args) -> bool:
@@ -1090,6 +1138,7 @@ def train_phase(
     print(f"\n📚 PHASE {phase_num}: {phase_name} ({episodes} episodes)")
 
     original_max_score = game_config.MAX_SCORE
+    original_micro_reward_scale = ai_config.MICRO_REWARD_SCALE
     use_mixed_fine_tuning = mixed_fine_tuning_enabled(args)
     opponent_source = opponent
     opponent_mix: tuple[WeightedOpponent, ...] = ()
@@ -1103,7 +1152,8 @@ def train_phase(
         if mix_rng is None:
             mix_rng = random.Random(getattr(args, "opponent_mix_seed", 0))
             args.opponent_mix_rng = mix_rng
-        opponent_source = OpponentSampler(opponent_mix, mix_rng)
+        if not isinstance(opponent_source, SelfPlaySampler):
+            opponent_source = OpponentSampler(opponent_mix, mix_rng)
 
         mix_summary = ", ".join(f"{item.name}:{item.weight:.2f}" for item in opponent_mix)
         print(f"Mixed fine-tuning opponents: {mix_summary}")
@@ -1121,6 +1171,9 @@ def train_phase(
     if use_mixed_fine_tuning:
         game_config.BONUSES_ENABLED = bool(getattr(args, "fine_tune_bonuses", False))
 
+    anneal_enabled = False
+    fixed_micro_scale = None
+
     try:
         rewards = []
         point_win_rates_history: list[float] = []
@@ -1129,7 +1182,6 @@ def train_phase(
         total_goals_for = 0
         total_goals = 0
         best_avg_reward = float("-inf")
-        best_rule_win_rate = float("-inf")
         best_model_path: Path | None = None
         episodes_since_improvement = 0
 
@@ -1148,6 +1200,26 @@ def train_phase(
             Path(getattr(args, "output_dir", "."))
             / f"{getattr(args, 'model_prefix', 'dqn')}_best.pth"
         )
+        selector = None
+        validation_interval = getattr(args, "competitive_eval_interval", 0)
+        if best_model_enabled and validation_interval > 0:
+            from magic_pong.ai.training_validation import CheckpointSelector
+            from magic_pong.ai.training_validation import validation_config_from_args
+
+            factories = (
+                opponent_source.validation_factories()
+                if isinstance(opponent_source, SelfPlaySampler)
+                else {}
+            )
+            selector = CheckpointSelector(
+                _best_model_file,
+                validation_config_from_args(args, tuple(factories)),
+                validation_interval,
+                factories,
+                patience_baseline_episode=start_episode,
+            )
+            selector.consider(agent, start_episode, force=True)
+            best_model_path = selector.best_path_this_run
 
         _anneal_episodes_arg = getattr(args, "micro_reward_anneal_episodes", 0)
         anneal_episodes = _anneal_episodes_arg if _anneal_episodes_arg > 0 else episodes
@@ -1185,12 +1257,17 @@ def train_phase(
 
                 with (
                     temporary_game_config_value("MAX_SCORE", episode_max_score),
-                    _domain_rand_context(args),
+                    _domain_rand_context(args, training_manager),
                 ):
                     episode_stats = training_manager.train_episode(
                         agent, episode_opponent, max_steps=args.max_steps_per_episode
                     )
                 episode_reward = episode_stats["total_reward_p1"]
+                if isinstance(opponent_source, SelfPlaySampler):
+                    winner = episode_stats.get("winner", 0)
+                    opponent_source.record_outcome(
+                        episode_opponent_name, won=winner == 1, timeout=winner == 0
+                    )
 
                 # Draw penalty: apply when episode timed out with no goals scored
                 _draw_penalty = getattr(args, "draw_penalty", 0.0)
@@ -1208,7 +1285,10 @@ def train_phase(
                 ep_total = ep_goals_for + ep_goals_against
                 episode_point_win_rate = ep_goals_for / ep_total if ep_total > 0 else 0.5
                 point_win_rates_history.append(episode_point_win_rate)
-                if episode_opponent_name.startswith("dqn:"):
+                if episode_opponent_name.startswith("dqn:") or (
+                    isinstance(opponent_source, SelfPlaySampler)
+                    and episode_opponent_name.removeprefix("builtin:") not in AI_TYPES
+                ):
                     dqn_snap_win_rates.append(episode_point_win_rate)
                 else:
                     rule_based_win_rates.append(episode_point_win_rate)
@@ -1283,22 +1363,12 @@ def train_phase(
                     if args.verbose:
                         print(f"    Memory: {training_stats['memory_size']} experiences")
 
-                    # Check for improvement and save best model
-                    if avg_reward > best_avg_reward:
+                    # Legacy reward patience is only used when validation is disabled.
+                    if selector is None and avg_reward > best_avg_reward:
                         best_avg_reward = avg_reward
                         episodes_since_improvement = 0
-                    else:
+                    elif selector is None:
                         episodes_since_improvement += args.log_interval
-
-                    if best_model_enabled and recent_rb:
-                        current_rule_wr = np.mean(recent_rb) * 100
-                        if current_rule_wr > best_rule_win_rate:
-                            best_rule_win_rate = current_rule_wr
-                            agent.save_model(str(_best_model_file))
-                            best_model_path = _best_model_file
-                            print(
-                                f"    ★ New best model saved ({current_rule_wr:.1f}% rule-based win rate)"
-                            )
 
                     # Collect interval snapshot for metrics JSON / detailed plot
                     _ws = slice(-args.log_interval, None)
@@ -1350,6 +1420,15 @@ def train_phase(
                             "mean_q": mean_q_val,
                         }
                     )
+
+                completed_episode = episode + 1
+                if selector is not None:
+                    improved = selector.consider(agent, completed_episode)
+                    episodes_since_improvement = completed_episode - selector.last_improved_episode
+                    if improved and isinstance(opponent_source, SelfPlaySampler):
+                        opponent_source.add_snapshot(
+                            agent, champion=True, validation=selector.best_result
+                        )
 
                 # Self-play snapshot update
                 _self_play_interval = getattr(args, "self_play_interval", 0)
@@ -1414,13 +1493,26 @@ def train_phase(
                         break
 
                 # Early stopping
-                if args.early_stopping > 0 and episodes_since_improvement >= args.early_stopping:
+                if (
+                    args.early_stopping > 0
+                    and episodes_since_improvement >= args.early_stopping
+                    and (selector is None or selector.last_evaluated_episode == completed_episode)
+                ):
                     print(
                         f"Early stopping triggered after {episodes_since_improvement} episodes without improvement"
                     )
                     break
 
         final_episodes = len(rewards)
+        if selector is not None:
+            improved = selector.consider(agent, start_episode + final_episodes, force=True)
+            if improved and isinstance(opponent_source, SelfPlaySampler):
+                opponent_source.add_snapshot(agent, champion=True, validation=selector.best_result)
+            best_model_path = selector.best_path_this_run
+        best_validation_report_path = (
+            selector.best_report_path_this_run if selector is not None else None
+        )
+        selected_best_this_run = bool(selector is not None and selector.selected_best_this_run)
         avg_reward = np.mean(rewards[-100:]) if len(rewards) >= 100 else np.mean(rewards)
         point_win_rate = (total_goals_for / total_goals * 100) if total_goals > 0 else 50.0
 
@@ -1429,7 +1521,7 @@ def train_phase(
         print(f"   Average reward: {avg_reward:.2f}")
         print(f"   Point win rate: {point_win_rate:.1f}% ({total_goals_for}/{total_goals} points)")
         if best_model_path is not None:
-            print(f"   Best model (rule-based peak {best_rule_win_rate:.1f}%): {best_model_path}")
+            print(f"   Best model (competitive validation): {best_model_path}")
 
         # Debug: show some reward statistics
         if rewards:
@@ -1437,7 +1529,16 @@ def train_phase(
                 f"   Reward stats: min={min(rewards):.2f}, max={max(rewards):.2f}, std={np.std(rewards):.2f}"
             )
 
-        return rewards, total_goals_for, total_goals, final_episodes, _metric_snapshots
+        return PhaseTrainingResult(
+            rewards,
+            total_goals_for,
+            total_goals,
+            final_episodes,
+            _metric_snapshots,
+            best_model_path=best_model_path,
+            best_validation_report_path=best_validation_report_path,
+            selected_best_this_run=selected_best_this_run,
+        )
 
     finally:
         # Restaurer la configuration originale
@@ -1445,7 +1546,7 @@ def train_phase(
         if use_mixed_fine_tuning:
             game_config.BONUSES_ENABLED = original_bonuses_enabled
         if anneal_enabled or fixed_micro_scale is not None:
-            ai_config.MICRO_REWARD_SCALE = 1.0
+            ai_config.MICRO_REWARD_SCALE = original_micro_reward_scale
 
 
 def create_optimized_agent():
@@ -1475,20 +1576,28 @@ def _pipeline_args(args, **overrides):
     return p
 
 
-def _pipeline_load_best(agent, path: Path, label: str) -> None:
-    """Load a best-model checkpoint if it exists, otherwise keep current weights."""
-    if path.exists():
-        agent.load_model(str(path))
-        print(f"[pipeline] Loaded {label} best model: {path}")
-    else:
-        print(f"[pipeline] No best model found at {path}, keeping current weights.")
+def _pipeline_load_best(agent, phase_results: Mapping[str, Any], label: str) -> Path | None:
+    """Load a best checkpoint reported by the current phase validation run."""
+    path_value = phase_results.get("best_model_path")
+    if not path_value:
+        print(f"[pipeline] No current-run validated {label} best model, keeping current weights.")
+        return None
+    path = Path(path_value)
+    if not path.exists():
+        print(
+            f"[pipeline] Validated {label} best model missing at {path}, keeping current weights."
+        )
+        return None
+    agent.load_model(str(path))
+    print(f"[pipeline] Loaded {label} best model: {path}")
+    return path
 
 
 def train_pipeline(agent, args):
     """Full training pipeline: pre-train → curriculum → anneal → self-play.
 
-    Each phase loads the best checkpoint from the previous phase so the
-    final model benefits from the peak of every stage.
+    Continue the live learner across phases. Best playable checkpoints are
+    retained separately and must not rewind a completed reward curriculum.
     """
 
     output_dir = Path(args.output_dir)
@@ -1522,7 +1631,6 @@ def train_pipeline(agent, args):
     )
     agent, p1_results = train_with_curriculum(agent, p1_args)
     total_ep += p1_results.get("total_episodes", 0)
-    _pipeline_load_best(agent, output_dir / f"{p1_prefix}_best.pth", "curriculum")
 
     # ── Phase 2: Reward annealing ──────────────────────────────────────────
     print(f"\n{'=' * 60}")
@@ -1551,7 +1659,6 @@ def train_pipeline(agent, args):
     )
     agent, p2_results = train_single_phase(agent, p2_args)
     total_ep += p2_results.get("total_episodes", 0)
-    _pipeline_load_best(agent, output_dir / f"{p2_prefix}_best.pth", "annealing")
 
     # ── Phase 3: Self-play ─────────────────────────────────────────────────
     print(f"\n{'=' * 60}")
@@ -1575,17 +1682,30 @@ def train_pipeline(agent, args):
     total_ep += p3_results.get("total_episodes", 0)
 
     # Copy final best to top-level name for convenience
-    final_best = output_dir / f"{p3_prefix}_best.pth"
+    final_best_value = p3_results.get("best_model_path")
     top_best = output_dir / f"{prefix}_pipeline_best.pth"
-    if final_best.exists():
+    pipeline_best_path = None
+    if final_best_value:
         import shutil
 
+        final_best = Path(final_best_value)
         shutil.copy2(str(final_best), str(top_best))
+        pipeline_best_path = top_best
         print(f"\n[pipeline] Best self-play model → {top_best}")
+        report_value = p3_results.get("best_validation_report_path")
+        if report_value:
+            report_path = Path(report_value)
+            if report_path.exists():
+                top_report = top_best.with_suffix(".validation.json")
+                shutil.copy2(str(report_path), str(top_report))
+                print(f"[pipeline] Best self-play validation report → {top_report}")
+    else:
+        print("\n[pipeline] No current-run validated self-play best model to publish.")
 
     return agent, {
         "total_episodes": total_ep,
         "final_model_path": p3_results.get("final_model_path", ""),
+        "best_model_path": str(pipeline_best_path) if pipeline_best_path else None,
         "curriculum_win_rate": p1_results.get("phase2_winrate", p1_results.get("win_rate", 0)),
         "anneal_win_rate": p2_results.get("win_rate", 0),
         "selfplay_win_rate": p3_results.get("win_rate", 0),
@@ -1604,109 +1724,139 @@ def train_with_curriculum(agent, args):
     # Get ball configuration
     ball_direction, ball_angle = get_ball_config_from_args(args)
     training_manager = TrainingManager(
-        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
+        headless=args.headless,
+        initial_ball_direction=ball_direction,
+        initial_ball_angle=ball_angle,
     )
 
-    # Phase 1: Basic training
-    phase1_opponent = get_opponent(args.phase1_opponent)
-    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes, phase1_snapshots = train_phase(
-        agent,
-        phase1_opponent,
-        f"Basic learning vs {args.phase1_opponent}",
-        args.episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=1,
-        total_phases=2,
-    )
-
-    # Save phase 1 model
-    if args.save_phase_models:
-        phase1_path = Path(args.output_dir) / f"{args.model_prefix}_phase1.pth"
-        agent.save_model(str(phase1_path))
-        print(f"Phase 1 model saved: {phase1_path}")
-
-    # Phase 2: Advanced training (reduce exploration)
-    if args.phase2_epsilon_reduction:
-        agent.epsilon = max(agent.epsilon * 0.3, agent.epsilon_min)
-        agent.epsilon_decay = 0.999
-
-    phase2_opponent = get_opponent(args.phase2_opponent)
-    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes, phase2_snapshots = train_phase(
-        agent,
-        phase2_opponent,
-        f"Advanced learning vs {args.phase2_opponent}",
-        args.episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=2,
-        total_phases=2,
-        start_episode=phase1_episodes,
-    )
-
-    # Save final model
-    final_model_path = Path(args.output_dir) / f"{args.model_prefix}_final.pth"
-    agent.save_model(str(final_model_path))
-    print(f"Final model saved: {final_model_path}")
-
-    # Create training plots
-    if args.save_plots:
-        create_training_plots(
+    try:
+        # Phase 1: Basic training
+        phase1_opponent = get_opponent(args.phase1_opponent)
+        phase1_result = _phase_training_result(
+            train_phase(
+                agent,
+                phase1_opponent,
+                f"Basic learning vs {args.phase1_opponent}",
+                args.episodes_per_phase,
+                training_manager,
+                args,
+                phase_num=1,
+                total_phases=2,
+            )
+        )
+        (
             phase1_rewards,
+            phase1_goals_for,
+            phase1_goals,
+            phase1_episodes,
+            phase1_snapshots,
+        ) = phase1_result
+
+        # Save phase 1 model
+        if args.save_phase_models:
+            phase1_path = Path(args.output_dir) / f"{args.model_prefix}_phase1.pth"
+            agent.save_model(str(phase1_path))
+            print(f"Phase 1 model saved: {phase1_path}")
+
+        # Phase 2: Advanced training (reduce exploration)
+        if args.phase2_epsilon_reduction:
+            agent.epsilon = max(agent.epsilon * 0.3, agent.epsilon_min)
+            agent.epsilon_decay = 0.999
+
+        phase2_opponent = get_opponent(args.phase2_opponent)
+        phase2_result = _phase_training_result(
+            train_phase(
+                agent,
+                phase2_opponent,
+                f"Advanced learning vs {args.phase2_opponent}",
+                args.episodes_per_phase,
+                training_manager,
+                args,
+                phase_num=2,
+                total_phases=2,
+                start_episode=phase1_episodes,
+            )
+        )
+        (
             phase2_rewards,
-            phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
-            phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
+            phase2_goals_for,
+            phase2_goals,
+            phase2_episodes,
+            phase2_snapshots,
+        ) = phase2_result
+
+        # Save final model
+        final_model_path = Path(args.output_dir) / f"{args.model_prefix}_final.pth"
+        agent.save_model(str(final_model_path))
+        print(f"Final model saved: {final_model_path}")
+
+        # Create training plots
+        if args.save_plots:
+            create_training_plots(
+                phase1_rewards,
+                phase2_rewards,
+                phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
+                phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
+                args,
+            )
+            all_snapshots = phase1_snapshots + phase2_snapshots
+            create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
+
+        if getattr(args, "save_metrics", True):
+            all_snapshots = phase1_snapshots + phase2_snapshots
+            save_metrics_json(
+                Path(args.output_dir),
+                args.model_prefix,
+                agent,
+                args,
+                all_snapshots,
+                time.time() - _t_start,
+                phase1_episodes + phase2_episodes,
+            )
+
+        all_goals_for = phase1_goals_for + phase2_goals_for
+        all_goals = phase1_goals + phase2_goals
+        maybe_save_checkpoint_evaluation(
+            final_model_path,
             args,
+            final_model_training_context(
+                args,
+                label="curriculum_final",
+                total_episodes=phase1_episodes + phase2_episodes,
+                rewards=phase1_rewards + phase2_rewards,
+                goals_for=all_goals_for,
+                goals=all_goals,
+            ),
         )
-        all_snapshots = phase1_snapshots + phase2_snapshots
-        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
 
-    if getattr(args, "save_metrics", True):
-        all_snapshots = phase1_snapshots + phase2_snapshots
-        save_metrics_json(
-            Path(args.output_dir),
-            args.model_prefix,
-            agent,
-            args,
-            all_snapshots,
-            time.time() - _t_start,
-            phase1_episodes + phase2_episodes,
+        best_result = phase2_result.best_model_path or phase1_result.best_model_path
+        best_report = (
+            phase2_result.best_validation_report_path or phase1_result.best_validation_report_path
         )
-
-    # Cleanup training manager
-    training_manager.cleanup()
-
-    all_goals_for = phase1_goals_for + phase2_goals_for
-    all_goals = phase1_goals + phase2_goals
-    maybe_save_checkpoint_evaluation(
-        final_model_path,
-        args,
-        final_model_training_context(
-            args,
-            label="curriculum_final",
-            total_episodes=phase1_episodes + phase2_episodes,
-            rewards=phase1_rewards + phase2_rewards,
-            goals_for=all_goals_for,
-            goals=all_goals,
-        ),
-    )
-
-    return agent, {
-        "phase1_avg": np.mean(phase1_rewards[-100:])
-        if len(phase1_rewards) >= 100
-        else np.mean(phase1_rewards)
-        if phase1_rewards
-        else 0,
-        "phase1_winrate": phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
-        "phase2_avg": np.mean(phase2_rewards[-100:])
-        if len(phase2_rewards) >= 100
-        else np.mean(phase2_rewards)
-        if phase2_rewards
-        else 0,
-        "phase2_winrate": phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
-        "total_episodes": phase1_episodes + phase2_episodes,
-        "final_model_path": str(final_model_path),
-    }
+        return agent, {
+            "phase1_avg": (
+                np.mean(phase1_rewards[-100:])
+                if len(phase1_rewards) >= 100
+                else np.mean(phase1_rewards)
+                if phase1_rewards
+                else 0
+            ),
+            "phase1_winrate": (phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0),
+            "phase2_avg": (
+                np.mean(phase2_rewards[-100:])
+                if len(phase2_rewards) >= 100
+                else np.mean(phase2_rewards)
+                if phase2_rewards
+                else 0
+            ),
+            "phase2_winrate": (phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0),
+            "total_episodes": phase1_episodes + phase2_episodes,
+            "final_model_path": str(final_model_path),
+            "best_model_path": str(best_result) if best_result else None,
+            "best_validation_report_path": str(best_report) if best_report else None,
+        }
+    finally:
+        training_manager.cleanup()
 
 
 def train_single_phase(agent, args):
@@ -1717,103 +1867,125 @@ def train_single_phase(agent, args):
     # Get ball configuration
     ball_direction, ball_angle = get_ball_config_from_args(args)
     training_manager = TrainingManager(
-        headless=args.headless, initial_ball_direction=ball_direction, initial_ball_angle=ball_angle
+        headless=args.headless,
+        initial_ball_direction=ball_direction,
+        initial_ball_angle=ball_angle,
     )
 
-    self_play_interval = getattr(args, "self_play_interval", 0)
-    if self_play_interval > 0:
-        base_mix = parse_opponent_mix(getattr(args, "self_play_base_mix", DEFAULT_OPPONENT_MIX_CLI))
-        mix_rng = random.Random(getattr(args, "opponent_mix_seed", 0))
-        snap_dir = Path(args.output_dir) / "self_play_snapshots"
-        opponent = SelfPlaySampler(
-            base_mix=base_mix,
-            rng=mix_rng,
-            snapshot_dir=snap_dir,
-            pool_size=args.self_play_pool_size,
-            snapshot_weight=args.self_play_weight,
+    opponent = None
+    try:
+        self_play_interval = getattr(args, "self_play_interval", 0)
+        if self_play_interval > 0:
+            base_mix = parse_opponent_mix(
+                getattr(args, "self_play_base_mix", DEFAULT_OPPONENT_MIX_CLI)
+            )
+            mix_rng = random.Random(getattr(args, "opponent_mix_seed", 0))
+            snap_dir = Path(getattr(args, "league_dir", None) or Path(args.output_dir) / "league")
+            opponent = SelfPlaySampler(
+                base_mix=base_mix,
+                rng=mix_rng,
+                snapshot_dir=snap_dir,
+                pool_size=args.self_play_pool_size,
+                snapshot_weight=args.self_play_weight,
+                champion_size=getattr(args, "league_champion_size", 5),
+                historical_size=getattr(args, "league_historical_size", 5),
+                coverage_floor=getattr(args, "league_coverage_floor", 0.2),
+                checkpoints=getattr(args, "league_opponent", ()),
+                exploiter_target=getattr(args, "league_exploiter_target", None),
+            )
+            if not opponent.league.snapshot_references():
+                opponent.add_snapshot(agent)
+            phase_label = "Self-play training"
+            print(
+                f"[self-play] pool size={args.self_play_pool_size}, "
+                f"snapshot weight={args.self_play_weight:.0%}, "
+                f"update interval={self_play_interval} episodes"
+            )
+            base_summary = ", ".join(f"{w.name}:{w.weight:.2f}" for w in base_mix)
+            print(f"[self-play] base mix: {base_summary}")
+        else:
+            opponent = get_opponent(args.opponent)
+            phase_label = f"Training vs {args.opponent}"
+
+        phase_result = _phase_training_result(
+            train_phase(
+                agent,
+                opponent,
+                phase_label,
+                args.total_episodes,
+                training_manager,
+                args,
+                phase_num=1,
+                total_phases=1,
+            )
         )
-        phase_label = "Self-play training"
-        print(
-            f"[self-play] pool size={args.self_play_pool_size}, "
-            f"snapshot weight={args.self_play_weight:.0%}, "
-            f"update interval={self_play_interval} episodes"
-        )
-        base_summary = ", ".join(f"{w.name}:{w.weight:.2f}" for w in base_mix)
-        print(f"[self-play] base mix: {base_summary}")
-    else:
-        opponent = get_opponent(args.opponent)
-        phase_label = f"Training vs {args.opponent}"
+        rewards, goals_for, goals, episodes, metric_snapshots = phase_result
 
-    rewards, goals_for, goals, episodes, metric_snapshots = train_phase(
-        agent,
-        opponent,
-        phase_label,
-        args.total_episodes,
-        training_manager,
-        args,
-        phase_num=1,
-        total_phases=1,
-    )
+        # Save final model
+        final_model_path = Path(args.output_dir) / f"{args.model_prefix}_final.pth"
+        agent.save_model(str(final_model_path))
+        print(f"Final model saved: {final_model_path}")
 
-    # Save final model
-    final_model_path = Path(args.output_dir) / f"{args.model_prefix}_final.pth"
-    agent.save_model(str(final_model_path))
-    print(f"Final model saved: {final_model_path}")
+        if isinstance(opponent, SelfPlaySampler):
+            opponent.add_snapshot(agent, role=getattr(args, "league_role", "snapshot"))
 
-    # Create training plots
-    if args.save_plots:
-        create_single_phase_plots(rewards, goals_for / goals * 100 if goals > 0 else 50.0, args)
-        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, metric_snapshots)
+        # Create training plots
+        if args.save_plots:
+            create_single_phase_plots(rewards, goals_for / goals * 100 if goals > 0 else 50.0, args)
+            create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, metric_snapshots)
 
-    if getattr(args, "save_metrics", True):
-        save_metrics_json(
-            Path(args.output_dir),
-            args.model_prefix,
-            agent,
+        if getattr(args, "save_metrics", True):
+            save_metrics_json(
+                Path(args.output_dir),
+                args.model_prefix,
+                agent,
+                args,
+                metric_snapshots,
+                time.time() - _t_start,
+                episodes,
+            )
+
+        maybe_save_checkpoint_evaluation(
+            final_model_path,
             args,
-            metric_snapshots,
-            time.time() - _t_start,
-            episodes,
+            final_model_training_context(
+                args,
+                label="single_phase_final",
+                total_episodes=episodes,
+                rewards=rewards,
+                goals_for=goals_for,
+                goals=goals,
+            ),
         )
 
-    # Cleanup
-    training_manager.cleanup()
-    if isinstance(opponent, SelfPlaySampler):
-        opponent.cleanup()
-
-    maybe_save_checkpoint_evaluation(
-        final_model_path,
-        args,
-        final_model_training_context(
-            args,
-            label="single_phase_final",
-            total_episodes=episodes,
-            rewards=rewards,
-            goals_for=goals_for,
-            goals=goals,
-        ),
-    )
-
-    return agent, {
-        "avg_reward": np.mean(rewards[-100:])
-        if len(rewards) >= 100
-        else np.mean(rewards)
-        if rewards
-        else 0,
-        "win_rate": goals_for / goals * 100 if goals > 0 else 50.0,
-        "total_episodes": episodes,
-        "final_model_path": str(final_model_path),
-    }
+        return agent, {
+            "avg_reward": (
+                np.mean(rewards[-100:])
+                if len(rewards) >= 100
+                else np.mean(rewards)
+                if rewards
+                else 0
+            ),
+            "win_rate": goals_for / goals * 100 if goals > 0 else 50.0,
+            "total_episodes": episodes,
+            "final_model_path": str(final_model_path),
+            "best_model_path": (
+                str(phase_result.best_model_path) if phase_result.best_model_path else None
+            ),
+            "best_validation_report_path": (
+                str(phase_result.best_validation_report_path)
+                if phase_result.best_validation_report_path
+                else None
+            ),
+        }
+    finally:
+        training_manager.cleanup()
+        if isinstance(opponent, SelfPlaySampler):
+            opponent.cleanup()
 
 
 def train_progressive_curriculum(agent, args):
-    """
-    Progressive 4-phase curriculum learning:
-    Phase 1: Learn to hit the ball (vs stationary dummy opponent - no interference)
-    Phase 2: Learn to return the ball to opponent side (vs defensive AI)
-    Phase 3: Learn to play against smart opponent (vs predictive AI)
-    Phase 4: Master game with bonuses (vs predictive AI with bonuses enabled)
-    """
+    """Progressive 4-phase curriculum learning."""
     print("=== PROGRESSIVE 4-PHASE CURRICULUM LEARNING ===")
     _t_start = time.time()
     print("Phase 1: Learning to hit the ball (vs stationary opponent)")
@@ -1821,309 +1993,281 @@ def train_progressive_curriculum(agent, args):
     print("Phase 3: Playing vs intelligent AI")
     print("Phase 4: Mastering with bonuses")
 
-    # Disable bonuses for Phase 1, 2 and 3
-    original_bonuses_enabled = game_config.BONUSES_ENABLED
-    game_config.BONUSES_ENABLED = False
-
-    # Get ball configuration
+    original_game_values = {
+        "BONUSES_ENABLED": game_config.BONUSES_ENABLED,
+        "GAME_SPEED_MULTIPLIER": game_config.GAME_SPEED_MULTIPLIER,
+        "FPS": game_config.FPS,
+    }
+    original_ai_values = {
+        "SCORE_REWARD": ai_config.SCORE_REWARD,
+        "LOSE_PENALTY": ai_config.LOSE_PENALTY,
+        "PADDLE_HIT_REWARD": ai_config.PADDLE_HIT_REWARD,
+        "USE_PROXIMITY_REWARD": ai_config.USE_PROXIMITY_REWARD,
+        "PROXIMITY_REWARD_FACTOR": ai_config.PROXIMITY_REWARD_FACTOR,
+        "PROXIMITY_PENALTY_FACTOR": ai_config.PROXIMITY_PENALTY_FACTOR,
+        "MAX_PROXIMITY_REWARD": ai_config.MAX_PROXIMITY_REWARD,
+        "SHOW_OPTIMAL_POINTS_GUI": ai_config.SHOW_OPTIMAL_POINTS_GUI,
+    }
+    initial_ball_direction = args.ball_direction
     training_manager = TrainingManager(headless=args.headless, fast_gui=args.fast_gui)
-
     all_phase_data = []
     total_episodes_count = 0
+    phase_results: dict[str, PhaseTrainingResult] = {}
 
-    initial_ball_direction = args.ball_direction
-    args.ball_direction = [-math.pi / 12, math.pi / 12, -1]  # Cone towards left side
+    def restore_training_globals() -> None:
+        for name, value in original_ai_values.items():
+            setattr(ai_config, name, value)
+        for name, value in original_game_values.items():
+            setattr(game_config, name, value)
+        args.ball_direction = initial_ball_direction
 
-    # Phase 1: Learn to hit the ball - vs dummy or training_dummy
-    print("\n🎯 PHASE 1: Learning to Hit the Ball")
-    print("Objective: Basic ball contact and paddle control")
-    if args.phase1_training_opponent == "dummy":
-        print("Opponent: Dummy AI (completely stationary - never interferes)")
-        print("Focus: Pure ball contact learning without any opponent interference")
-    else:
-        print("Opponent: Training Dummy AI (minimal predictable movement)")
-        print("Focus: Ball contact with minimal, non-threatening opponent movement")
+    def avg_tail(values: Sequence[float], window: int) -> float:
+        if len(values) >= window:
+            return float(np.mean(values[-window:]))
+        return float(np.mean(values)) if values else 0.0
 
-    initial_score_reward = ai_config.SCORE_REWARD
-    initial_lose_penalty = ai_config.LOSE_PENALTY
-    initial_paddle_hit_reward = ai_config.PADDLE_HIT_REWARD
-    initial_use_proximity_reward = ai_config.USE_PROXIMITY_REWARD
-    initial_proximity_reward_factor = ai_config.PROXIMITY_REWARD_FACTOR
-    initial_proximity_penalty_factor = ai_config.PROXIMITY_PENALTY_FACTOR
-    initial_max_proximity_reward = ai_config.MAX_PROXIMITY_REWARD
-    initial_game_speed_multiplier = game_config.GAME_SPEED_MULTIPLIER
-    initial_fps = game_config.FPS
-    ai_config.SCORE_REWARD = 0
-    ai_config.LOSE_PENALTY = 0
-    ai_config.PADDLE_HIT_REWARD = 1
-    ai_config.USE_PROXIMITY_REWARD = True
-    ai_config.PROXIMITY_REWARD_FACTOR = 0.1
-    ai_config.PROXIMITY_PENALTY_FACTOR = 0.1
-    ai_config.MAX_PROXIMITY_REWARD = 0.5
-    ai_config.SHOW_OPTIMAL_POINTS_GUI = True
-    # game_config.GAME_SPEED_MULTIPLIER = 5.0
-    game_config.FPS = 300.0
+    def win_rate(result: PhaseTrainingResult) -> float:
+        return result.goals_for / result.goals * 100 if result.goals > 0 else 50.0
 
-    phase1_opponent = get_opponent(args.phase1_training_opponent)
-    phase1_rewards, phase1_goals_for, phase1_goals, phase1_episodes, phase1_snapshots = train_phase(
-        agent,
-        phase1_opponent,
-        f"Ball contact training vs {args.phase1_training_opponent.replace('_', ' ').title()}",
-        args.progressive_episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=1,
-        total_phases=4,
-        start_episode=0,
-    )
-    ai_config.SCORE_REWARD = initial_score_reward
-    ai_config.LOSE_PENALTY = initial_lose_penalty
-    ai_config.PADDLE_HIT_REWARD = initial_paddle_hit_reward
-    ai_config.USE_PROXIMITY_REWARD = initial_use_proximity_reward
-    ai_config.PROXIMITY_REWARD_FACTOR = initial_proximity_reward_factor
-    ai_config.PROXIMITY_PENALTY_FACTOR = initial_proximity_penalty_factor
-    ai_config.MAX_PROXIMITY_REWARD = initial_max_proximity_reward
-    ai_config.SHOW_OPTIMAL_POINTS_GUI = False
-    game_config.GAME_SPEED_MULTIPLIER = initial_game_speed_multiplier
-    game_config.FPS = initial_fps
+    def run_progressive_phase(
+        *,
+        key: str,
+        display_name: str,
+        objective: str,
+        opponent_type: str,
+        label: str,
+        phase_num: int,
+        bonuses_enabled: bool,
+        reward_overrides: Mapping[str, Any] | None = None,
+        game_overrides: Mapping[str, Any] | None = None,
+        ball_direction: Any | None = None,
+        reduce_exploration: bool = False,
+        save_suffix: str | None = None,
+    ) -> PhaseTrainingResult:
+        nonlocal total_episodes_count
 
-    total_episodes_count += phase1_episodes
-    all_phase_data.append(
-        {
-            "name": "Hit Ball",
-            "rewards": phase1_rewards,
-            "goals_for": phase1_goals_for,
-            "goals": phase1_goals,
-            "episodes": phase1_episodes,
-            "objective": "Ball contact",
-        }
-    )
+        if reduce_exploration and args.progressive_epsilon_reduction > 0:
+            agent.epsilon = max(
+                agent.epsilon * args.progressive_epsilon_reduction,
+                agent.epsilon_min,
+            )
+            print(f"Epsilon reduced to: {agent.epsilon:.3f}")
 
-    # Save Phase 1 model
-    if args.save_phase_models:
-        phase1_path = Path(args.output_dir) / f"{args.model_prefix}_phase1_hit.pth"
-        agent.save_model(str(phase1_path))
-        print(f"Phase 1 model saved: {phase1_path}")
+        if ball_direction is not None:
+            args.ball_direction = ball_direction
+        game_config.BONUSES_ENABLED = bonuses_enabled
+        for name, value in (reward_overrides or {}).items():
+            setattr(ai_config, name, value)
+        for name, value in (game_overrides or {}).items():
+            setattr(game_config, name, value)
 
-    # Phase 2: Learn to return the ball - vs defensive (stays in position)
-    print("\n🏓 PHASE 2: Learning to Return the Ball")
-    print("Objective: Return ball to opponent's side")
-    print("Opponent: Defensive AI (predictable positioning)")
+        opponent = get_opponent(opponent_type)
+        try:
+            result = _phase_training_result(
+                train_phase(
+                    agent,
+                    opponent,
+                    label,
+                    args.progressive_episodes_per_phase,
+                    training_manager,
+                    args,
+                    phase_num=phase_num,
+                    total_phases=4,
+                    start_episode=total_episodes_count,
+                )
+            )
+        finally:
+            restore_training_globals()
 
-    initial_score_reward = ai_config.SCORE_REWARD
-    initial_lose_penalty = ai_config.LOSE_PENALTY
-    initial_paddle_hit_reward = ai_config.PADDLE_HIT_REWARD
-    ai_config.SCORE_REWARD = 0.5
-    ai_config.LOSE_PENALTY = -0.5
-    ai_config.PADDLE_HIT_REWARD = 1  # Increase contact reward to encourage returns
+        total_episodes_count += result.episodes
+        all_phase_data.append(
+            {
+                "name": display_name,
+                "rewards": result.rewards,
+                "goals_for": result.goals_for,
+                "goals": result.goals,
+                "episodes": result.episodes,
+                "objective": objective,
+            }
+        )
+        phase_results[key] = result
 
-    # Reduce exploration slightly for phase 2
-    if args.progressive_epsilon_reduction > 0:
-        agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
-        print(f"Epsilon reduced to: {agent.epsilon:.3f}")
+        if args.save_phase_models and save_suffix:
+            phase_path = Path(args.output_dir) / f"{args.model_prefix}_{save_suffix}.pth"
+            agent.save_model(str(phase_path))
+            print(f"Phase {phase_num} model saved: {phase_path}")
+        return result
 
-    phase2_opponent = get_opponent("defensive")
-    phase2_rewards, phase2_goals_for, phase2_goals, phase2_episodes, phase2_snapshots = train_phase(
-        agent,
-        phase2_opponent,
-        "Ball return training vs Defensive AI",
-        args.progressive_episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=2,
-        total_phases=4,
-        start_episode=total_episodes_count,
-    )
-    ai_config.SCORE_REWARD = initial_score_reward
-    ai_config.LOSE_PENALTY = initial_lose_penalty
-    ai_config.PADDLE_HIT_REWARD = initial_paddle_hit_reward
-
-    total_episodes_count += phase2_episodes
-    all_phase_data.append(
-        {
-            "name": "Return Ball",
-            "rewards": phase2_rewards,
-            "goals_for": phase2_goals_for,
-            "goals": phase2_goals,
-            "episodes": phase2_episodes,
-            "objective": "Ball return",
-        }
-    )
-
-    # Save Phase 2 model
-    if args.save_phase_models:
-        phase2_path = Path(args.output_dir) / f"{args.model_prefix}_phase2_return.pth"
-        agent.save_model(str(phase2_path))
-        print(f"Phase 2 model saved: {phase2_path}")
-
-    # Phase 3: Play against intelligent opponent - vs predictive (no bonuses)
-    print("\n🧠 PHASE 3: Playing vs Intelligent AI")
-    print("Objective: Compete against smart opponent")
-    print("Opponent: Defensive AI (anticipates ball trajectory)")
-    print("Bonuses: DISABLED for focused strategic learning")
-
-    args.ball_direction = initial_ball_direction
-
-    # Further reduce exploration for phase 3
-    if args.progressive_epsilon_reduction > 0:
-        agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
-        print(f"Epsilon reduced to: {agent.epsilon:.3f}")
-
-    phase3_opponent = get_opponent("defensive")
-    phase3_rewards, phase3_goals_for, phase3_goals, phase3_episodes, phase3_snapshots = train_phase(
-        agent,
-        phase3_opponent,
-        "Strategic play vs Defensive AI (no bonuses)",
-        args.progressive_episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=3,
-        total_phases=4,
-        start_episode=total_episodes_count,
-    )
-
-    total_episodes_count += phase3_episodes
-    all_phase_data.append(
-        {
-            "name": "Strategic Play",
-            "rewards": phase3_rewards,
-            "goals_for": phase3_goals_for,
-            "goals": phase3_goals,
-            "episodes": phase3_episodes,
-            "objective": "Smart competition",
-        }
-    )
-
-    # Save Phase 3 model
-    if args.save_phase_models:
-        phase3_path = Path(args.output_dir) / f"{args.model_prefix}_phase3_strategic.pth"
-        agent.save_model(str(phase3_path))
-        print(f"Phase 3 model saved: {phase3_path}")
-
-    # Phase 4: Master the game with bonuses - vs predictive with bonuses
-    print("\n🏆 PHASE 4: Mastering with Bonuses")
-    print("Objective: Master complete game with all features")
-    print("Opponent: Aggressive AI with bonuses enabled")
-    print("Features: Rotating paddles, bonuses, full complexity")
-    print("Bonuses: ENABLED for complete game mastery")
-
-    # Enable bonuses for Phase 4
-    game_config.BONUSES_ENABLED = True
-
-    # Final exploration reduction for phase 4
-    if args.progressive_epsilon_reduction > 0:
-        agent.epsilon = max(agent.epsilon * args.progressive_epsilon_reduction, agent.epsilon_min)
-        print(f"Final epsilon: {agent.epsilon:.3f}")
-
-    phase4_opponent = get_opponent("aggressive")
-    phase4_rewards, phase4_goals_for, phase4_goals, phase4_episodes, phase4_snapshots = train_phase(
-        agent,
-        phase4_opponent,
-        "Master training vs Aggressive AI + Bonuses",
-        args.progressive_episodes_per_phase,
-        training_manager,
-        args,
-        phase_num=4,
-        total_phases=4,
-        start_episode=total_episodes_count,
-    )
-
-    total_episodes_count += phase4_episodes
-    all_phase_data.append(
-        {
-            "name": "Master Play",
-            "rewards": phase4_rewards,
-            "goals_for": phase4_goals_for,
-            "goals": phase4_goals,
-            "episodes": phase4_episodes,
-            "objective": "Full mastery",
-        }
-    )
-
-    # Restore original bonuses configuration
-    game_config.BONUSES_ENABLED = original_bonuses_enabled
-    print(f"Bonuses configuration restored to: {original_bonuses_enabled}")
-
-    # Save final model
-    final_model_path = Path(args.output_dir) / f"{args.model_prefix}_progressive_final.pth"
-    agent.save_model(str(final_model_path))
-    print(f"Final progressive model saved: {final_model_path}")
-
-    # Create comprehensive training plots
-    if args.save_plots:
-        create_progressive_training_plots(all_phase_data, args)
-        all_snapshots = phase1_snapshots + phase2_snapshots + phase3_snapshots + phase4_snapshots
-        create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
-
-    if getattr(args, "save_metrics", True):
-        all_snapshots = phase1_snapshots + phase2_snapshots + phase3_snapshots + phase4_snapshots
-        save_metrics_json(
-            Path(args.output_dir),
-            args.model_prefix,
-            agent,
-            args,
-            all_snapshots,
-            time.time() - _t_start,
-            total_episodes_count,
+    try:
+        print("\n🎯 PHASE 1: Learning to Hit the Ball")
+        print("Objective: Basic ball contact and paddle control")
+        if args.phase1_training_opponent == "dummy":
+            print("Opponent: Dummy AI (completely stationary - never interferes)")
+            print("Focus: Pure ball contact learning without any opponent interference")
+        else:
+            print("Opponent: Training Dummy AI (minimal predictable movement)")
+            print("Focus: Ball contact with minimal, non-threatening opponent movement")
+        phase1 = run_progressive_phase(
+            key="phase1",
+            display_name="Hit Ball",
+            objective="Ball contact",
+            opponent_type=args.phase1_training_opponent,
+            label=(
+                "Ball contact training vs "
+                f"{args.phase1_training_opponent.replace('_', ' ').title()}"
+            ),
+            phase_num=1,
+            bonuses_enabled=False,
+            reward_overrides={
+                "SCORE_REWARD": 0,
+                "LOSE_PENALTY": 0,
+                "PADDLE_HIT_REWARD": 1,
+                "USE_PROXIMITY_REWARD": True,
+                "PROXIMITY_REWARD_FACTOR": 0.1,
+                "PROXIMITY_PENALTY_FACTOR": 0.1,
+                "MAX_PROXIMITY_REWARD": 0.5,
+                "SHOW_OPTIMAL_POINTS_GUI": True,
+            },
+            game_overrides={"FPS": 300.0},
+            ball_direction=[-math.pi / 12, math.pi / 12, -1],
+            save_suffix="phase1_hit",
         )
 
-    # Cleanup training manager
-    training_manager.cleanup()
+        print("\n🏓 PHASE 2: Learning to Return the Ball")
+        print("Objective: Return ball to opponent's side")
+        print("Opponent: Defensive AI (predictable positioning)")
+        phase2 = run_progressive_phase(
+            key="phase2",
+            display_name="Return Ball",
+            objective="Ball return",
+            opponent_type="defensive",
+            label="Ball return training vs Defensive AI",
+            phase_num=2,
+            bonuses_enabled=False,
+            reward_overrides={
+                "SCORE_REWARD": 0.5,
+                "LOSE_PENALTY": -0.5,
+                "PADDLE_HIT_REWARD": 1,
+            },
+            reduce_exploration=True,
+            save_suffix="phase2_return",
+        )
 
-    all_goals_for = phase1_goals_for + phase2_goals_for + phase3_goals_for + phase4_goals_for
-    all_goals = phase1_goals + phase2_goals + phase3_goals + phase4_goals
-    maybe_save_checkpoint_evaluation(
-        final_model_path,
-        args,
-        final_model_training_context(
+        print("\n🧠 PHASE 3: Playing vs Intelligent AI")
+        print("Objective: Compete against smart opponent")
+        print("Opponent: Defensive AI (anticipates ball trajectory)")
+        print("Bonuses: DISABLED for focused strategic learning")
+        phase3 = run_progressive_phase(
+            key="phase3",
+            display_name="Strategic Play",
+            objective="Smart competition",
+            opponent_type="defensive",
+            label="Strategic play vs Defensive AI (no bonuses)",
+            phase_num=3,
+            bonuses_enabled=False,
+            ball_direction=initial_ball_direction,
+            reduce_exploration=True,
+            save_suffix="phase3_strategic",
+        )
+
+        print("\n🏆 PHASE 4: Mastering with Bonuses")
+        print("Objective: Master complete game with all features")
+        print("Opponent: Aggressive AI with bonuses enabled")
+        print("Features: Rotating paddles, bonuses, full complexity")
+        print("Bonuses: ENABLED for complete game mastery")
+        phase4 = run_progressive_phase(
+            key="phase4",
+            display_name="Master Play",
+            objective="Full mastery",
+            opponent_type="aggressive",
+            label="Master training vs Aggressive AI + Bonuses",
+            phase_num=4,
+            bonuses_enabled=True,
+            reduce_exploration=True,
+        )
+
+        game_config.BONUSES_ENABLED = original_game_values["BONUSES_ENABLED"]
+        print(f"Bonuses configuration restored to: {original_game_values['BONUSES_ENABLED']}")
+
+        final_model_path = Path(args.output_dir) / f"{args.model_prefix}_progressive_final.pth"
+        agent.save_model(str(final_model_path))
+        print(f"Final progressive model saved: {final_model_path}")
+
+        all_snapshots = [
+            snapshot for result in phase_results.values() for snapshot in result.metric_snapshots
+        ]
+        if args.save_plots:
+            create_progressive_training_plots(all_phase_data, args)
+            create_detailed_metrics_plot(Path(args.output_dir), args.model_prefix, all_snapshots)
+
+        if getattr(args, "save_metrics", True):
+            save_metrics_json(
+                Path(args.output_dir),
+                args.model_prefix,
+                agent,
+                args,
+                all_snapshots,
+                time.time() - _t_start,
+                total_episodes_count,
+            )
+
+        all_rewards = [reward for result in phase_results.values() for reward in result.rewards]
+        all_goals_for = sum(result.goals_for for result in phase_results.values())
+        all_goals = sum(result.goals for result in phase_results.values())
+        maybe_save_checkpoint_evaluation(
+            final_model_path,
             args,
-            label="progressive_final",
-            total_episodes=total_episodes_count,
-            rewards=phase1_rewards + phase2_rewards + phase3_rewards + phase4_rewards,
-            goals_for=all_goals_for,
-            goals=all_goals,
-        ),
-    )
+            final_model_training_context(
+                args,
+                label="progressive_final",
+                total_episodes=total_episodes_count,
+                rewards=all_rewards,
+                goals_for=all_goals_for,
+                goals=all_goals,
+            ),
+        )
 
-    # Calculate results
-    final_avg = (
-        np.mean(phase4_rewards[-100:])
-        if len(phase4_rewards) >= 100
-        else np.mean(phase4_rewards)
-        if phase4_rewards
-        else 0
-    )
-    final_winrate = phase4_goals_for / phase4_goals * 100 if phase4_goals > 0 else 50.0
+        final_avg = avg_tail(phase4.rewards, 100)
+        final_winrate = win_rate(phase4)
+        best_phase = next(
+            (
+                result
+                for result in reversed(tuple(phase_results.values()))
+                if result.best_model_path
+            ),
+            None,
+        )
 
-    print("\n✨ PROGRESSIVE TRAINING COMPLETED ✨")
-    print(f"Total episodes across all phases: {total_episodes_count}")
-    print(f"Final performance: {final_avg:.2f} avg reward, {final_winrate:.1f}% point win rate")
+        print("\n✨ PROGRESSIVE TRAINING COMPLETED ✨")
+        print(f"Total episodes across all phases: {total_episodes_count}")
+        print(f"Final performance: {final_avg:.2f} avg reward, {final_winrate:.1f}% point win rate")
 
-    return agent, {
-        "phase1_avg": np.mean(phase1_rewards[-50:])
-        if len(phase1_rewards) >= 50
-        else np.mean(phase1_rewards)
-        if phase1_rewards
-        else 0,
-        "phase1_winrate": phase1_goals_for / phase1_goals * 100 if phase1_goals > 0 else 50.0,
-        "phase2_avg": np.mean(phase2_rewards[-50:])
-        if len(phase2_rewards) >= 50
-        else np.mean(phase2_rewards)
-        if phase2_rewards
-        else 0,
-        "phase2_winrate": phase2_goals_for / phase2_goals * 100 if phase2_goals > 0 else 50.0,
-        "phase3_avg": np.mean(phase3_rewards[-50:])
-        if len(phase3_rewards) >= 50
-        else np.mean(phase3_rewards)
-        if phase3_rewards
-        else 0,
-        "phase3_winrate": phase3_goals_for / phase3_goals * 100 if phase3_goals > 0 else 50.0,
-        "phase4_avg": final_avg,
-        "phase4_winrate": final_winrate,
-        "total_episodes": total_episodes_count,
-        "final_model_path": str(final_model_path),
-        "all_phase_data": all_phase_data,
-    }
+        return agent, {
+            "phase1_avg": avg_tail(phase1.rewards, 50),
+            "phase1_winrate": win_rate(phase1),
+            "phase2_avg": avg_tail(phase2.rewards, 50),
+            "phase2_winrate": win_rate(phase2),
+            "phase3_avg": avg_tail(phase3.rewards, 50),
+            "phase3_winrate": win_rate(phase3),
+            "phase4_avg": final_avg,
+            "phase4_winrate": final_winrate,
+            "total_episodes": total_episodes_count,
+            "final_model_path": str(final_model_path),
+            "best_model_path": (
+                str(best_phase.best_model_path)
+                if best_phase and best_phase.best_model_path
+                else None
+            ),
+            "best_validation_report_path": (
+                str(best_phase.best_validation_report_path)
+                if best_phase and best_phase.best_validation_report_path
+                else None
+            ),
+            "all_phase_data": all_phase_data,
+        }
+    finally:
+        restore_training_globals()
+        training_manager.cleanup()
 
 
 def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2_winrate, args):
@@ -2137,7 +2281,11 @@ def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2
     episodes = range(len(all_rewards))
 
     ax1.plot(
-        episodes[: len(phase1_rewards)], phase1_rewards, "b-", alpha=0.3, label="Phase 1 (basic)"
+        episodes[: len(phase1_rewards)],
+        phase1_rewards,
+        "b-",
+        alpha=0.3,
+        label="Phase 1 (basic)",
     )
     ax1.plot(
         range(len(phase1_rewards), len(all_rewards)),
@@ -2156,11 +2304,18 @@ def create_training_plots(phase1_rewards, phase2_rewards, phase1_winrate, phase2
     if len(phase2_rewards) >= window and window > 1:
         rolling2 = np.convolve(phase2_rewards, np.ones(window) / window, mode="valid")
         ax1.plot(
-            range(len(phase1_rewards) + window - 1, len(all_rewards)), rolling2, "r-", linewidth=2
+            range(len(phase1_rewards) + window - 1, len(all_rewards)),
+            rolling2,
+            "r-",
+            linewidth=2,
         )
 
     ax1.axvline(
-        x=len(phase1_rewards), color="k", linestyle="--", alpha=0.5, label="Phase transition"
+        x=len(phase1_rewards),
+        color="k",
+        linestyle="--",
+        alpha=0.5,
+        label="Phase transition",
     )
     ax1.set_title("Reward Progress")
     ax1.set_xlabel("Episode")
@@ -2403,7 +2558,14 @@ def create_phase_breakdown_plot(all_phase_data, args):
     for i, (phase_data, ax) in enumerate(zip(all_phase_data, axes, strict=False)):
         rewards = phase_data["rewards"]
         if not rewards:
-            ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "No data available",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             ax.set_title(f"Phase {i + 1}: {phase_data['name']}")
             continue
 
@@ -2427,7 +2589,11 @@ def create_phase_breakdown_plot(all_phase_data, args):
         # Statistics
         mean_reward = np.mean(rewards)
         ax.axhline(
-            y=mean_reward, color="red", linestyle="--", alpha=0.7, label=f"Mean: {mean_reward:.2f}"
+            y=mean_reward,
+            color="red",
+            linestyle="--",
+            alpha=0.7,
+            label=f"Mean: {mean_reward:.2f}",
         )
 
         win_rate = (
@@ -2485,7 +2651,10 @@ def create_single_phase_plots(rewards, win_rate, args):
     if rewards:
         ax2.hist(rewards, bins=30, alpha=0.7, color="blue")
         ax2.axvline(
-            np.mean(rewards), color="red", linestyle="--", label=f"Mean: {np.mean(rewards):.2f}"
+            np.mean(rewards),
+            color="red",
+            linestyle="--",
+            label=f"Mean: {np.mean(rewards):.2f}",
         )
         ax2.set_title("Reward Distribution")
         ax2.set_xlabel("Reward")
@@ -2562,7 +2731,10 @@ def create_single_phase_plots(rewards, win_rate, args):
     if rewards:
         ax2.hist(rewards, bins=30, alpha=0.7, color="blue")
         ax2.axvline(
-            np.mean(rewards), color="red", linestyle="--", label=f"Mean: {np.mean(rewards):.2f}"
+            np.mean(rewards),
+            color="red",
+            linestyle="--",
+            label=f"Mean: {np.mean(rewards):.2f}",
         )
         ax2.set_title("Reward Distribution")
         ax2.set_xlabel("Reward")
@@ -2681,7 +2853,15 @@ def create_detailed_metrics_plot(
     def _plot_series(ax, x, y, label, color=None, secondary_ax=None, secondary_label=None):
         valid = [(xi, yi) for xi, yi in zip(x, y) if yi is not None]
         if not valid:
-            ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes, fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                "N/A",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=14,
+            )
             return
         xs, ys = zip(*valid)
         ax.plot(xs, ys, alpha=0.35, linewidth=0.8, color=color)
@@ -2881,14 +3061,22 @@ def parse_arguments(argv: list[str] | None = None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed for network initialization and training randomness",
+    )
+
     # Training mode
     parser.add_argument(
         "--mode",
-        choices=["curriculum", "single", "continue", "progressive", "pipeline"],
+        choices=["curriculum", "single", "continue", "progressive", "pipeline", "frame_pipeline"],
         default="curriculum",
         help=(
             "Training mode: "
             "pipeline = full sequence (curriculum → anneal → self-play); "
+            "frame_pipeline = scheduled frame budgets with complete training-state resume; "
             "curriculum = 2-phase rule-based curriculum; "
             "single = one training phase; "
             "continue = resume from checkpoint; "
@@ -2897,6 +3085,43 @@ def parse_arguments(argv: list[str] | None = None):
     )
 
     # Pipeline mode settings
+    parser.add_argument("--pipeline_curriculum_frames", type=int, default=1000000)
+    parser.add_argument("--pipeline_anneal_frames", type=int, default=1000000)
+    parser.add_argument("--pipeline_selfplay_frames", type=int, default=2000000)
+    parser.add_argument("--frame_epsilon_starts", default="0.30,0.10,0.20")
+    parser.add_argument("--frame_epsilon_ends", default="0.10,0.05,0.05")
+    parser.add_argument("--frame_decay_fraction", type=float, default=0.8)
+    parser.add_argument(
+        "--frame_shaping_floor",
+        type=float,
+        default=0.0,
+        help="Auxiliary reward scale retained after annealing in frame_pipeline (goals stay unscaled)",
+    )
+    parser.add_argument(
+        "--frame_score_context",
+        action="store_true",
+        help="Experimental frame_pipeline observation: add absolute own/opponent scores and match target",
+    )
+    parser.add_argument(
+        "--frame_terminal_on_goal",
+        action="store_true",
+        help="Experimental frame_pipeline objective: end the learning return at every goal while matches continue",
+    )
+    parser.add_argument("--frame_validation_interval", type=int, default=100000)
+    parser.add_argument(
+        "--frame_selfplay_opponent",
+        choices=("league", "follow_ball"),
+        default="league",
+        help="Final frame_pipeline phase opponent: league, or fixed Follow Ball for comparison",
+    )
+    parser.add_argument("--frame_snapshot_interval", type=int, default=100000)
+    parser.add_argument("--frame_checkpoint_interval", type=int, default=50000)
+    parser.add_argument("--frame_regression_patience", type=int, default=3)
+    parser.add_argument(
+        "--resume_training",
+        default=None,
+        help="Resume a frame_pipeline .training.pt bundle with its saved configuration",
+    )
     parser.add_argument(
         "--pipeline_curriculum_episodes",
         type=int,
@@ -2924,10 +3149,16 @@ def parse_arguments(argv: list[str] | None = None):
 
     # Model and checkpoint management
     parser.add_argument(
-        "--output_dir", type=str, default="models", help="Directory to save models and outputs"
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directory to save outputs (default: models, or the resumed training bundle's directory)",
     )
     parser.add_argument(
-        "--model_prefix", type=str, default="dqn_optimized", help="Prefix for saved model files"
+        "--model_prefix",
+        type=str,
+        default="dqn_optimized",
+        help="Prefix for saved model files",
     )
     parser.add_argument(
         "--load_model",
@@ -2948,21 +3179,20 @@ def parse_arguments(argv: list[str] | None = None):
         help="Path to an older checkpoint to warm-start from (transfers compatible layer weights).",
     )
 
-    # Pretraining (proximity reward on optimal interception point)
+    # Pretraining using simulator teaching, or the legacy interception task.
     parser.add_argument(
         "--pretrain",
         action="store_true",
         help=(
-            "Run a pretraining phase on optimal-point proximity reward before main training. "
-            "Teaches the agent to approach the ball interception point, giving the replay "
-            "buffer a warm start. Compatible with --warm_start_checkpoint."
+            "Teach interception, recovery, and scoring using simulator rollouts before RL. "
+            "Requires a fresh model; use --pretrain_mode legacy for the old proximity task."
         ),
     )
     parser.add_argument(
         "--pretrain_steps",
         type=int,
-        default=50000,
-        help="Number of pretraining steps on the optimal interception point (default: 50000)",
+        default=5000,
+        help="Number of teacher-labelled learner decisions (legacy: synthetic samples)",
     )
 
     # Checkpoint settings
@@ -2979,12 +3209,17 @@ def parse_arguments(argv: list[str] | None = None):
         help="Directory to save training checkpoints",
     )
     parser.add_argument(
-        "--save_phase_models", action="store_true", help="Save models after each training phase"
+        "--save_phase_models",
+        action="store_true",
+        help="Save models after each training phase",
     )
 
     # DQN hyperparameters
     parser.add_argument(
-        "--learning_rate", type=float, default=0.0003, help="Learning rate for the neural network"
+        "--learning_rate",
+        type=float,
+        default=0.0003,
+        help="Learning rate for the neural network",
     )
     parser.add_argument(
         "--gamma", type=float, default=0.99, help="Discount factor for future rewards"
@@ -2994,7 +3229,10 @@ def parse_arguments(argv: list[str] | None = None):
     parser.add_argument("--epsilon_min", type=float, default=0.05, help="Minimum exploration rate")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
     parser.add_argument(
-        "--memory_size", type=int, default=20000, help="Size of the replay memory buffer"
+        "--memory_size",
+        type=int,
+        default=20000,
+        help="Size of the replay memory buffer",
     )
     parser.add_argument(
         "--hidden_size",
@@ -3025,10 +3263,16 @@ def parse_arguments(argv: list[str] | None = None):
         help="Number of episodes per training phase (curriculum mode)",
     )
     parser.add_argument(
-        "--total_episodes", type=int, default=1000, help="Total number of episodes (single mode)"
+        "--total_episodes",
+        type=int,
+        default=1000,
+        help="Total number of episodes (single mode)",
     )
     parser.add_argument(
-        "--max_steps_per_episode", type=int, default=1000, help="Maximum steps per episode"
+        "--max_steps_per_episode",
+        type=int,
+        default=10000,
+        help="Maximum steps per episode (10000 ≈ 166.7s at 60 Hz)",
     )
     parser.add_argument(
         "--training_max_score",
@@ -3182,7 +3426,7 @@ def parse_arguments(argv: list[str] | None = None):
         "--self_play_pool_size",
         type=int,
         default=5,
-        help="Maximum number of DQN snapshots kept in the self-play pool (oldest evicted first).",
+        help="Number of recent snapshots retained, in addition to champions and history.",
     )
     parser.add_argument(
         "--self_play_weight",
@@ -3230,7 +3474,7 @@ def parse_arguments(argv: list[str] | None = None):
         dest="save_best_model",
         action="store_false",
         default=True,
-        help="Disable saving a separate _best.pth at the peak rule-based win rate (enabled by default).",
+        help="Disable competitive validation and saving a separate validated _best.pth.",
     )
 
     # Domain randomization
@@ -3262,7 +3506,8 @@ def parse_arguments(argv: list[str] | None = None):
         "--anneal_micro_rewards",
         action="store_true",
         help=(
-            "Linearly decay micro-rewards (hits, bonuses) to zero over training. "
+            "Linearly decay all auxiliary rewards (hits, bonuses, proximity and Phase 3) "
+            "to zero over training. "
             "Only +1/-1 goal rewards remain at the end."
         ),
     )
@@ -3280,7 +3525,7 @@ def parse_arguments(argv: list[str] | None = None):
         type=float,
         default=None,
         help=(
-            "Fixed scale for micro-rewards (hits, bonuses) throughout training. "
+            "Fixed scale for all auxiliary rewards (hits, bonuses, proximity and Phase 3). "
             "0.0 = pure goal rewards only, 1.0 = full (default). "
             "Overridden episode-by-episode when --anneal_micro_rewards is set."
         ),
@@ -3293,13 +3538,21 @@ def parse_arguments(argv: list[str] | None = None):
         help="Perform final evaluation against multiple opponents",
     )
     parser.add_argument(
-        "--eval_episodes", type=int, default=100, help="Number of episodes for evaluation"
+        "--eval_episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for evaluation",
     )
     parser.add_argument(
-        "--eval_epsilon", type=float, default=0.01, help="Exploration rate during evaluation"
+        "--eval_epsilon",
+        type=float,
+        default=0.01,
+        help="Exploration rate during evaluation",
     )
     parser.add_argument(
-        "--save_eval_results", action="store_true", help="Save evaluation results to JSON file"
+        "--save_eval_results",
+        action="store_true",
+        help="Save evaluation results to JSON file",
     )
     parser.add_argument(
         "--eval_max_score",
@@ -3316,7 +3569,7 @@ def parse_arguments(argv: list[str] | None = None):
         "--checkpoint_eval_opponent",
         dest="checkpoint_eval_opponents",
         action="append",
-        choices=[opponent for opponent in AI_TYPES if opponent != "training_dummy"],
+        choices=AI_TYPES,
         help="Opponent for checkpoint evaluation. May be repeated.",
     )
     parser.add_argument(
@@ -3392,7 +3645,10 @@ def parse_arguments(argv: list[str] | None = None):
 
     # Output and logging
     parser.add_argument(
-        "--save_plots", action="store_true", default=True, help="Save training progress plots"
+        "--save_plots",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save training progress plots",
     )
     parser.add_argument(
         "--save_metrics",
@@ -3474,8 +3730,121 @@ def parse_arguments(argv: list[str] | None = None):
         help="Run in normal speed GUI mode (lower FPS for better visualization)",
     )
 
+    parser.add_argument(
+        "--pretrain_mode",
+        choices=("simulator", "legacy", "distill"),
+        default="simulator",
+        help="simulator: synthetic teacher scenarios; distill: DAgger imitation of the "
+        "lookahead planner on real matches (see magic_pong.ai.distillation)",
+    )
+    parser.add_argument(
+        "--distill_opponents",
+        default="tracker,striker,follow_ball,aggressive,defensive,predictive,planner",
+        help="Comma-separated opponents for --pretrain_mode distill",
+    )
+    parser.add_argument("--distill_beta_end", type=float, default=0.0)
+    parser.add_argument(
+        "--distill_action_steps",
+        type=int,
+        default=30,
+        help="Frames each candidate action is held in the planner rollouts used as labels",
+    )
+    parser.add_argument("--distill_match_steps", type=int, default=3000)
+    parser.add_argument("--distill_match_score", type=int, default=3)
+    parser.add_argument(
+        "--teacher_horizon",
+        type=int,
+        default=90,
+        help="Physics frames simulated per candidate teaching action",
+    )
+    parser.add_argument("--teacher_action_steps", type=int, default=6)
+    parser.add_argument("--teacher_rollout_steps", type=int, default=120)
+    parser.add_argument("--teacher_learner_probability", type=float, default=0.5)
+    parser.add_argument("--teacher_seed", type=int, default=0)
+    parser.add_argument(
+        "--competitive_eval_interval",
+        type=int,
+        default=5000,
+        help="Validate every N episodes, plus phase boundaries; 0 disables best selection",
+    )
+    parser.add_argument("--validation_seeds", default="101,102,103")
+    parser.add_argument(
+        "--test_seeds",
+        default="10001,10002,10003",
+        help="Disjoint held-out seeds, never used to select checkpoints",
+    )
+    parser.add_argument("--validation_opponents", default=",".join(AI_TYPES))
+    parser.add_argument("--validation_max_steps", type=int, default=18000)
+    parser.add_argument("--validation_max_score", type=int, default=11)
+    parser.add_argument(
+        "--league_dir",
+        default=None,
+        help="Persistent league directory; default OUTPUT_DIR/league",
+    )
+    parser.add_argument(
+        "--league_opponent",
+        action="append",
+        default=[],
+        help="Import an independent neural checkpoint; repeat for several opponents",
+    )
+    parser.add_argument(
+        "--league_exploiter_target",
+        default=None,
+        help="Train a specialist against this frozen checkpoint (single mode)",
+    )
+    parser.add_argument(
+        "--league_role",
+        choices=("snapshot", "independent", "exploiter"),
+        default="snapshot",
+        help="Role assigned to the final league snapshot",
+    )
+    parser.add_argument("--league_champion_size", type=int, default=5)
+    parser.add_argument("--league_historical_size", type=int, default=5)
+    parser.add_argument("--league_coverage_floor", type=float, default=0.2)
+
     args = parser.parse_args(argv)
     try:
+        if args.output_dir is None:
+            args.output_dir = (
+                str(Path(args.resume_training).resolve().parent)
+                if args.resume_training
+                else "models"
+            )
+        if (
+            args.resume_training
+            and Path(args.output_dir).resolve() != Path(args.resume_training).resolve().parent
+        ):
+            raise ValueError("--output_dir must match the resumed training bundle's directory")
+        if args.resume_training and args.mode != "frame_pipeline":
+            raise ValueError("--resume_training requires --mode frame_pipeline")
+        if args.mode == "frame_pipeline":
+            if (
+                args.pipeline_curriculum_episodes
+                or args.pipeline_anneal_episodes
+                or args.pipeline_selfplay_episodes
+            ):
+                raise ValueError("frame_pipeline uses --pipeline_*_frames, not episode budgets")
+            if args.load_checkpoint or args.warm_start_checkpoint:
+                raise ValueError(
+                    "frame_pipeline uses --load_model for adaptation or --resume_training for exact resume"
+                )
+            if args.resume_training and (args.load_model or args.pretrain):
+                raise ValueError("resume cannot be combined with warm start or pretraining")
+            if (
+                args.pretrain
+                or args.domain_rand_noise
+                or args.league_dir
+                or args.league_opponent
+                or args.league_exploiter_target
+            ):
+                raise ValueError(
+                    "frame_pipeline currently requires pretraining as a separate stage and owns its fixed-physics league"
+                )
+            from magic_pong.ai.scheduled_training import config_from_args
+
+            if not args.resume_training:
+                config_from_args(args)
+        _validate_training_extensions(args)
         validate_mixed_fine_tuning_args(args)
         validate_pretrain_args(args)
         validate_reward_shaping_args(args)
@@ -3498,8 +3867,76 @@ def parse_arguments(argv: list[str] | None = None):
     return args
 
 
+def _validate_training_extensions(args):
+    from magic_pong.ai.training_validation import validation_config_from_args
+
+    if not 0 <= args.seed < 2**32:
+        raise ValueError("--seed must be a non-negative 32-bit integer")
+    if args.competitive_eval_interval < 0:
+        raise ValueError("--competitive_eval_interval must be non-negative")
+    validation_config_from_args(args)
+    if not 0 <= args.domain_rand_noise < 1:
+        raise ValueError("--domain_rand_noise must be in [0, 1)")
+    if args.pretrain and args.pretrain_steps <= 0:
+        raise ValueError("--pretrain_steps must be positive")
+    if min(args.teacher_horizon, args.teacher_action_steps, args.teacher_rollout_steps) <= 0:
+        raise ValueError("Teacher horizon, action steps, and rollout steps must be positive")
+    if args.teacher_action_steps > args.teacher_horizon:
+        raise ValueError("--teacher_action_steps cannot exceed --teacher_horizon")
+    if not 0 <= args.teacher_learner_probability <= 1:
+        raise ValueError("--teacher_learner_probability must be in [0, 1]")
+    if min(args.league_champion_size, args.league_historical_size) < 0:
+        raise ValueError("League retention sizes must be non-negative")
+    if not 0 < args.league_coverage_floor <= 1:
+        raise ValueError("--league_coverage_floor must be in (0, 1]")
+    if args.league_exploiter_target:
+        if args.mode != "single":
+            raise ValueError("--league_exploiter_target requires --mode single")
+        args.self_play_interval = args.self_play_interval or 500
+        args.league_role = "exploiter"
+    if args.league_opponent and args.mode not in ("single", "pipeline", "continue"):
+        raise ValueError("--league_opponent requires single, continue, or pipeline mode")
+    if args.league_opponent and not args.self_play_interval and args.mode != "pipeline":
+        args.self_play_interval = 500
+    for path in [
+        *args.league_opponent,
+        *([args.league_exploiter_target] if args.league_exploiter_target else []),
+    ]:
+        if not Path(path).is_file():
+            raise ValueError(f"League checkpoint not found: {path}")
+    if args.mixed_opponents and (args.self_play_interval > 0 or args.mode == "pipeline"):
+        raise ValueError(
+            "Use --self_play_base_mix for a league; --mixed_opponents uses a separate sampler"
+        )
+
+
 def main(argv: list[str] | None = None):
     args = parse_arguments(argv)
+
+    if args.mode == "frame_pipeline":
+        from magic_pong.ai.scheduled_training import config_from_args
+        from magic_pong.ai.scheduled_training import run_frame_pipeline
+
+        if args.resume_training:
+            import torch
+
+            from magic_pong.ai.scheduled_training import FramePipelineConfig
+
+            saved = torch.load(args.resume_training, map_location="cpu", weights_only=True)
+            config = FramePipelineConfig(**saved["config"])
+            print(
+                "Resuming saved frame budgets and schedules; saved configuration takes precedence."
+            )
+        else:
+            config = config_from_args(args)
+        result = run_frame_pipeline(
+            config, args.output_dir, initial_checkpoint=args.load_model, resume=args.resume_training
+        )
+        print(
+            f"Frame pipeline {result['status']}: {result['progress']['total_frames']} frames. "
+            f"Playable model: {Path(args.output_dir) / 'best.pth'}; resume: latest.training.pt"
+        )
+        return result
 
     print("🚀 ADVANCED DQN TRAINING STARTED")
     print(f"Mode: {args.mode}")
@@ -3565,46 +4002,68 @@ def main(argv: list[str] | None = None):
         print("Creating new agent with optimized parameters")
         agent = create_agent_from_args(args)
 
-    # Optional pretraining phase (proximity reward on optimal interception point)
+    # Optional simulator teaching; runtime inference remains purely neural.
     if getattr(args, "pretrain", False):
-        pretrain_steps = getattr(args, "pretrain_steps", 50000)
-        print(f"\nPretraining phase: {pretrain_steps} steps on optimal interception point")
+        pretrain_steps = args.pretrain_steps
+        print(f"\nPretraining phase: {pretrain_steps} {args.pretrain_mode} decisions")
         saved_epsilon = agent.epsilon
         saved_epsilon_min = agent.epsilon_min
-        saved_proximity_factor = ai_config.PROXIMITY_REWARD_FACTOR
-        # Use a stronger reward signal during pretraining.  The default factor (0.01)
-        # produces ~0.08–0.10 reward per step — too weak.  0.1 puts each step's
-        # reward on the same scale as goal rewards for clearer Q-value gradients.
-        ai_config.PROXIMITY_REWARD_FACTOR = 0.1
-        # Keep epsilon=1.0 throughout pretraining (pure random exploration).
-        # Each step is an independent random scenario — not a temporal sequence —
-        # so greedy exploitation does not help and actually creates a feedback loop:
-        #   good transitions → greedy policy over-exploits those states →
-        #   Q-values overfit → generalization drops → reward oscillates 3-4×.
-        # Random exploration gives unbiased Q-value estimates and avoids this cycle.
-        # epsilon_decay would take epsilon to epsilon_min in ~1500 steps (≈2 batches),
-        # so we pin epsilon_min=1.0 to prevent any decay.
-        agent.epsilon = 1.0
-        agent.epsilon_min = 1.0
-        pretrainer = create_pretrainer(y_only=True)
-        pretrainer.run_pretraining_phase(
-            agent=agent,
-            total_steps=pretrain_steps,
-            steps_per_batch=min(1000, pretrain_steps),
-            player_id=1,
-            verbose=True,
-        )
-        ai_config.PROXIMITY_REWARD_FACTOR = saved_proximity_factor
-        # Restore epsilon settings before saving the pretrained checkpoint.
-        # The checkpoint is saved at epsilon_min (not 1.0) so it behaves near-greedy
-        # when loaded for evaluation.  The agent's epsilon is then restored to
-        # saved_epsilon (1.0 for a fresh agent) for the subsequent training phase.
-        agent.epsilon_min = saved_epsilon_min
-        agent.epsilon = agent.epsilon_min
+        try:
+            if args.pretrain_mode == "legacy":
+                agent.epsilon = agent.epsilon_min = 1.0
+                pretrainer = create_pretrainer(y_only=True)
+                with ai_config_tmp(PROXIMITY_REWARD_FACTOR=0.1):
+                    pretraining_stats = pretrainer.run_pretraining_phase(
+                        agent,
+                        total_steps=pretrain_steps,
+                        steps_per_batch=min(1000, pretrain_steps),
+                        player_id=1,
+                        verbose=True,
+                    )
+            elif args.pretrain_mode == "distill":
+                pretrainer = create_pretrainer(
+                    mode="distill",
+                    opponents=tuple(
+                        name.strip() for name in args.distill_opponents.split(",") if name.strip()
+                    ),
+                    teacher_horizon=args.teacher_horizon,
+                    teacher_action_steps=args.distill_action_steps,
+                    beta_end=args.distill_beta_end,
+                    match_steps=args.distill_match_steps,
+                    match_score=args.distill_match_score,
+                    seed=args.teacher_seed,
+                )
+                pretraining_stats = pretrainer.run_pretraining_phase(
+                    agent,
+                    total_steps=pretrain_steps,
+                    steps_per_batch=min(10000, pretrain_steps),
+                    player_id=1,
+                    verbose=True,
+                )
+            else:
+                pretrainer = create_pretrainer(
+                    mode="simulator",
+                    y_only=False,
+                    teacher_horizon=args.teacher_horizon,
+                    teacher_action_steps=args.teacher_action_steps,
+                    rollout_steps=args.teacher_rollout_steps,
+                    learner_probability=args.teacher_learner_probability,
+                    seed=args.teacher_seed,
+                )
+                pretraining_stats = pretrainer.run_pretraining_phase(
+                    agent,
+                    total_steps=pretrain_steps,
+                    steps_per_batch=min(1000, pretrain_steps),
+                    player_id=1,
+                    verbose=True,
+                )
+        finally:
+            agent.epsilon, agent.epsilon_min = saved_epsilon, saved_epsilon_min
         pretrain_path = Path(args.output_dir) / f"{args.model_prefix}_pretrained.pth"
         agent.save_model(str(pretrain_path))
+        stats_path = pretrain_path.with_suffix(".pretraining.json")
+        stats_path.write_text(json.dumps(pretraining_stats, indent=2) + "\n")
         print(f"Pretrained checkpoint saved: {pretrain_path}")
-        agent.epsilon = saved_epsilon
 
     # Training
     if args.mode == "pipeline":

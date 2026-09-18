@@ -18,7 +18,15 @@ from magic_pong.ai.evaluation import EvaluationConfig
 from magic_pong.ai.evaluation import evaluate_agent
 from magic_pong.ai.models.simple_ai import create_ai
 
-BUILTIN_AI_TYPES = ("random", "follow_ball", "defensive", "aggressive", "predictive")
+BUILTIN_AI_TYPES = (
+    "random",
+    "follow_ball",
+    "defensive",
+    "aggressive",
+    "predictive",
+    "tracker",
+    "striker",
+)
 
 DEFAULT_K_FACTOR = 32.0
 DEFAULT_INITIAL_RATING = 1200.0
