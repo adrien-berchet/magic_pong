@@ -81,6 +81,7 @@ def to_player1_dqn_observation(observation: dict[str, Any], player_id: int) -> d
     _mirror_position_x(adapted, "player_pos", paddle_like=True)
     _mirror_position_x(adapted, "opponent_pos", paddle_like=True)
     _mirror_position_x(adapted, "opponent_previous_pos", paddle_like=True)
+    _mirror_position_x(adapted, "player_previous_pos", paddle_like=True)
 
     ball_vel = adapted.get("ball_vel")
     if ball_vel is not None and _has_xy(ball_vel):

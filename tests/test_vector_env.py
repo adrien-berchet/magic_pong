@@ -54,18 +54,33 @@ def _random_engine(rng: random.Random) -> PhysicsEngine:
     return engine
 
 
-@pytest.mark.parametrize("seed", range(30))
+@pytest.mark.parametrize("seed", range(15))
 @pytest.mark.parametrize("score_context", [False, True])
-def test_encoder_matches_the_python_dqn_pipeline(seed: int, score_context: bool) -> None:
+@pytest.mark.parametrize("geometry_context", [False, True])
+@pytest.mark.parametrize("normalized", [False, True])
+def test_encoder_matches_the_python_dqn_pipeline(
+    seed: int,
+    score_context: bool,
+    geometry_context: bool,
+    normalized: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from magic_pong.utils.config import ai_config
+
+    monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", normalized)
     rng = random.Random(seed)
     engine = _random_engine(rng)
     side = rng.choice((1, 2))
-    agent = DQNAgent(hidden_layers=[8], score_context=score_context)
+    agent = DQNAgent(
+        hidden_layers=[8], score_context=score_context, geometry_context=geometry_context
+    )
     observation = ObservationProcessor(800, 600).process_game_state(engine.get_game_state(), side)
     expected = agent._observation_to_state(to_player1_dqn_observation(observation, side))
     state, bonuses, rotating, params = fp.snapshot(engine)
     out = np.zeros(agent.state_size, dtype=np.float32)
-    ve.encode_observation(state, bonuses, rotating, params, side, score_context, out)
+    ve.encode_observation(
+        state, bonuses, rotating, params, side, score_context, geometry_context, out
+    )
     np.testing.assert_allclose(out, expected, atol=1e-6)
 
 

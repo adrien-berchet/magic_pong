@@ -65,6 +65,7 @@ class FramePipelineConfig:
     training_scores: tuple[int, ...] = (1, 3, 5, 11)
     terminal_on_goal: bool = False
     score_context: bool = False
+    geometry_context: bool = False
     anchor_weight: float = 0.0
     anchor_margin: float = 0.01
     anchor_bank_sha256: str = ""
@@ -214,6 +215,7 @@ def config_from_args(args: Namespace) -> FramePipelineConfig:
         shaping_floor=args.frame_shaping_floor,
         terminal_on_goal=args.frame_terminal_on_goal,
         score_context=args.frame_score_context,
+        geometry_context=getattr(args, "frame_geometry_context", False),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
         memory_size=args.memory_size,
@@ -345,6 +347,7 @@ def _fresh_agent(config: FramePipelineConfig, checkpoint: str | Path | None) -> 
         train_frequency=config.train_frequency,
         target_update_frequency=config.target_update_frequency,
         score_context=config.score_context,
+        geometry_context=config.geometry_context,
     )
     if checkpoint:
         agent.load_model(str(checkpoint))
@@ -352,6 +355,10 @@ def _fresh_agent(config: FramePipelineConfig, checkpoint: str | Path | None) -> 
         agent.enable_score_context()
     if agent.score_context != config.score_context:
         raise ValueError("Cannot discard score context from a trained checkpoint")
+    if config.geometry_context and not agent.geometry_context:
+        agent.enable_geometry_context()
+    if agent.geometry_context != config.geometry_context:
+        raise ValueError("Cannot discard geometry context from a trained checkpoint")
     # A warm start is a declared new experiment; exact continuation uses the bundle.
     agent.lr, agent.gamma, agent.batch_size = config.learning_rate, config.gamma, config.batch_size
     agent.terminal_on_goal = config.terminal_on_goal
@@ -391,6 +398,7 @@ def run_frame_pipeline(
         original["config"].setdefault("selfplay_opponent", "league")
         original["config"].setdefault("terminal_on_goal", False)
         original["config"].setdefault("score_context", False)
+        original["config"].setdefault("geometry_context", False)
         original["config"].setdefault("anchor_weight", 0.0)
         original["config"].setdefault("anchor_margin", 0.01)
         original["config"].setdefault("anchor_bank_sha256", "")

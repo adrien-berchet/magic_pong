@@ -19,6 +19,9 @@ from magic_pong.core.entities import Paddle
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config
 
+DEFAULT_AIM_OFFSETS: tuple[float, ...] = (0.0, 0.85, -0.85)
+ATTACK_PRESSURE_WEIGHT = 10.0
+
 
 @dataclass(frozen=True)
 class RolloutOutcome:
@@ -54,14 +57,24 @@ def interception(physics: PhysicsEngine, paddle: Paddle) -> tuple[float, float]:
     return ball.radius + min(unfolded, 2 * span - unfolded), arrival
 
 
-def continuation_action(physics: PhysicsEngine, player_id: int, dt: float) -> Action:
-    """Track an approaching ball; otherwise recover to a central home guard."""
+def continuation_action(
+    physics: PhysicsEngine, player_id: int, dt: float, aim_offset: float = 0.0
+) -> Action:
+    """Track an approaching ball; otherwise recover to a central home guard.
+
+    ``aim_offset`` (fraction of the half paddle height) shifts the paddle centre
+    away from the intercept so the ball strikes nearer an edge; the bounce normal
+    then steers the return toward the far half of the field.
+    """
     paddle: Paddle = getattr(physics, f"player{player_id}")
     incoming = physics.ball.velocity.x * (1 if player_id == 1 else -1) < 0
     if incoming:
         target_y, arrival = interception(physics, paddle)
         if not math.isfinite(arrival):
             target_y = physics.ball.position.y
+        elif aim_offset:
+            half = paddle.height / 2
+            target_y = max(half, min(physics.field_height - half, target_y - aim_offset * half))
         target_x = paddle.position.x
     else:
         target_y = physics.field_height / 2
@@ -85,13 +98,17 @@ class PhysicsTeacher:
         horizon_steps: int = 90,
         action_steps: int = 6,
         y_only: bool = False,
+        aim_offsets: tuple[float, ...] = DEFAULT_AIM_OFFSETS,
     ) -> None:
         if horizon_steps < 1 or action_steps < 1 or action_steps > horizon_steps:
             raise ValueError("teacher horizon must be >= action_steps >= 1")
+        if not aim_offsets or any(not -1.0 <= float(o) <= 1.0 for o in aim_offsets):
+            raise ValueError("aim_offsets must be non-empty fractions in [-1, 1]")
         self.horizon_steps = horizon_steps
         self.action_steps = action_steps
         self.actions = (0, 1, 2) if y_only else tuple(ACTION_MAPPING)
         self.y_only = y_only
+        self.aim_offsets = tuple(float(o) for o in aim_offsets)
 
     def _position_value(self, physics: PhysicsEngine, player_id: int) -> float:
         paddle: Paddle = getattr(physics, f"player{player_id}")
@@ -113,6 +130,11 @@ class PhysicsTeacher:
         )
 
     def _attack_value(self, physics: PhysicsEngine, player_id: int) -> float:
+        """Reward returns that make the opponent travel, up to unreachable ones.
+
+        ``pressure`` is the fraction of the opponent's travel capacity the return
+        consumes (1 = it cannot arrive in time); the unreachable margin adds on top.
+        """
         if physics.ball.velocity.x * (1 if player_id == 1 else -1) <= 0:
             return 0.0
         opponent: Paddle = getattr(physics, f"player{3 - player_id}")
@@ -120,21 +142,33 @@ class PhysicsTeacher:
         if not math.isfinite(arrival):
             return 0.0
         distance = abs(target - (opponent.position.y + opponent.height / 2))
-        unreachable = max(
-            0.0,
-            distance - opponent.height / 2 - physics.ball.radius - opponent.speed * arrival,
-        )
-        return 20 * unreachable / physics.field_height
+        required = max(0.0, distance - opponent.height / 2 - physics.ball.radius)
+        capacity = opponent.speed * arrival
+        if capacity > 0:
+            pressure = min(1.0, required / capacity)
+        else:
+            pressure = 1.0 if required > 0 else 0.0
+        unreachable = max(0.0, required - capacity)
+        return ATTACK_PRESSURE_WEIGHT * pressure + 20 * unreachable / physics.field_height
 
-    def _rollout(self, physics: PhysicsEngine, player_id: int, action_index: int) -> RolloutOutcome:
+    def _rollout(
+        self,
+        physics: PhysicsEngine,
+        player_id: int,
+        action_index: int,
+        aim_offset: float = 0.0,
+    ) -> RolloutOutcome:
         dt = game_config.GAME_SPEED_MULTIPLIER / game_config.FPS
         action = from_player1_dqn_action(ACTION_MAPPING[action_index], player_id)
         value = 0.0
         hits = 0
         collections = 0
+        attack: float | None = None
         for frame in range(self.horizon_steps):
             own_action = (
-                action if frame < self.action_steps else continuation_action(physics, player_id, dt)
+                action
+                if frame < self.action_steps
+                else continuation_action(physics, player_id, dt, aim_offset)
             )
             if self.y_only:
                 own_action = Action(0.0, own_action.move_y)
@@ -145,6 +179,9 @@ class PhysicsTeacher:
             events = physics.update(dt, *actions)
             hits += sum(event["player"] == player_id for event in events["paddle_hits"])
             collections += sum(event["player"] == player_id for event in events["bonus_collected"])
+            if hits and attack is None:
+                # Judge the return where the opponent stands when the ball leaves the paddle.
+                attack = self._attack_value(physics, player_id)
             for event in events["goals"]:
                 won = event["player"] == player_id
                 return RolloutOutcome(
@@ -158,7 +195,8 @@ class PhysicsTeacher:
             # movement until the continuation policy catches up.
             value += self._position_value(physics, player_id) / self.horizon_steps
         value += 3 * min(hits, 1) + min(collections, 2)
-        value += self._position_value(physics, player_id) + self._attack_value(physics, player_id)
+        value += self._position_value(physics, player_id)
+        value += attack if attack is not None else self._attack_value(physics, player_id)
         return RolloutOutcome(value, paddle_hits=hits, bonuses=collections)
 
     def label(self, physics: PhysicsEngine, player_id: int = 1) -> TeacherDecision:
@@ -168,8 +206,12 @@ class PhysicsTeacher:
         outcomes: dict[int, RolloutOutcome] = {}
         try:
             for action in self.actions:
-                random.setstate(rng_state)
-                outcomes[action] = self._rollout(deepcopy(physics), player_id, action)
+                for offset in self.aim_offsets:
+                    random.setstate(rng_state)
+                    outcome = self._rollout(deepcopy(physics), player_id, action, offset)
+                    # Keep the best aim per first action; ties prefer the first offset.
+                    if action not in outcomes or outcome.value > outcomes[action].value:
+                        outcomes[action] = outcome
         finally:
             random.setstate(rng_state)
         values = np.full(len(ACTION_MAPPING), -np.inf, dtype=np.float32)

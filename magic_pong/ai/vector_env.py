@@ -24,15 +24,18 @@ from magic_pong.ai.fast_policies import NETWORK_OPPONENT
 from magic_pong.ai.fast_policies import PLANNER_OPPONENT
 from magic_pong.ai.fast_policies import POLICY_KINDS
 from magic_pong.ai.fast_policies import builtin_action
-from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_HORIZON
+from magic_pong.ai.geometry import compute_geometry_features
+from magic_pong.ai.geometry import get_state_layout
 from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_NORMALIZER
-from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_STATE_SIZE
 from magic_pong.core import fast_physics as fp
 from magic_pong.core.physics import PhysicsEngine
 from magic_pong.utils.config import game_config
 
 SELF_OPPONENT = "self"
 PLANNER_NAME = "planner"
+
+_fast_geometry_features = njit(cache=True)(compute_geometry_features)
 
 # Per-environment, per-decision event columns.
 (
@@ -56,6 +59,7 @@ def encode_observation(
     params: np.ndarray,
     side: int,
     score_context: bool,
+    geometry_context: bool,
     out: np.ndarray,
 ) -> None:
     """Write the DQN input vector for ``side`` (player-1 frame) into ``out``."""
@@ -122,6 +126,31 @@ def encode_observation(
         out[30] = own_score / SCORE_CONTEXT_NORMALIZER
         out[31] = opp_score / SCORE_CONTEXT_NORMALIZER
         out[32] = state[fp.MATCH_TARGET] / SCORE_CONTEXT_NORMALIZER
+    if geometry_context:
+        g0, g1, g2, g3 = _fast_geometry_features(
+            ball_x,
+            state[fp.BALL_Y],
+            vx,
+            state[fp.BALL_VY],
+            own_x,
+            state[own + fp.PY],
+            state[own + fp.PPY],
+            state[opp + fp.PY],
+            state[opp + fp.PPY],
+            state[own + fp.PH],
+            width,
+            height,
+            paddle_w,
+            params[fp.PR_RADIUS],
+            params[fp.PR_PADDLE_SPEED],
+            params[fp.PR_DT],
+            GEOMETRY_CONTEXT_HORIZON,
+        )
+        geom_start = 33 if score_context else 30
+        out[geom_start] = g0
+        out[geom_start + 1] = g1
+        out[geom_start + 2] = g2
+        out[geom_start + 3] = g3
 
 
 @njit(cache=True)
@@ -132,11 +161,19 @@ def encode_batch(
     params: np.ndarray,
     sides: np.ndarray,
     score_context: bool,
+    geometry_context: bool,
     out: np.ndarray,
 ) -> None:
     for i in range(states.shape[0]):
         encode_observation(
-            states[i], bonuses[i], rotating[i], params, sides[i], score_context, out[i]
+            states[i],
+            bonuses[i],
+            rotating[i],
+            params,
+            sides[i],
+            score_context,
+            geometry_context,
+            out[i],
         )
 
 
@@ -323,6 +360,7 @@ class VectorEnv:
         max_point_frames: int = 3600,
         terminal_on_goal: bool = True,
         score_context: bool = False,
+        geometry_context: bool = False,
         opponent_mix: dict[str, float] | str | None = None,
         sides: tuple[int, ...] = (1, 2),
         bonus_modes: tuple[bool, ...] = (False, True),
@@ -342,7 +380,10 @@ class VectorEnv:
         self.max_point_frames = max_point_frames
         self.terminal_on_goal = terminal_on_goal
         self.score_context = score_context
-        self.obs_dim = SCORE_CONTEXT_STATE_SIZE if score_context else EXPECTED_STATE_SIZE
+        self.geometry_context = geometry_context
+        self.obs_dim = get_state_layout(
+            score_context=score_context, geometry_context=geometry_context
+        ).state_size
         self.hit_reward = hit_reward
         self.bonus_reward = bonus_reward
         self.auto_reset = auto_reset
@@ -446,6 +487,7 @@ class VectorEnv:
             self.params,
             self.sides[index],
             self.score_context,
+            self.geometry_context,
             self.obs[index],
         )
 
@@ -458,6 +500,7 @@ class VectorEnv:
             self.params,
             self.sides if sides is None else sides,
             self.score_context,
+            self.geometry_context,
             out,
         )
 

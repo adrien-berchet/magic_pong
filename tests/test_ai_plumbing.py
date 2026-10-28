@@ -954,3 +954,30 @@ def test_dqn_rotating_paddle_angle_uses_unwrapped_radians() -> None:
         agent._observation_to_state(wrapped),
         agent._observation_to_state(unwrapped),
     )
+
+
+def test_observation_includes_own_previous_position_symmetric_with_opponents(
+    monkeypatch: Any,
+) -> None:
+    """player_previous_pos mirrors opponent_previous_pos, ready for a future velocity feature."""
+    monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", False)
+    processor = ObservationProcessor(field_width=800.0, field_height=600.0)
+    observation = processor.process_game_state(_canonical_game_state(), player_id=1)
+    assert observation["player_previous_pos"] == [20.0, 250.0]
+    assert observation["opponent_previous_pos"] == [760.0, 260.0]
+
+    mirrored = processor.process_game_state(_mirrored_player2_game_state(), player_id=2)
+    assert mirrored["player_previous_pos"] == [765.0, 250.0]
+    adapted = to_player1_dqn_observation(mirrored, player_id=2)
+    assert adapted["player_previous_pos"] == pytest.approx(observation["player_previous_pos"])
+
+
+def test_observation_previous_position_falls_back_to_current_when_missing(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(ai_config, "NORMALIZE_POSITIONS", False)
+    state = _canonical_game_state()
+    del state["player1_last_position"]
+    processor = ObservationProcessor(field_width=800.0, field_height=600.0)
+    observation = processor.process_game_state(state, player_id=1)
+    assert observation["player_previous_pos"] == observation["player_pos"]

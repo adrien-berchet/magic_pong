@@ -141,7 +141,7 @@ def builtin_action(
         move_y = max(-1.0, min(1.0, (target - cy) / step_size))
         return (-1.0 if side == 1 else 1.0), move_y
     if kind == 9:  # teacher continuation policy
-        return fp._continuation(state, params, side)
+        return fp._continuation(state, params, side, 0.0)
     return 0.0, 0.0
 
 

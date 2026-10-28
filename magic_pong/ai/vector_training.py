@@ -73,6 +73,7 @@ class VectorTrainingConfig:
     grad_clip: float = 10.0
     hidden_layers: tuple[int, ...] = (256, 128)
     score_context: bool = False
+    geometry_context: bool = False
     terminal_on_goal: bool = True
     match_target: int = 11
     max_point_frames: int = 3600
@@ -244,6 +245,7 @@ def evaluate_network(
     match_target: int = 11,
     max_frames: int = 18_000,
     score_context: bool = False,
+    geometry_context: bool = False,
     seed: int = 12345,
 ) -> dict[str, Any]:
     """Play one match per (opponent, side, bonus mode, seed) with the greedy policy.
@@ -263,6 +265,7 @@ def evaluate_network(
         max_point_frames=max_frames + 1,
         terminal_on_goal=False,
         score_context=score_context,
+        geometry_context=geometry_context,
         opponent_mix={"dummy": 1.0},
         auto_reset=False,
     )
@@ -343,12 +346,17 @@ class VectorDQNTrainer:
                 gamma=config.gamma,
                 lr=config.learning_rate,
                 score_context=config.score_context,
+                geometry_context=config.geometry_context,
                 terminal_on_goal=config.terminal_on_goal,
             )
             if config.initial_checkpoint:
                 self.agent.load_model(config.initial_checkpoint)
                 self.agent.q_network.to(self.device)
                 self.agent.target_network.to(self.device)
+            if config.score_context and not self.agent.score_context:
+                self.agent.enable_score_context()
+            if config.geometry_context and not self.agent.geometry_context:
+                self.agent.enable_geometry_context()
         finally:
             dqn_ai.device = previous_device
         self.network = self.agent.q_network
@@ -365,6 +373,7 @@ class VectorDQNTrainer:
             max_point_frames=config.max_point_frames,
             terminal_on_goal=config.terminal_on_goal,
             score_context=config.score_context,
+            geometry_context=config.geometry_context,
             opponent_mix=config.opponent_mix,
             hit_reward=config.hit_reward,
             planner_horizon=config.planner_horizon,
@@ -510,6 +519,7 @@ class VectorDQNTrainer:
             match_target=c.match_target,
             max_frames=c.eval_max_frames,
             score_context=c.score_context,
+            geometry_context=c.geometry_context,
             seed=c.seed + 9_999,
         )
         report["frames"] = self.frames
@@ -643,6 +653,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon_decay_frames", type=int, default=defaults.epsilon_decay_frames)
     parser.add_argument("--hidden_layers", type=_parse_layers, default=defaults.hidden_layers)
     parser.add_argument("--score_context", action="store_true")
+    parser.add_argument("--geometry_context", action="store_true")
     parser.add_argument("--full_match_returns", action="store_true", help="bootstrap through goals")
     parser.add_argument("--match_target", type=int, default=defaults.match_target)
     parser.add_argument("--max_point_frames", type=int, default=defaults.max_point_frames)
@@ -693,6 +704,7 @@ def config_from_args(args: argparse.Namespace) -> VectorTrainingConfig:
         epsilon_decay_frames=args.epsilon_decay_frames,
         hidden_layers=args.hidden_layers,
         score_context=args.score_context,
+        geometry_context=args.geometry_context,
         terminal_on_goal=not args.full_match_returns,
         match_target=args.match_target,
         max_point_frames=args.max_point_frames,

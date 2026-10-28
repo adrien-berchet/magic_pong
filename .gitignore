@@ -1,5 +1,7 @@
 /debug
+/docs/ai
 /models
+/model_new
 /search_runs
 *.code-workspace
 test_models

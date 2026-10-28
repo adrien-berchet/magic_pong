@@ -119,6 +119,8 @@ ACTION_TABLE = np.array(
 )
 
 GOAL_VALUE = 1000.0
+ATTACK_PRESSURE_WEIGHT = 10.0
+DEFAULT_AIM_OFFSETS = np.array([0.0, 0.85, -0.85], dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -778,7 +780,7 @@ def _interception(state, params, base, player_id):
 
 
 @njit(cache=True)
-def _continuation(state, params, player_id):
+def _continuation(state, params, player_id, aim_offset):
     base = P1 if player_id == 1 else P2
     sign = 1.0 if player_id == 1 else -1.0
     incoming = state[BALL_VX] * sign < 0
@@ -786,6 +788,9 @@ def _continuation(state, params, player_id):
         target_y, arrival = _interception(state, params, base, player_id)
         if not math.isfinite(arrival):
             target_y = state[BALL_Y]
+        elif aim_offset != 0.0:
+            half = state[base + PH] / 2
+            target_y = max(half, min(state[FIELD_H] - half, target_y - aim_offset * half))
         target_x = state[base + PX]
     else:
         target_y = state[FIELD_H] / 2
@@ -822,11 +827,14 @@ def _attack_value(state, params, player_id):
     if not math.isfinite(arrival):
         return 0.0
     distance = abs(target - (state[base + PY] + state[base + PH] / 2))
-    unreachable = max(
-        0.0,
-        distance - state[base + PH] / 2 - params[PR_RADIUS] - state[base + PSPEED] * arrival,
-    )
-    return 20 * unreachable / state[FIELD_H]
+    required = max(0.0, distance - state[base + PH] / 2 - params[PR_RADIUS])
+    capacity = state[base + PSPEED] * arrival
+    if capacity > 0:
+        pressure = min(1.0, required / capacity)
+    else:
+        pressure = 1.0 if required > 0 else 0.0
+    unreachable = max(0.0, required - capacity)
+    return ATTACK_PRESSURE_WEIGHT * pressure + 20 * unreachable / state[FIELD_H]
 
 
 @njit(cache=True)
@@ -840,6 +848,7 @@ def _evaluate_actions(
     horizon,
     action_steps,
     y_only,
+    aim_offsets,
     values,
     outcomes,
 ):
@@ -850,50 +859,64 @@ def _evaluate_actions(
     rand = np.zeros(N_RAND, dtype=np.float64)
     for c in range(candidates.shape[0]):
         index = candidates[c]
-        s = state.copy()
-        b = bonuses.copy()
-        r = rotating.copy()
         ax = ACTION_TABLE[index, 0] if player_id == 1 else -ACTION_TABLE[index, 0]
         ay = ACTION_TABLE[index, 1]
-        value = 0.0
-        hits = 0
-        collections = 0
-        goals_for = 0
-        goals_against = 0
-        finished = False
-        for frame in range(horizon):
-            if frame < action_steps:
-                ox, oy = ax, ay
-            else:
-                ox, oy = _continuation(s, params, player_id)
-            if y_only:
-                ox = 0.0
-            px, py = _continuation(s, params, 3 - player_id)
-            counts[:] = 0
-            if player_id == 1:
-                goal = step(s, b, r, params, ox, oy, px, py, counts, enabled, rand, False)
-            else:
-                goal = step(s, b, r, params, px, py, ox, oy, counts, enabled, rand, False)
-            hits += counts[hit_index]
-            collections += counts[bonus_index]
-            if goal:
-                if goal == player_id:
-                    value += GOAL_VALUE
-                    goals_for = 1
+        for o in range(aim_offsets.shape[0]):
+            aim = aim_offsets[o]
+            s = state.copy()
+            b = bonuses.copy()
+            r = rotating.copy()
+            value = 0.0
+            hits = 0
+            collections = 0
+            goals_for = 0
+            goals_against = 0
+            finished = False
+            attack = 0.0
+            attack_set = False
+            for frame in range(horizon):
+                if frame < action_steps:
+                    ox, oy = ax, ay
                 else:
-                    value -= GOAL_VALUE
-                    goals_against = 1
-                finished = True
-                break
-            value += _position_value(s, params, player_id) / horizon
-        if not finished:
-            value += 3 * min(hits, 1) + min(collections, 2)
-            value += _position_value(s, params, player_id) + _attack_value(s, params, player_id)
-        values[index] = value
-        outcomes[index, 0] = goals_for
-        outcomes[index, 1] = goals_against
-        outcomes[index, 2] = hits
-        outcomes[index, 3] = collections
+                    ox, oy = _continuation(s, params, player_id, aim)
+                if y_only:
+                    ox = 0.0
+                px, py = _continuation(s, params, 3 - player_id, 0.0)
+                counts[:] = 0
+                if player_id == 1:
+                    goal = step(s, b, r, params, ox, oy, px, py, counts, enabled, rand, False)
+                else:
+                    goal = step(s, b, r, params, px, py, ox, oy, counts, enabled, rand, False)
+                hits += counts[hit_index]
+                collections += counts[bonus_index]
+                if hits > 0 and not attack_set:
+                    # Judge the return where the opponent stands when the ball leaves the paddle.
+                    attack = _attack_value(s, params, player_id)
+                    attack_set = True
+                if goal:
+                    if goal == player_id:
+                        value += GOAL_VALUE
+                        goals_for = 1
+                    else:
+                        value -= GOAL_VALUE
+                        goals_against = 1
+                    finished = True
+                    break
+                value += _position_value(s, params, player_id) / horizon
+            if not finished:
+                value += 3 * min(hits, 1) + min(collections, 2)
+                value += _position_value(s, params, player_id)
+                if attack_set:
+                    value += attack
+                else:
+                    value += _attack_value(s, params, player_id)
+            # Keep the best aim per first action; ties prefer the first offset.
+            if o == 0 or value > values[index]:
+                values[index] = value
+                outcomes[index, 0] = goals_for
+                outcomes[index, 1] = goals_against
+                outcomes[index, 2] = hits
+                outcomes[index, 3] = collections
 
 
 def evaluate_actions(
@@ -906,17 +929,25 @@ def evaluate_actions(
     horizon: int,
     action_steps: int,
     y_only: bool = False,
+    aim_offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Score candidate first actions with the teacher rollout.
 
-    Returns ``(values, outcomes)`` indexed by action: ``values`` holds ``-inf``
-    for actions that were not candidates and ``outcomes`` holds
-    ``(goals_for, goals_against, paddle_hits, bonuses)`` per action.
+    Each first action is tried with every aim offset (fraction of the half paddle
+    height by which the continuation policy shifts the paddle off the intercept)
+    and keeps its best value. Returns ``(values, outcomes)`` indexed by action:
+    ``values`` holds ``-inf`` for actions that were not candidates and ``outcomes``
+    holds ``(goals_for, goals_against, paddle_hits, bonuses)`` per action.
     """
     if player_id not in (1, 2):
         raise ValueError("player_id must be 1 or 2")
     if horizon < 1 or action_steps < 1 or action_steps > horizon:
         raise ValueError("horizon must be >= action_steps >= 1")
+    offsets = np.ascontiguousarray(
+        DEFAULT_AIM_OFFSETS if aim_offsets is None else aim_offsets, dtype=np.float64
+    )
+    if offsets.ndim != 1 or offsets.size == 0 or np.abs(offsets).max() > 1.0:
+        raise ValueError("aim_offsets must be a non-empty vector of fractions in [-1, 1]")
     candidates = np.ascontiguousarray(candidates, dtype=np.int64)
     values = np.full(len(ACTION_TABLE), -np.inf, dtype=np.float64)
     outcomes = np.zeros((len(ACTION_TABLE), 4), dtype=np.int64)
@@ -930,6 +961,7 @@ def evaluate_actions(
         int(horizon),
         int(action_steps),
         bool(y_only),
+        offsets,
         values,
         outcomes,
     )

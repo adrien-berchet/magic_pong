@@ -367,6 +367,7 @@ def test_old_config_defaults_floor_before_reporting_changed_source(tmp_path):
     state["config"].pop("selfplay_opponent")
     state["config"].pop("terminal_on_goal")
     state["config"].pop("score_context")
+    state["config"].pop("geometry_context")
     state["progress"].pop("steady_reward_tail_frames")
     state["source_hashes"]["magic_pong/ai/scheduled_training.py"] = "old source"
     tampered = tmp_path / "old.training.pt"

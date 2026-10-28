@@ -17,7 +17,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_FEATURES
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_HORIZON
+from magic_pong.ai.geometry import compute_geometry_features
+from magic_pong.ai.geometry import get_state_layout
 from magic_pong.ai.interface import AIPlayer
+from magic_pong.ai.models.dqn_checkpoint import GEOMETRY_CONTEXT_STATE_SIZE
 from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_FEATURES
 from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_NORMALIZER
 from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_STATE_SIZE
@@ -52,6 +57,7 @@ class DQNNetwork(nn.Module):
     """Deep Q-Network: stack of Linear→ReLU layers."""
 
     score_context_weight: nn.Parameter | None
+    geometry_context_weight: nn.Parameter | None
 
     def __init__(
         self,
@@ -61,15 +67,20 @@ class DQNNetwork(nn.Module):
         layer_size: int = 2,
         hidden_layers: list[int] | None = None,
         score_context: bool = False,
+        geometry_context: bool = False,
     ):
         super().__init__()
         layer_sizes = resolve_layer_widths(hidden_size, layer_size, hidden_layers)
-        if score_context and input_size != SCORE_CONTEXT_STATE_SIZE:
-            raise ValueError("Score-context networks require 33 input values")
-        legacy_input_size = (
-            input_size - len(SCORE_CONTEXT_FEATURES) if score_context else input_size
-        )
+        layout = get_state_layout(score_context=score_context, geometry_context=geometry_context)
+        if (score_context or geometry_context) and input_size != layout.state_size:
+            raise ValueError(
+                f"Networks with score_context={score_context}, geometry_context={geometry_context} "
+                f"require {layout.state_size} input values"
+            )
+        legacy_input_size = 30 if (score_context or geometry_context) else input_size
 
+        self.score_context = score_context
+        self.geometry_context = geometry_context
         self.fc_layers = nn.ModuleList()
         for i, width in enumerate(layer_sizes):
             in_features = legacy_input_size if i == 0 else layer_sizes[i - 1]
@@ -79,8 +90,11 @@ class DQNNetwork(nn.Module):
         self._initialize_weights()
         # Allocate after legacy initialization; adding context must consume no RNG.
         self.register_parameter("score_context_weight", None)
+        self.register_parameter("geometry_context_weight", None)
         if score_context:
             self.enable_score_context()
+        if geometry_context:
+            self.enable_geometry_context()
 
     def enable_score_context(self) -> None:
         """Add a zero projection without changing the existing layers or RNG."""
@@ -91,6 +105,18 @@ class DQNNetwork(nn.Module):
             self.score_context_weight = nn.Parameter(
                 first.weight.new_zeros((first.out_features, len(SCORE_CONTEXT_FEATURES)))
             )
+            self.score_context = True
+
+    def enable_geometry_context(self) -> None:
+        """Add a zero projection without changing the existing layers or RNG."""
+        if self.geometry_context_weight is None:
+            first = self.fc_layers[0]
+            if first.in_features != 30:
+                raise ValueError("Geometry context can only extend a 30-input network")
+            self.geometry_context_weight = nn.Parameter(
+                first.weight.new_zeros((first.out_features, len(GEOMETRY_CONTEXT_FEATURES)))
+            )
+            self.geometry_context = True
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
@@ -99,13 +125,16 @@ class DQNNetwork(nn.Module):
                 nn.init.constant_(m.bias, 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.score_context_weight is not None:
-            # Keep the legacy matrix shape and strides for bitwise initial parity.
-            context = x[..., 30:]
-            x = F.relu(
-                self.fc_layers[0](x[..., :30].contiguous())
-                + F.linear(context, self.score_context_weight)
-            )
+        if self.score_context_weight is not None or self.geometry_context_weight is not None:
+            h = self.fc_layers[0](x[..., :30].contiguous())
+            if self.score_context_weight is not None:
+                h = h + F.linear(x[..., 30:33], self.score_context_weight)
+            if self.geometry_context_weight is not None:
+                geom_slice = (
+                    slice(33, 37) if self.score_context_weight is not None else slice(30, 34)
+                )
+                h = h + F.linear(x[..., geom_slice], self.geometry_context_weight)
+            x = F.relu(h)
             for i in range(1, len(self.fc_layers)):
                 x = F.relu(self.fc_layers[i](x))
             return self.output_layer(x)
@@ -163,6 +192,7 @@ class DQNAgent(AIPlayer):
         name: str = "DQN AI",
         terminal_on_goal: bool = False,
         score_context: bool = False,
+        geometry_context: bool = False,
     ):
         """
         Vanilla DQN agent.
@@ -187,13 +217,16 @@ class DQNAgent(AIPlayer):
             name: Agent display name
             terminal_on_goal: Stop the learning return at every goal without ending the match.
             score_context: Append own score, opponent score and match target (33 inputs).
+            geometry_context: Append predicted intercept y, time to intercept, own paddle vel y, opponent paddle vel y (34 or 37 inputs).
         """
         super().__init__(name)
 
-        if score_context and state_size not in (30, SCORE_CONTEXT_STATE_SIZE):
-            raise ValueError("Score context extends the 30-input observation contract")
+        layout = get_state_layout(score_context=score_context, geometry_context=geometry_context)
+        if (score_context or geometry_context) and state_size not in (30, layout.state_size):
+            raise ValueError(f"Context extensions require 30 or {layout.state_size} input values")
         self.score_context = score_context
-        self.state_size = SCORE_CONTEXT_STATE_SIZE if score_context else state_size
+        self.geometry_context = geometry_context
+        self.state_size = layout.state_size if (score_context or geometry_context) else state_size
         state_size = self.state_size
         self.action_size = action_size
         self.lr = lr
@@ -230,12 +263,14 @@ class DQNAgent(AIPlayer):
             output_size=action_size,
             hidden_layers=layer_widths,
             score_context=score_context,
+            geometry_context=geometry_context,
         ).to(device)
         self.target_network = DQNNetwork(
             state_size,
             output_size=action_size,
             hidden_layers=layer_widths,
             score_context=score_context,
+            geometry_context=geometry_context,
         ).to(device)
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
@@ -253,12 +288,35 @@ class DQNAgent(AIPlayer):
         """Upgrade a weights-only warm start; empty replay and a fresh optimizer are required."""
         if self.score_context:
             return
-        if self.state_size != 30 or len(self.memory):
-            raise ValueError("Score-context migration requires a 30-input agent with empty replay")
+        allowed_sizes = (30, GEOMETRY_CONTEXT_STATE_SIZE)
+        if self.state_size not in allowed_sizes or len(self.memory):
+            raise ValueError(
+                "Score-context migration requires a 30- or 34-input agent with empty replay"
+            )
         self.q_network.enable_score_context()
         self.target_network.enable_score_context()
         self.score_context = True
-        self.state_size = SCORE_CONTEXT_STATE_SIZE
+        self.state_size = get_state_layout(
+            score_context=True, geometry_context=self.geometry_context
+        ).state_size
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
+        self._clear_pending_transition()
+
+    def enable_geometry_context(self) -> None:
+        """Upgrade a weights-only warm start; empty replay and a fresh optimizer are required."""
+        if self.geometry_context:
+            return
+        allowed_sizes = (30, SCORE_CONTEXT_STATE_SIZE)
+        if self.state_size not in allowed_sizes or len(self.memory):
+            raise ValueError(
+                "Geometry-context migration requires a 30- or 33-input agent with empty replay"
+            )
+        self.q_network.enable_geometry_context()
+        self.target_network.enable_geometry_context()
+        self.geometry_context = True
+        self.state_size = get_state_layout(
+            score_context=self.score_context, geometry_context=True
+        ).state_size
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
         self._clear_pending_transition()
 
@@ -402,7 +460,109 @@ class DQNAgent(AIPlayer):
                     "Invalid score context: finite nonnegative scores and positive target required"
                 )
             full_state.extend(context / SCORE_CONTEXT_NORMALIZER)
+
+        if self.geometry_context:
+            required_keys = (
+                "ball_pos",
+                "ball_vel",
+                "player_pos",
+                "player_previous_pos",
+                "opponent_pos",
+                "opponent_previous_pos",
+            )
+            for k in required_keys:
+                if k not in observation or observation[k] is None:
+                    raise ValueError(f"Missing required geometry context key in observation: {k}")
+
+            ball_pos = observation["ball_pos"]
+            ball_vel = observation["ball_vel"]
+            player_pos = observation["player_pos"]
+            player_prev = observation["player_previous_pos"]
+            opp_pos = observation["opponent_pos"]
+            opp_prev = observation["opponent_previous_pos"]
+
+            geom_check = [
+                ball_pos[0],
+                ball_pos[1],
+                ball_vel[0],
+                ball_vel[1],
+                player_pos[0],
+                player_pos[1],
+                player_prev[0],
+                player_prev[1],
+                opp_pos[0],
+                opp_pos[1],
+                opp_prev[0],
+                opp_prev[1],
+            ]
+            if not all(np.isfinite(x) for x in geom_check):
+                raise ValueError("Non-finite values in observation geometry fields")
+
+            fw = float(observation.get("field_width", game_config.FIELD_WIDTH))
+            fh = float(observation.get("field_height", game_config.FIELD_HEIGHT))
+            ms = float(observation.get("max_ball_speed", game_config.MAX_BALL_SPEED))
+            pw = float(observation.get("paddle_width", game_config.PADDLE_WIDTH))
+            br = float(observation.get("ball_radius", game_config.BALL_RADIUS))
+            ps = float(observation.get("paddle_speed", game_config.PADDLE_SPEED))
+            frame_dt = float(observation.get("frame_dt", 1.0 / game_config.FPS))
+
+            if normalized:
+                ball_x_px = float(ball_pos[0]) * fw
+                ball_y_px = float(ball_pos[1]) * fh
+                vx_px = float(ball_vel[0]) * ms
+                vy_px = float(ball_vel[1]) * ms
+                own_x_px = float(player_pos[0]) * fw
+                own_y_px = float(player_pos[1]) * fh
+                own_prev_y_px = float(player_prev[1]) * fh
+                opp_y_px = float(opp_pos[1]) * fh
+                opp_prev_y_px = float(opp_prev[1]) * fh
+            else:
+                ball_x_px = float(ball_pos[0])
+                ball_y_px = float(ball_pos[1])
+                vx_px = float(ball_vel[0])
+                vy_px = float(ball_vel[1])
+                own_x_px = float(player_pos[0])
+                own_y_px = float(player_pos[1])
+                own_prev_y_px = float(player_prev[1])
+                opp_y_px = float(opp_pos[1])
+                opp_prev_y_px = float(opp_prev[1])
+
+            own_height_px = self._get_paddle_height_pixels(
+                observation.get("player_paddle_size", game_config.PADDLE_HEIGHT)
+            )
+
+            geom_features = compute_geometry_features(
+                ball_x_px=ball_x_px,
+                ball_y_px=ball_y_px,
+                vx_px=vx_px,
+                vy_px=vy_px,
+                own_x_px=own_x_px,
+                own_y_px=own_y_px,
+                own_prev_y_px=own_prev_y_px,
+                opp_y_px=opp_y_px,
+                opp_prev_y_px=opp_prev_y_px,
+                own_height_px=own_height_px,
+                field_width=fw,
+                field_height=fh,
+                paddle_width=pw,
+                ball_radius=br,
+                paddle_speed=ps,
+                frame_dt=frame_dt,
+                horizon_seconds=GEOMETRY_CONTEXT_HORIZON,
+            )
+            full_state.extend(geom_features)
+
         return np.array(full_state, dtype=np.float32)
+
+    def _get_paddle_height_pixels(self, paddle_size_data: Any) -> float:
+        if isinstance(paddle_size_data, list | tuple) and len(paddle_size_data) >= 2:
+            return float(paddle_size_data[1])
+        elif isinstance(paddle_size_data, (int, float)):
+            size = float(paddle_size_data)
+            if size > 4.0:
+                return size
+            return size * game_config.PADDLE_HEIGHT
+        return float(game_config.PADDLE_HEIGHT)
 
     def _action_to_index(self, action: Action) -> int:
         for idx, mapped_action in ACTION_MAPPING.items():
@@ -593,6 +753,7 @@ class DQNAgent(AIPlayer):
                     state_size=self.state_size,
                     action_size=self.action_size,
                     score_context=self.score_context,
+                    geometry_context=self.geometry_context,
                 ),
                 "hyperparameters": {
                     "state_size": self.state_size,
@@ -601,6 +762,7 @@ class DQNAgent(AIPlayer):
                     "gamma": self.gamma,
                     "terminal_on_goal": self.terminal_on_goal,
                     "score_context": self.score_context,
+                    "geometry_context": self.geometry_context,
                     "epsilon_min": self.epsilon_min,
                     "epsilon_decay": self.epsilon_decay,
                     "batch_size": self.batch_size,
@@ -623,6 +785,7 @@ class DQNAgent(AIPlayer):
             hyperparams = checkpoint["hyperparameters"]
             self.state_size = hyperparams["state_size"]
             self.score_context = hyperparams.get("score_context", False)
+            self.geometry_context = hyperparams.get("geometry_context", False)
             self.action_size = hyperparams["action_size"]
             self.lr = hyperparams["lr"]
             self.gamma = hyperparams["gamma"]
@@ -647,12 +810,14 @@ class DQNAgent(AIPlayer):
                 output_size=self.action_size,
                 hidden_layers=layer_widths,
                 score_context=self.score_context,
+                geometry_context=self.geometry_context,
             ).to(device)
             self.target_network = DQNNetwork(
                 self.state_size,
                 output_size=self.action_size,
                 hidden_layers=layer_widths,
                 score_context=self.score_context,
+                geometry_context=self.geometry_context,
             ).to(device)
             self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
 

@@ -108,6 +108,10 @@ class ObservationProcessor:
             f"player{3 - player_id}_last_position",
             game_state[f"player{3 - player_id}_position"],
         )
+        player_previous_x, player_previous_y = game_state.get(
+            f"player{player_id}_last_position",
+            game_state[f"player{player_id}_position"],
+        )
 
         # Normalized positions
         if ai_config.NORMALIZE_POSITIONS:
@@ -119,6 +123,8 @@ class ObservationProcessor:
             opponent_y = opponent_y / self.field_height
             opponent_previous_x = opponent_previous_x / self.field_width
             opponent_previous_y = opponent_previous_y / self.field_height
+            player_previous_x = player_previous_x / self.field_width
+            player_previous_y = player_previous_y / self.field_height
 
         observation["ball_pos"] = [ball_x, ball_y]
         observation["player_pos"] = [player_x, player_y]
@@ -127,11 +133,16 @@ class ObservationProcessor:
             opponent_previous_x,
             opponent_previous_y,
         ]
+        # Own last position, symmetric with opponent_previous_pos; no current consumer
+        # reads it yet, but it lets an observation builder derive own paddle velocity
+        # without needing the live PhysicsEngine.
+        observation["player_previous_pos"] = [player_previous_x, player_previous_y]
         observation["field_width"] = self.field_width
         observation["field_height"] = self.field_height
         # The contract travels with the observation, including stored/replayed data.
         observation["positions_normalized"] = ai_config.NORMALIZE_POSITIONS
         observation["max_ball_speed"] = game_config.MAX_BALL_SPEED
+        observation["frame_dt"] = game_state.get("last_step_dt", 1.0 / game_config.FPS)
 
         # Ball velocity
         vel_x, vel_y = game_state["ball_velocity"]

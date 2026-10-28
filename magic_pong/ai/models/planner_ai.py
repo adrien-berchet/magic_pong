@@ -7,6 +7,7 @@ from typing import Any
 from magic_pong.ai.agent_adapter import from_player1_dqn_action
 from magic_pong.ai.interface import AIPlayer
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
+from magic_pong.ai.physics_teacher import DEFAULT_AIM_OFFSETS
 from magic_pong.ai.physics_teacher import PhysicsTeacher
 from magic_pong.ai.physics_teacher import TeacherDecision
 from magic_pong.core.entities import Action
@@ -18,6 +19,7 @@ def make_teacher(
     action_steps: int = 6,
     y_only: bool = False,
     backend: str = "auto",
+    aim_offsets: tuple[float, ...] = DEFAULT_AIM_OFFSETS,
 ) -> Any:
     """Return the compiled teacher when numba is available, else the Python one.
 
@@ -29,11 +31,11 @@ def make_teacher(
         try:
             from magic_pong.ai.fast_teacher import FastPhysicsTeacher
 
-            return FastPhysicsTeacher(horizon_steps, action_steps, y_only)
+            return FastPhysicsTeacher(horizon_steps, action_steps, y_only, aim_offsets)
         except ImportError:
             if backend == "fast":
                 raise
-    return PhysicsTeacher(horizon_steps, action_steps, y_only)
+    return PhysicsTeacher(horizon_steps, action_steps, y_only, aim_offsets)
 
 
 class PlannerAI(AIPlayer):
@@ -61,12 +63,15 @@ class PlannerAI(AIPlayer):
         action_steps: int = 30,
         decision_interval: int = 1,
         backend: str = "auto",
+        aim_offsets: tuple[float, ...] = DEFAULT_AIM_OFFSETS,
         **kwargs: Any,
     ) -> None:
         super().__init__(name=name, **kwargs)
         if decision_interval < 1:
             raise ValueError("decision_interval must be positive")
-        self.teacher = make_teacher(horizon_steps, action_steps, backend=backend)
+        self.teacher = make_teacher(
+            horizon_steps, action_steps, backend=backend, aim_offsets=aim_offsets
+        )
         self.decision_interval = decision_interval
         self.physics: PhysicsEngine | None = None
         self.player_id: int | None = None

@@ -235,6 +235,8 @@ def parse_hidden_layers(value: str) -> list[int]:
 def create_agent_from_args(args):
     """Create a DQN agent with parameters from command line arguments"""
     ai_evaluation._seed_everything(getattr(args, "seed", 0))
+    score_context = getattr(args, "frame_score_context", False)
+    geometry_context = getattr(args, "frame_geometry_context", False)
     return DQNAgent(
         state_size=EXPECTED_STATE_SIZE,
         action_size=EXPECTED_ACTION_SIZE,
@@ -250,6 +252,8 @@ def create_agent_from_args(args):
         hidden_size=getattr(args, "hidden_size", 256),
         layer_size=getattr(args, "layer_size", 2),
         hidden_layers=getattr(args, "hidden_layers", None),
+        score_context=score_context,
+        geometry_context=geometry_context,
     )
 
 
@@ -524,11 +528,13 @@ def get_opponent(opponent_type, player_id=2):
         hp = ckpt.get("hyperparameters", {})
         raw_hidden_layers = hp.get("hidden_layers")
         opponent = DQNAgent(
-            state_size=EXPECTED_STATE_SIZE,
+            state_size=int(hp.get("state_size", EXPECTED_STATE_SIZE)),
             action_size=EXPECTED_ACTION_SIZE,
             hidden_size=int(hp.get("hidden_size", 256)),
             layer_size=int(hp.get("layer_size", 2)),
             hidden_layers=([int(w) for w in raw_hidden_layers] if raw_hidden_layers else None),
+            score_context=bool(hp.get("score_context", False)),
+            geometry_context=bool(hp.get("geometry_context", False)),
         )
         opponent.load_model(model_path)
         opponent.set_training_mode(False)
@@ -3101,6 +3107,11 @@ def parse_arguments(argv: list[str] | None = None):
         "--frame_score_context",
         action="store_true",
         help="Experimental frame_pipeline observation: add absolute own/opponent scores and match target",
+    )
+    parser.add_argument(
+        "--frame_geometry_context",
+        action="store_true",
+        help="Experimental frame_pipeline observation: add intercept y, time to intercept, own/opp paddle vy",
     )
     parser.add_argument(
         "--frame_terminal_on_goal",

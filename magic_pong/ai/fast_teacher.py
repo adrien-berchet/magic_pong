@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from magic_pong.ai.models.dqn_ai import ACTION_MAPPING
+from magic_pong.ai.physics_teacher import DEFAULT_AIM_OFFSETS
 from magic_pong.ai.physics_teacher import RolloutOutcome
 from magic_pong.ai.physics_teacher import TeacherDecision
 from magic_pong.core import fast_physics
@@ -23,14 +24,19 @@ class FastPhysicsTeacher:
         horizon_steps: int = 90,
         action_steps: int = 6,
         y_only: bool = False,
+        aim_offsets: tuple[float, ...] = DEFAULT_AIM_OFFSETS,
     ) -> None:
         if horizon_steps < 1 or action_steps < 1 or action_steps > horizon_steps:
             raise ValueError("teacher horizon must be >= action_steps >= 1")
+        if not aim_offsets or any(not -1.0 <= float(o) <= 1.0 for o in aim_offsets):
+            raise ValueError("aim_offsets must be non-empty fractions in [-1, 1]")
         self.horizon_steps = horizon_steps
         self.action_steps = action_steps
         self.y_only = y_only
+        self.aim_offsets = tuple(float(o) for o in aim_offsets)
         self.actions = (0, 1, 2) if y_only else tuple(ACTION_MAPPING)
         self._candidates = np.array(self.actions, dtype=np.int64)
+        self._offsets = np.array(self.aim_offsets, dtype=np.float64)
 
     def label_state(
         self,
@@ -51,6 +57,7 @@ class FastPhysicsTeacher:
             self.horizon_steps,
             self.action_steps,
             self.y_only,
+            self._offsets,
         )
         # Stable tie-breaking prefers stay, then vertical moves, as the Python teacher.
         action = max(self.actions, key=lambda index: values[index])

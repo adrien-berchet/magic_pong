@@ -151,3 +151,29 @@ def test_action_table_matches_dqn_action_mapping() -> None:
 
     for index, action in ACTION_MAPPING.items():
         assert tuple(fast_physics.ACTION_TABLE[index]) == (action.move_x, action.move_y)
+
+
+def test_aim_offsets_only_add_candidates_so_values_never_drop() -> None:
+    rng = random.Random(7)
+    with game_config_tmp(BONUSES_ENABLED=False):
+        engine = _random_engine(rng, with_effects=False)
+        plain = FastPhysicsTeacher(horizon_steps=60, action_steps=30, aim_offsets=(0.0,))
+        aiming = FastPhysicsTeacher(horizon_steps=60, action_steps=30)
+        plain_values = plain.label(engine, 1).values
+        aiming_values = aiming.label(engine, 1).values
+    assert (aiming_values >= plain_values - 1e-6).all()
+
+
+def test_aiming_teacher_finds_a_better_return_when_the_opponent_is_off_centre() -> None:
+    engine = PhysicsEngine(800, 600)
+    engine.player2.position = Vector2D(engine.player2.max_x, 20.0)  # opponent high up
+    engine.player2.prev_position = engine.player2.position.copy()
+    engine.player1.position = Vector2D(20.0, 260.0)
+    engine.player1.prev_position = engine.player1.position.copy()
+    engine.ball = Ball(200.0, 300.0, -300.0, 0.0)  # straight at the learner's centre
+    with game_config_tmp(BONUSES_ENABLED=False):
+        plain = FastPhysicsTeacher(horizon_steps=120, action_steps=6, aim_offsets=(0.0,)).label(
+            engine, 1
+        )
+        aiming = FastPhysicsTeacher(horizon_steps=120, action_steps=6).label(engine, 1)
+    assert aiming.values.max() > plain.values.max()

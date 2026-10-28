@@ -88,6 +88,7 @@ class PhysicsEngine:
         self.rotating_paddles: list[RotatingPaddle] = []
         self.score: list[int] = [0, 0]
         self.game_time = 0.0
+        self.last_step_dt = 1.0 / game_config.FPS
 
         # Initialize ball with random direction
         self.reset_ball()
@@ -151,6 +152,7 @@ class PhysicsEngine:
             raise ValueError("dt must be finite and nonnegative")
         steps = max(1, math.ceil(dt * game_config.FPS - 1e-12))
         step_dt = dt / steps
+        self.last_step_dt = step_dt
         events: dict[str, list] = {}
         for _ in range(steps):
             for key, values in self._update_substep(
@@ -305,6 +307,7 @@ class PhysicsEngine:
             "score": self.score.copy(),
             "match_target": game_config.MAX_SCORE,
             "time_elapsed": self.game_time,
+            "last_step_dt": self.last_step_dt,
             "field_bounds": (0, self.field_width, 0, self.field_height),
         }
 
@@ -324,6 +327,7 @@ class PhysicsEngine:
         """Resets the game to zero"""
         self.score = [0, 0]
         self.game_time = 0.0
+        self.last_step_dt = 1.0 / game_config.FPS
         self.bonuses.clear()
         self.rotating_paddles.clear()
         self.bonus_spawner = BonusSpawner(self.field_width, self.field_height)

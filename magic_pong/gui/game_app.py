@@ -534,6 +534,8 @@ class MagicPongApp:
                 hidden_size=int(hyperparams.get("hidden_size", 256)),
                 layer_size=int(hyperparams.get("layer_size", 2)),
                 hidden_layers=[int(w) for w in raw_hidden_layers] if raw_hidden_layers else None,
+                score_context=bool(hyperparams.get("score_context", False)),
+                geometry_context=bool(hyperparams.get("geometry_context", False)),
                 name="Trained DQN AI",
             )
 
