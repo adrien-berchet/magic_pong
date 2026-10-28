@@ -39,26 +39,28 @@ def convert_probe_to_dqn_checkpoint(
     if "geometry_context_weight" not in q_state_dict:
         raise ValueError("Probe weights must contain 'projection' or 'geometry_context_weight'")
 
+    hp: dict[str, Any] = {
+        "action_size": 9,
+        "lr": 0.001,
+        "gamma": 0.99,
+        "epsilon_min": 0.05,
+        "epsilon_decay": 0.995,
+        "batch_size": 32,
+    }
+    training_step = 0
+    epsilon = 0.05
+
     if original_checkpoint is not None:
         orig = (
             safe_torch_load(original_checkpoint)
             if isinstance(original_checkpoint, (str, PathLike))
             else original_checkpoint
         )
-        hp = copy.deepcopy(orig.get("hyperparameters", {}))
-        training_step = orig.get("training_step", 0)
-        epsilon = orig.get("epsilon", 0.05)
-    else:
-        hp = {
-            "action_size": 9,
-            "lr": 0.001,
-            "gamma": 0.99,
-            "epsilon_min": 0.05,
-            "epsilon_decay": 0.995,
-            "batch_size": 32,
-        }
-        training_step = 0
-        epsilon = 0.05
+        if isinstance(orig, dict):
+            if "hyperparameters" in orig and isinstance(orig["hyperparameters"], dict):
+                hp.update(orig["hyperparameters"])
+            training_step = orig.get("training_step", training_step)
+            epsilon = orig.get("epsilon", epsilon)
 
     hp["state_size"] = 46
     hp["geometry_context"] = True
