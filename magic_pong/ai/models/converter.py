@@ -78,15 +78,16 @@ def convert_probe_to_dqn_checkpoint(
 
     metadata = build_dqn_checkpoint_metadata(state_size=46, geometry_context=True)
 
+    dummy_params = [torch.nn.Parameter(torch.empty(1)) for _ in q_state_dict]
+    opt = torch.optim.Adam(dummy_params, lr=hp.get("lr", 0.001))
+    optimizer_state = opt.state_dict()
+
     checkpoint = {
         "metadata": metadata,
         "hyperparameters": hp,
         "q_network_state_dict": q_state_dict,
         "target_network_state_dict": copy.deepcopy(q_state_dict),
-        "optimizer_state_dict": {
-            "state": {},
-            "param_groups": [{"lr": hp.get("lr", 0.001), "params": list(range(len(q_state_dict)))}],
-        },
+        "optimizer_state_dict": optimizer_state,
         "epsilon": epsilon,
         "training_step": training_step,
         "loss_history": [],
