@@ -202,6 +202,12 @@ class PlannerDistiller:
 
     def _fit(self, updates: int) -> float:
         assert self.agent is not None and self.optimizer is not None
+        agent_params = {p for p in self.agent.q_network.parameters() if p.requires_grad}
+        opt_params = {p for group in self.optimizer.param_groups for p in group["params"]}
+        if opt_params != agent_params:
+            raise AssertionError(
+                "PlannerDistiller optimizer parameters do not match agent network parameters"
+            )
         if not self.samples or updates < 1:
             return float("nan")
         device = next(self.agent.q_network.parameters()).device
@@ -296,7 +302,13 @@ class PlannerDistiller:
         if self.agent is not None and self.agent is not agent:
             raise ValueError("a PlannerDistiller instance belongs to one agent")
         self.agent = agent
-        if self.optimizer is None:
+        agent_params = {p for p in agent.q_network.parameters() if p.requires_grad}
+        opt_params = (
+            {p for group in self.optimizer.param_groups for p in group["params"]}
+            if self.optimizer is not None
+            else set()
+        )
+        if self.optimizer is None or opt_params != agent_params:
             self.optimizer = torch.optim.Adam(agent.q_network.parameters(), lr=self.learning_rate)
 
     def run_pretraining_phase(
@@ -402,6 +414,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--final_epochs", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--load_model", help="start from an existing checkpoint")
+    parser.add_argument(
+        "--geometry_context",
+        action="store_true",
+        help="enable wall-reflection geometry features",
+    )
     parser.add_argument("--evaluate", action="store_true", help="run the competitive panel")
     args = parser.parse_args(argv)
 
@@ -409,9 +426,11 @@ def main(argv: list[str] | None = None) -> int:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    agent = DQNAgent(hidden_layers=args.hidden_layers)
+    agent = DQNAgent(hidden_layers=args.hidden_layers, geometry_context=args.geometry_context)
     if args.load_model:
         agent.load_model(args.load_model)
+        if args.geometry_context and not agent.geometry_context:
+            agent.enable_geometry_context()
     distiller = PlannerDistiller(
         opponents=tuple(name.strip() for name in args.opponents.split(",") if name.strip()),
         teacher_horizon=args.teacher_horizon,
@@ -445,11 +464,45 @@ def main(argv: list[str] | None = None) -> int:
         stats["evaluation"] = competitive_result_to_dict(result)
         wins = sum(matchup.wins for matchup in result.matchups)
         total = sum(matchup.matches for matchup in result.matchups)
+        scoring_rates = {}
+        for opponent in sorted({m.opponent for m in result.matches}):
+            opp_m = [m for m in result.matches if m.opponent == opponent]
+            gf = sum(m.goals_for for m in opp_m)
+            ga = sum(m.goals_against for m in opp_m)
+            steps = sum(m.steps for m in opp_m)
+            gf_per_1k = 1000.0 * gf / max(1, steps)
+            ga_per_1k = 1000.0 * ga / max(1, steps)
+            frames_per_goal = steps / max(1, gf)
+            scoring_rates[opponent] = {
+                "goals_for": gf,
+                "goals_against": ga,
+                "steps": steps,
+                "goals_for_per_1000_frames": gf_per_1k,
+                "goals_against_per_1000_frames": ga_per_1k,
+                "frames_per_goal_for": frames_per_goal,
+            }
+        stats["scoring_rates"] = scoring_rates
         print(f"Competitive panel: {wins}/{total} wins")
         for matchup in result.matchups:
+            opp_m = [
+                m
+                for m in result.matches
+                if m.opponent == matchup.opponent
+                and m.player_side == matchup.player_side
+                and m.bonuses_enabled == matchup.bonuses_enabled
+            ]
+            cell_gf = sum(m.goals_for for m in opp_m)
+            cell_steps = sum(m.steps for m in opp_m)
+            cell_gf_1k = 1000.0 * cell_gf / max(1, cell_steps)
             print(
                 f"  {matchup.opponent:15s} side={matchup.player_side} bonuses={matchup.bonuses_enabled!s:5s} "
-                f"wins={matchup.wins}/{matchup.matches} goal_diff={matchup.avg_goal_diff:+.1f}"
+                f"wins={matchup.wins}/{matchup.matches} goal_diff={matchup.avg_goal_diff:+.1f} "
+                f"gf_per_1k={cell_gf_1k:.2f}"
+            )
+        for opponent, rates in scoring_rates.items():
+            print(
+                f"  Summary {opponent:15s}: {rates['goals_for']} goals / {rates['steps']} frames "
+                f"({rates['goals_for_per_1000_frames']:.3f} GF/1k frames)"
             )
     output.with_suffix(".distillation.json").write_text(json.dumps(stats, indent=2) + "\n")
     return 0

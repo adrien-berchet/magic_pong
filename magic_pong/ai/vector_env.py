@@ -25,8 +25,8 @@ from magic_pong.ai.fast_policies import PLANNER_OPPONENT
 from magic_pong.ai.fast_policies import POLICY_KINDS
 from magic_pong.ai.fast_policies import builtin_action
 from magic_pong.ai.geometry import GEOMETRY_CONTEXT_HORIZON
-from magic_pong.ai.geometry import compute_geometry_features
 from magic_pong.ai.geometry import get_state_layout
+from magic_pong.ai.geometry import write_contact_features_scalar
 from magic_pong.ai.models.dqn_checkpoint import SCORE_CONTEXT_NORMALIZER
 from magic_pong.core import fast_physics as fp
 from magic_pong.core.physics import PhysicsEngine
@@ -34,8 +34,6 @@ from magic_pong.utils.config import game_config
 
 SELF_OPPONENT = "self"
 PLANNER_NAME = "planner"
-
-_fast_geometry_features = njit(cache=True)(compute_geometry_features)
 
 # Per-environment, per-decision event columns.
 (
@@ -127,30 +125,20 @@ def encode_observation(
         out[31] = opp_score / SCORE_CONTEXT_NORMALIZER
         out[32] = state[fp.MATCH_TARGET] / SCORE_CONTEXT_NORMALIZER
     if geometry_context:
-        g0, g1, g2, g3 = _fast_geometry_features(
-            ball_x,
-            state[fp.BALL_Y],
-            vx,
-            state[fp.BALL_VY],
-            own_x,
-            state[own + fp.PY],
-            state[own + fp.PPY],
-            state[opp + fp.PY],
-            state[opp + fp.PPY],
-            state[own + fp.PH],
+        geom_start = 33 if score_context else 30
+        write_contact_features_scalar(
+            out,
+            out,
+            geom_start,
             width,
             height,
+            max_speed,
             paddle_w,
-            params[fp.PR_RADIUS],
+            paddle_h,
             params[fp.PR_PADDLE_SPEED],
-            params[fp.PR_DT],
+            params[fp.PR_RADIUS],
             GEOMETRY_CONTEXT_HORIZON,
         )
-        geom_start = 33 if score_context else 30
-        out[geom_start] = g0
-        out[geom_start + 1] = g1
-        out[geom_start + 2] = g2
-        out[geom_start + 3] = g3
 
 
 @njit(cache=True)

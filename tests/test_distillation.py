@@ -1,5 +1,6 @@
 """DAgger distillation collects planner labels from real matches and fits the network."""
 
+import json
 import random
 
 import numpy as np
@@ -172,3 +173,102 @@ def test_cli_writes_checkpoint_and_stats(tmp_path, monkeypatch) -> None:
     loaded = DQNAgent()
     loaded.load_model(str(output))
     assert loaded.hidden_layers == [16, 8]
+
+
+def test_distiller_optimizer_syncs_when_geometry_context_enabled_after_attach() -> None:
+    agent = DQNAgent(hidden_layers=[16], geometry_context=False)
+    distiller = PlannerDistiller(
+        opponents=("dummy",), backend="python", teacher_horizon=6, teacher_action_steps=3
+    )
+    distiller._attach(agent)
+    initial_opt_params = {p for g in distiller.optimizer.param_groups for p in g["params"]}
+    assert agent.q_network.geometry_context_weight is None
+    assert len(initial_opt_params) == len(list(agent.q_network.parameters()))
+
+    # Enable geometry context on the agent
+    agent.enable_geometry_context()
+    assert agent.q_network.geometry_context_weight is not None
+
+    # Before re-attach, the optimizer is out of sync; _fit must fail the guard
+    with pytest.raises(AssertionError, match="parameters do not match"):
+        distiller._fit(1)
+
+    # Calling _attach re-synchronizes the optimizer to include geometry_context_weight
+    distiller._attach(agent)
+    synced_opt_params = {p for g in distiller.optimizer.param_groups for p in g["params"]}
+    assert agent.q_network.geometry_context_weight in synced_opt_params
+    assert synced_opt_params == {p for p in agent.q_network.parameters() if p.requires_grad}
+
+
+def test_distiller_with_geometry_context_collects_46_dim_states_and_trains_geometry_weights(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(game_config, "BONUSES_ENABLED", False)
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
+    agent = DQNAgent(hidden_layers=[16], geometry_context=True)
+    assert agent.state_size == 46
+    assert torch.all(agent.q_network.geometry_context_weight == 0.0)
+
+    distiller = PlannerDistiller(
+        opponents=("dummy",),
+        backend="python",
+        teacher_horizon=6,
+        teacher_action_steps=3,
+        match_steps=30,
+        match_score=1,
+        batch_size=8,
+        epochs_per_match=0.5,
+        final_epochs=1,
+        seed=42,
+    )
+    distiller.run_pretraining_phase(agent, total_steps=40, steps_per_batch=20, verbose=False)
+    assert len(distiller.samples) >= 30
+    assert distiller.samples[0][0].shape == (46,)
+    # After distillation training on states, geometry weights must have received gradient updates
+    assert float(agent.q_network.geometry_context_weight.detach().norm()) > 0.0
+
+
+def test_cli_supports_geometry_context_and_scoring_rates(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(game_config, "BONUSES_ENABLED", False)
+    output = tmp_path / "geom_distilled.pth"
+    code = main(
+        [
+            "--labels",
+            "30",
+            "--output",
+            str(output),
+            "--hidden_layers",
+            "16",
+            "--opponents",
+            "dummy",
+            "--teacher_horizon",
+            "6",
+            "--teacher_action_steps",
+            "3",
+            "--match_steps",
+            "20",
+            "--match_score",
+            "1",
+            "--batch_size",
+            "8",
+            "--final_epochs",
+            "1",
+            "--geometry_context",
+            "--evaluate",
+        ]
+    )
+    assert code == 0
+    assert output.exists()
+    loaded = DQNAgent()
+    loaded.load_model(str(output))
+    assert loaded.geometry_context is True
+    assert loaded.state_size == 46
+
+    dist_meta = json.loads(output.with_suffix(".distillation.json").read_text())
+    assert "scoring_rates" in dist_meta
+    for _opp, rates in dist_meta["scoring_rates"].items():
+        assert "goals_for_per_1000_frames" in rates
+        assert "frames_per_goal_for" in rates
+        assert rates["steps"] > 0

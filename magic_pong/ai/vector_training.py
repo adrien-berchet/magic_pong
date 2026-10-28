@@ -215,8 +215,15 @@ def _select_device(name: str) -> torch.device:
 
 
 def greedy_actions(network: torch.nn.Module, obs: np.ndarray, device: torch.device) -> np.ndarray:
+    if hasattr(network, "layout") and getattr(network.layout, "state_size", None) is not None:
+        expected_size = network.layout.state_size
+    elif hasattr(network, "fc_layers") and len(network.fc_layers) > 0:
+        expected_size = network.fc_layers[0].in_features
+    else:
+        expected_size = obs.shape[1]
+    input_obs = obs[:, :expected_size] if obs.shape[1] > expected_size else obs
     with torch.no_grad():
-        q = network(torch.as_tensor(obs, device=device))
+        q = network(torch.as_tensor(input_obs, device=device))
     return q.argmax(dim=1).cpu().numpy()
 
 

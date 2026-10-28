@@ -83,23 +83,20 @@ def test_geometry_context_is_side_relative_and_paddle_centered(side, normalized)
     geom_state = geom_agent._observation_to_state(obs)
 
     assert base_state.shape == (30,)
-    assert geom_state.shape == (34,)
+    assert geom_state.shape == (46,)
     np.testing.assert_array_equal(geom_state[:30], base_state)
 
     # In canonical player-1 frame, ball is incoming (approaching) towards own paddle
-    features = geom_state[30:34]
-    pred_y, tti, own_vel, opp_vel = features
+    features = geom_state[30:46]
+    incoming = features[4]
+    own_time = features[5]
+    own_valid = features[6]
+    own_intercept = features[7]
 
-    assert 0.0 <= pred_y <= 1.0
-    assert 0.0 < tti <= 1.0
-    # Check own paddle velocity sign matches setup:
-    # player1 moved down (200 - 195 = +5), player2 moved up (220 - 225 = -5)
-    if side == 1:
-        assert own_vel > 0.0
-        assert opp_vel < 0.0
-    else:
-        assert own_vel < 0.0
-        assert opp_vel > 0.0
+    assert incoming == 1.0
+    assert own_valid == 1.0
+    assert 0.0 <= own_intercept <= 1.0
+    assert 0.0 < own_time <= 1.0
 
 
 def test_sentinel_when_ball_not_approaching():
@@ -115,13 +112,18 @@ def test_sentinel_when_ball_not_approaching():
     )
     agent = DQNAgent(hidden_layers=[8], geometry_context=True)
     state = agent._observation_to_state(obs)
-    pred_y, tti, own_vel, opp_vel = state[30:34]
+    features = state[30:46]
+    incoming = features[4]
+    own_time = features[5]
+    own_valid = features[6]
+    own_intercept = features[7]
+    outgoing = features[11]
 
-    # Paddle center is (200 + 120 / 2) / 600 = 260 / 600
-    expected_center = 260.0 / 600.0
-    assert pred_y == pytest.approx(expected_center, abs=1e-6)
-    assert tti == 1.0
-    assert own_vel == pytest.approx(0.0, abs=1e-6)
+    assert incoming == 0.0
+    assert own_valid == 0.0
+    assert own_time == 0.0
+    assert own_intercept == 0.0
+    assert outgoing == 1.0
 
 
 def test_zero_projection_preserves_rng_and_exact_initial_q_values():
@@ -165,15 +167,15 @@ def test_context_combinations_and_slice_ordering():
     assert layout_score.score_slice == slice(30, 33)
 
     layout_geom = get_state_layout(False, True)
-    assert layout_geom.state_size == 34
+    assert layout_geom.state_size == 46
     assert layout_geom.input_blocks == ("base", "geometry_context")
-    assert layout_geom.geometry_slice == slice(30, 34)
+    assert layout_geom.geometry_slice == slice(30, 46)
 
     layout_both = get_state_layout(True, True)
-    assert layout_both.state_size == 37
+    assert layout_both.state_size == 49
     assert layout_both.input_blocks == ("base", "score_context", "geometry_context")
     assert layout_both.score_slice == slice(30, 33)
-    assert layout_both.geometry_slice == slice(33, 37)
+    assert layout_both.geometry_slice == slice(33, 49)
 
 
 def test_checkpoint_roundtrip_and_upgrades(tmp_path):
@@ -182,27 +184,27 @@ def test_checkpoint_roundtrip_and_upgrades(tmp_path):
     base_path = tmp_path / "base.pth"
     base.save_model(base_path)
 
-    # 2. Upgrade base -> geometry_context (34 inputs)
+    # 2. Upgrade base -> geometry_context (46 inputs)
     migrated = DQNAgent()
     migrated.load_model(base_path)
     migrated.enable_geometry_context()
-    assert migrated.geometry_context and migrated.state_size == 34
+    assert migrated.geometry_context and migrated.state_size == 46
     assert torch.count_nonzero(migrated.q_network.geometry_context_weight) == 0
 
     geom_path = tmp_path / "geom.pth"
     migrated.save_model(geom_path)
 
-    # 3. Reload v6 checkpoint
+    # 3. Reload v7 checkpoint
     restored = DQNAgent()
     restored.load_model(geom_path)
-    assert restored.geometry_context and restored.state_size == 34
+    assert restored.geometry_context and restored.state_size == 46
     val = validate_dqn_checkpoint(torch.load(geom_path, weights_only=True, map_location="cpu"))
     assert val.valid
     assert val.metadata["schema_version"] == GEOMETRY_CONTEXT_SCHEMA_VERSION
     assert val.metadata["state_schema"] == GEOMETRY_CONTEXT_STATE_SCHEMA
     assert val.metadata["input_blocks"] == ["base", "geometry_context"]
 
-    # 4. Upgrade score_context (33 inputs) -> full context (37 inputs)
+    # 4. Upgrade score_context (33 inputs) -> full context (49 inputs)
     score_agent = DQNAgent(hidden_layers=[16, 8], score_context=True)
     score_path = tmp_path / "score.pth"
     score_agent.save_model(score_path)
@@ -211,7 +213,7 @@ def test_checkpoint_roundtrip_and_upgrades(tmp_path):
     full_agent.load_model(score_path)
     full_agent.enable_geometry_context()
     assert full_agent.score_context and full_agent.geometry_context
-    assert full_agent.state_size == 37
+    assert full_agent.state_size == 49
     assert torch.count_nonzero(full_agent.q_network.geometry_context_weight) == 0
 
     full_path = tmp_path / "full.pth"
@@ -224,10 +226,7 @@ def test_checkpoint_roundtrip_and_upgrades(tmp_path):
 
 def test_missing_or_non_finite_context_fails():
     obs = make_observation()
-    del obs["player_previous_pos"]
-    # Base agent succeeds without player_previous_pos
-    DQNAgent()._observation_to_state(obs)
-    # Geometry context agent fails loudly
+    obs["ball_pos"] = None
     with pytest.raises(ValueError, match="Missing required geometry context key"):
         DQNAgent(geometry_context=True)._observation_to_state(obs)
 
@@ -269,8 +268,8 @@ def test_cross_check_against_physics_engine_reflection():
     physics.player1.position.y = -500.0
     physics.player2.position.y = -500.0
 
-    # Launch ball from center towards left wall with multiple bounces
-    start_x, start_y = 500.0, 300.0
+    # Launch ball towards left wall with multiple bounces, arriving within horizon
+    start_x, start_y = 400.0, 300.0
     vx, vy = -300.0, 200.0
     physics.ball = Ball(start_x, start_y, vx, vy)
 
@@ -294,7 +293,7 @@ def test_cross_check_against_physics_engine_reflection():
         frame_dt=1.0 / 60.0,
         horizon_seconds=GEOMETRY_CONTEXT_HORIZON,
     )
-    predicted_y_norm, arrival_norm, _, _ = features
+    predicted_y_norm = features[7]
     predicted_y_px = predicted_y_norm * 600.0
 
     # Step physics with tiny dt to find exact y when crossing contact_x
@@ -346,7 +345,7 @@ def test_gui_and_scheduled_training_geometry_context_integration(tmp_path):
     playable = app._create_trained_ai(str(path))
     assert playable is not None
     assert playable.geometry_context is True
-    assert playable.state_size == 34
+    assert playable.state_size == 46
     assert not playable.training_enabled
 
     # 2. Check train_optimized CLI with --frame_geometry_context
@@ -394,7 +393,7 @@ def test_gui_and_scheduled_training_geometry_context_integration(tmp_path):
     assert result["config"]["score_context"] is False
 
     bundle = torch.load(directory / "latest.training.pt", map_location="cpu", weights_only=False)
-    assert bundle["replay"]["states"].shape[1] == 34
+    assert bundle["replay"]["states"].shape[1] == 46
     assert bundle["config"]["geometry_context"] is True
 
 

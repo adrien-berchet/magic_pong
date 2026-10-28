@@ -1,6 +1,30 @@
 # Neural network improvement tracker
 
-Last updated: 2026-09-21
+Last updated: 2026-10-28
+
+## 2026-10-28: Schema v7 — 16 Contact Geometry Features and Hidden-Layer Projection
+
+**Completed:** upgraded geometry context from the 4-feature linear prototype to the full
+16 contact geometry features with first-hidden-layer projection, achieving bit-for-bit
+baseline equivalence at zero weights while enabling deep non-linear multi-bounce reasoning.
+
+- **Schema v7 (`magic_pong.dqn_state.v7`)**: canonical DQN input sizes 46 (without score
+  context) and 49 (with score context). Retired legacy Schema v6 prototype.
+- **Hidden layer projection**: `geometry_context_weight` on `DQNNetwork` shaped
+  `(fc_layers[0].out_features, 16)` projected directly into `fc_layers[0]` pre-activation.
+  Zero-weight initialization preserves exact baseline forward pass and action selection.
+- **Unified feature pipeline**: `@njit(cache=True) write_contact_features_scalar` in
+  `magic_pong.ai.geometry` guarantees bitwise feature parity across Python `DQNAgent`,
+  Numba `vector_env.py`, and batch NumPy operations.
+- **Empirical impact (3 seeds, 384 matches per policy)**:
+  - Tracker 18k scoring screen: **175 W / 7 L / 10 T (91.1% wins)**, **0.336 GF/1k frames**
+    (2,975 frames/goal), a 6.2× scoring speedup over the 4-feature prototype.
+  - Striker 18k scoring screen: **74 goals scored**, **4 wins** (first wins in repo history),
+    a 37× increase in goals scored over the 4-feature prototype.
+  - Standard heldout panel: losses dropped to **2.1% (8/384 matches)** with a goal margin
+    of **+542**.
+- Added `magic_pong.ai.models.converter.convert_probe_to_dqn_checkpoint` to load historical
+  probe weights into standard v7 checkpoints. All 1,282 test cases passing.
 
 ## 2026-09-21: student-state versus teacher-state distillation
 

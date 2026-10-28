@@ -8,6 +8,9 @@ from os import PathLike
 from typing import Any
 from typing import BinaryIO
 
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_FEATURES
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_HORIZON
+from magic_pong.ai.geometry import GEOMETRY_CONTEXT_VERSION
 from magic_pong.ai.geometry import get_state_layout
 
 CHECKPOINT_SCHEMA_VERSION = 4
@@ -23,18 +26,10 @@ SCORE_CONTEXT_STATE_SCHEMA = "magic_pong.dqn_state.v5_score_context"
 SCORE_CONTEXT_FEATURES = ("own_score", "opponent_score", "match_target")
 SCORE_CONTEXT_NORMALIZER = 11.0
 
-GEOMETRY_CONTEXT_SCHEMA_VERSION = 6
-GEOMETRY_CONTEXT_STATE_SCHEMA = "magic_pong.dqn_state.v6"
-GEOMETRY_CONTEXT_STATE_SIZE = 34
-FULL_CONTEXT_STATE_SIZE = 37
-GEOMETRY_CONTEXT_FEATURES = (
-    "predicted_intercept_y",
-    "time_to_intercept",
-    "own_paddle_vel_y",
-    "opponent_paddle_vel_y",
-)
-GEOMETRY_CONTEXT_HORIZON = 1.5
-GEOMETRY_CONTEXT_VERSION = 1
+GEOMETRY_CONTEXT_SCHEMA_VERSION = 7
+GEOMETRY_CONTEXT_STATE_SCHEMA = "magic_pong.dqn_state.v7"
+GEOMETRY_CONTEXT_STATE_SIZE = 46
+FULL_CONTEXT_STATE_SIZE = 49
 # Network first-layer input equals the observation size (vanilla DQN, no history)
 EXPECTED_NETWORK_INPUT_SIZE = EXPECTED_STATE_SIZE
 
@@ -198,6 +193,13 @@ def build_dqn_checkpoint_metadata(
             geometry_context_horizon=GEOMETRY_CONTEXT_HORIZON,
             geometry_context_velocity_normalizer=float(game_config.PADDLE_SPEED),
             geometry_context_version=GEOMETRY_CONTEXT_VERSION,
+            geometry_context_paddle_speed=float(game_config.PADDLE_SPEED),
+            geometry_context_ball_radius=float(game_config.BALL_RADIUS),
+            geometry_context_paddle_width=float(game_config.PADDLE_WIDTH),
+            geometry_context_paddle_height=float(game_config.PADDLE_HEIGHT),
+            geometry_context_field_width=float(game_config.FIELD_WIDTH),
+            geometry_context_field_height=float(game_config.FIELD_HEIGHT),
+            geometry_context_max_ball_speed=float(game_config.MAX_BALL_SPEED),
         )
     return metadata
 
@@ -227,6 +229,15 @@ def validate_dqn_checkpoint(checkpoint: Any) -> DQNCheckpointValidation:
     missing_keys = [key for key in REQUIRED_CHECKPOINT_KEYS if key not in checkpoint]
     if missing_keys:
         raise DQNCheckpointError(f"Missing required checkpoint data: {', '.join(missing_keys)}")
+
+    metadata_raw = checkpoint.get(METADATA_KEY)
+    if isinstance(metadata_raw, Mapping):
+        schema_version = metadata_raw.get("schema_version")
+        if schema_version == 6 or metadata_raw.get("state_schema") == "magic_pong.dqn_state.v6":
+            raise DQNCheckpointError(
+                "Legacy v6 geometry context checkpoints (4-feature prototype) are retired; "
+                "use git tag 'v6-prototype' or retrain/convert with v7."
+            )
 
     hyperparameters = _validate_hyperparameters(checkpoint["hyperparameters"])
     metadata = validate_dqn_checkpoint_metadata(checkpoint.get(METADATA_KEY), hyperparameters)
@@ -318,6 +329,12 @@ def validate_dqn_checkpoint_metadata(
         raise DQNCheckpointError(f"Missing DQN checkpoint metadata: {', '.join(missing_keys)}")
 
     schema_version = metadata["schema_version"]
+    if schema_version == 6 or metadata.get("state_schema") == "magic_pong.dqn_state.v6":
+        raise DQNCheckpointError(
+            "Legacy v6 geometry context checkpoints (4-feature prototype) are retired; "
+            "use git tag 'v6-prototype' or retrain/convert with v7."
+        )
+
     if schema_version not in (
         CHECKPOINT_SCHEMA_VERSION,
         SCORE_CONTEXT_SCHEMA_VERSION,
@@ -333,7 +350,7 @@ def validate_dqn_checkpoint_metadata(
         input_blocks = metadata.get("input_blocks")
         if not isinstance(input_blocks, (list, tuple)):
             raise DQNCheckpointError(
-                "Invalid DQN checkpoint metadata: expected input_blocks list for v6"
+                "Invalid DQN checkpoint metadata: expected input_blocks list for v7"
             )
         allowed_sequences = [
             ["base", "geometry_context"],
@@ -384,10 +401,20 @@ def validate_dqn_checkpoint_metadata(
             "geometry_context_enabled": True,
             "geometry_context_features": list(GEOMETRY_CONTEXT_FEATURES),
             "geometry_context_horizon": GEOMETRY_CONTEXT_HORIZON,
-            "geometry_context_velocity_normalizer": float(game_config.PADDLE_SPEED),
             "geometry_context_version": GEOMETRY_CONTEXT_VERSION,
         }.items():
             _validate_expected_value(key, metadata.get(key), expected)
+        for key, expected_val in {
+            "geometry_context_paddle_speed": float(game_config.PADDLE_SPEED),
+            "geometry_context_ball_radius": float(game_config.BALL_RADIUS),
+            "geometry_context_paddle_width": float(game_config.PADDLE_WIDTH),
+            "geometry_context_paddle_height": float(game_config.PADDLE_HEIGHT),
+            "geometry_context_field_width": float(game_config.FIELD_WIDTH),
+            "geometry_context_field_height": float(game_config.FIELD_HEIGHT),
+            "geometry_context_max_ball_speed": float(game_config.MAX_BALL_SPEED),
+        }.items():
+            if key in metadata:
+                _validate_expected_value(key, metadata.get(key), expected_val)
 
     if hyperparameters is not None:
         _validate_expected_value(
