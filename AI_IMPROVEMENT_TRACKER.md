@@ -1,6 +1,30 @@
 # Neural network improvement tracker
 
-Last updated: 2026-10-28
+Last updated: 2026-10-29
+
+## 2026-10-29: Priority 2 — Targeted Striker Optimization Pipeline & DAgger Round 2
+
+**Completed:** comprehensive A0 concession audit and DAgger Round 2 evaluation across 3 seeds (11, 22, 33).
+
+- **Peer Deliberation (`loop-with-claude`)**:
+  - Deliberated with Claude CLI (`--model opus --effort high`). Reached consensus that:
+    1. Lookahead Planner rollout values are heuristic $\pm 1000$ scores, not true Q-values; regressing on them distorts distillation.
+    2. Under softmax cross-entropy, $V(s)$ cancels out and receives zero gradient, meaning a Dueling DQN head has zero impact on action rankings during pure imitation. Dueling head deferred to RL fine-tuning.
+    3. The proven loss formulation (`cross_entropy + 0.01 * expected_regret`) and Schema v7 (46D) architecture were kept intact.
+- **A0 Concession Audit (192 matches, 467 goals conceded)**:
+  - Exact 192/192 bit-for-bit replay reproduction verified through converted Schema v7 checkpoint path (`student_16_v7.pth`).
+  - **84.8% of conceded goals (396/467) were physically reachable** by the student paddle (median arrival 55.1 frames = 0.92 s). Only 15.2% were unreturnable setup shots.
+  - Concessions are execution errors under high-speed (71.1% at 900 px/s) corner slices.
+  - **Planner Ceiling**: Lookahead Planner achieved **64/64 wins (100%), 0 goals conceded** on the identical 18k long-game screen, demonstrating a 100% win-rate theoretical ceiling.
+- **DAgger Round 2 (`dagger_r2`) Empirical Results**:
+  - Collected 16 fresh student matches per seed against Striker using `student_16_v7` collectors on fresh disjoint seeds (740100..740103). Labeled with Lookahead Planner (16,384 rows/seed).
+  - Pooled Round 1 + Round 2 student data with 90% legacy panel data (10% student dosage).
+  - Trained for 20 epochs (matching 13,560 update budget) with costly loss.
+  - Evaluated on fresh heldout (760100..760107) and fresh 18k long-game scoring screen (770100..770115).
+  - **Striker 18k screen**: `dagger_r2` scored 68 goals (0.0344 GF/1k frames) vs 60 goals for `student_16_baseline`. Seed 22 and Seed 33 improved raw goal output (Seed 22: 15 -> 31 goals; Seed 33: 4 -> 17 goals).
+  - **Non-Regression Gate Failed**: `dagger_r2` accumulated 35 losses (9.1%) on the competitive heldout panel (including 4 losses to Tracker), compared to only 5 losses (1.3%) for `student_16_baseline`.
+  - **Decision**: `dagger_r2` is **NOT promoted**. `student_16` remains the champion checkpoint.
+  - **Strategic Recommendation**: Pure imitation learning has reached diminishing returns for high-speed corner defense. Proceed to targeted **reinforcement learning fine-tuning (Priority 3)** with value calibration and TD-learning.
 
 ## 2026-10-28: Schema v7 — 16 Contact Geometry Features and Hidden-Layer Projection
 
