@@ -3,6 +3,7 @@
 Vanilla DQN with Double DQN action selection (van Hasselt et al., 2015).
 """
 
+import copy
 import random
 from collections import deque
 from collections import namedtuple
@@ -54,10 +55,14 @@ def resolve_layer_widths(
 
 
 class DQNNetwork(nn.Module):
-    """Deep Q-Network: stack of Linear→ReLU layers."""
+    """Deep Q-Network: stack of Linear→ReLU layers with optional dueling architecture."""
 
     score_context_weight: nn.Parameter | None
     geometry_context_weight: nn.Parameter | None
+    advantage_layer: nn.Linear | None
+    value_layer: nn.Linear | None
+    output_layer: nn.Linear | None
+    log_tau: nn.Parameter | None
 
     def __init__(
         self,
@@ -68,6 +73,7 @@ class DQNNetwork(nn.Module):
         hidden_layers: list[int] | None = None,
         score_context: bool = False,
         geometry_context: bool = False,
+        dueling: bool = False,
     ):
         super().__init__()
         layer_sizes = resolve_layer_widths(hidden_size, layer_size, hidden_layers)
@@ -82,12 +88,24 @@ class DQNNetwork(nn.Module):
         self.score_context = score_context
         self.geometry_context = geometry_context
         self.layout = layout
+        self.dueling = dueling
         self.fc_layers = nn.ModuleList()
         for i, width in enumerate(layer_sizes):
             in_features = legacy_input_size if i == 0 else layer_sizes[i - 1]
             self.fc_layers.append(nn.Linear(in_features, width))
 
-        self.output_layer = nn.Linear(layer_sizes[-1], output_size)
+        self.advantage_layer = None
+        self.value_layer = None
+        self.output_layer = None
+        self.log_tau = None
+
+        if dueling:
+            self.advantage_layer = nn.Linear(layer_sizes[-1], output_size)
+            self.value_layer = nn.Linear(layer_sizes[-1], 1)
+            self.log_tau = nn.Parameter(torch.tensor(0.0))
+        else:
+            self.output_layer = nn.Linear(layer_sizes[-1], output_size)
+
         self._initialize_weights()
         # Allocate after legacy initialization; adding context must consume no RNG.
         self.register_parameter("score_context_weight", None)
@@ -100,7 +118,7 @@ class DQNNetwork(nn.Module):
     def enable_score_context(self) -> None:
         """Add a zero projection without changing the existing layers or RNG."""
         if self.score_context_weight is None:
-            first = self.fc_layers[0]
+            first = cast(nn.Linear, self.fc_layers[0])
             if first.in_features != 30:
                 raise ValueError("Score context can only extend a 30-input network")
             self.score_context_weight = nn.Parameter(
@@ -114,7 +132,7 @@ class DQNNetwork(nn.Module):
     def enable_geometry_context(self) -> None:
         """Add a zero projection without changing the existing layers or RNG."""
         if self.geometry_context_weight is None:
-            first = self.fc_layers[0]
+            first = cast(nn.Linear, self.fc_layers[0])
             if first.in_features != 30:
                 raise ValueError("Geometry context can only extend a 30-input network")
             self.geometry_context_weight = nn.Parameter(
@@ -122,6 +140,105 @@ class DQNNetwork(nn.Module):
             )
             self.geometry_context = True
             self.layout = get_state_layout(score_context=self.score_context, geometry_context=True)
+
+    def enable_dueling(
+        self,
+        tau: float = 0.03,
+        warm_start: bool = True,
+        q_semantics: str = "logits",
+    ) -> None:
+        """Convert this network to Dueling DQN with advantage and value streams."""
+        if self.dueling:
+            return
+        assert self.output_layer is not None
+        last_layer = cast(nn.Linear, self.fc_layers[-1])
+        last_width = last_layer.out_features
+        output_size = self.output_layer.out_features
+        device = self.output_layer.weight.device
+
+        self.advantage_layer = nn.Linear(last_width, output_size).to(device)
+        self.value_layer = nn.Linear(last_width, 1).to(device)
+
+        if warm_start:
+            if q_semantics == "logits":
+                self.advantage_layer.weight.data.copy_(self.output_layer.weight.data)
+                self.advantage_layer.bias.data.copy_(self.output_layer.bias.data)
+                nn.init.zeros_(self.value_layer.weight)
+                nn.init.zeros_(self.value_layer.bias)
+                self.log_tau = nn.Parameter(
+                    torch.tensor(float(np.log(tau)), device=device, dtype=torch.float32)
+                )
+            else:  # returns
+                self.advantage_layer.weight.data.copy_(self.output_layer.weight.data)
+                self.advantage_layer.bias.data.copy_(self.output_layer.bias.data)
+                self.value_layer.weight.data.copy_(
+                    self.output_layer.weight.data.mean(dim=0, keepdim=True)
+                )
+                self.value_layer.bias.data.copy_(
+                    self.output_layer.bias.data.mean(dim=0, keepdim=True)
+                )
+                self.log_tau = nn.Parameter(torch.tensor(0.0, device=device, dtype=torch.float32))
+        else:
+            nn.init.kaiming_normal_(self.advantage_layer.weight, mode="fan_in", nonlinearity="relu")
+            nn.init.constant_(self.advantage_layer.bias, 0.01)
+            nn.init.kaiming_normal_(self.value_layer.weight, mode="fan_in", nonlinearity="relu")
+            nn.init.constant_(self.value_layer.bias, 0.01)
+            self.log_tau = nn.Parameter(torch.tensor(0.0, device=device, dtype=torch.float32))
+
+        self.output_layer = None
+        self.dueling = True
+
+    def fold_to_standard(self) -> "DQNNetwork":
+        """Fold dueling advantage, value and tau into an exact equivalent standard output layer."""
+        if not self.dueling:
+            return copy.deepcopy(self)
+        assert self.advantage_layer is not None and self.value_layer is not None
+        tau = float(torch.exp(self.log_tau).item()) if self.log_tau is not None else 1.0
+        w_adv = tau * self.advantage_layer.weight.data
+        b_adv = tau * self.advantage_layer.bias.data
+        w_val = self.value_layer.weight.data
+        b_val = self.value_layer.bias.data
+
+        w_folded = w_adv - w_adv.mean(dim=0, keepdim=True) + w_val
+        b_folded = b_adv - b_adv.mean() + b_val.squeeze()
+
+        device = self.advantage_layer.weight.device
+        first_layer = cast(nn.Linear, self.fc_layers[0]) if len(self.fc_layers) > 0 else None
+        in_size = (
+            self.layout.state_size
+            if (self.score_context or self.geometry_context)
+            else (
+                first_layer.in_features
+                if first_layer is not None
+                else self.advantage_layer.in_features
+            )
+        )
+        folded_net = DQNNetwork(
+            input_size=in_size,
+            hidden_layers=[cast(nn.Linear, fc).out_features for fc in self.fc_layers],
+            output_size=self.advantage_layer.out_features,
+            score_context=self.score_context,
+            geometry_context=self.geometry_context,
+            dueling=False,
+        ).to(device)
+
+        for i, fc_module in enumerate(self.fc_layers):
+            fc = cast(nn.Linear, fc_module)
+            target_fc = cast(nn.Linear, folded_net.fc_layers[i])
+            target_fc.weight.data.copy_(fc.weight.data)
+            target_fc.bias.data.copy_(fc.bias.data)
+        if self.score_context_weight is not None and folded_net.score_context_weight is not None:
+            folded_net.score_context_weight.data.copy_(self.score_context_weight.data)
+        if (
+            self.geometry_context_weight is not None
+            and folded_net.geometry_context_weight is not None
+        ):
+            folded_net.geometry_context_weight.data.copy_(self.geometry_context_weight.data)
+
+        assert folded_net.output_layer is not None
+        folded_net.output_layer.weight.data.copy_(w_folded)
+        folded_net.output_layer.bias.data.copy_(b_folded)
+        return folded_net
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
@@ -136,13 +253,23 @@ class DQNNetwork(nn.Module):
                 h = h + F.linear(x[..., self.layout.score_slice], self.score_context_weight)
             if self.geometry_context_weight is not None and self.layout.geometry_slice is not None:
                 h = h + F.linear(x[..., self.layout.geometry_slice], self.geometry_context_weight)
-            x = F.relu(h)
+            h = F.relu(h)
             for i in range(1, len(self.fc_layers)):
-                x = F.relu(self.fc_layers[i](x))
-            return self.output_layer(x)
-        for fc in self.fc_layers:
-            x = F.relu(fc(x))
-        return self.output_layer(x)
+                h = F.relu(self.fc_layers[i](h))
+        else:
+            h = x
+            for fc in self.fc_layers:
+                h = F.relu(fc(h))
+
+        if self.dueling:
+            assert self.advantage_layer is not None and self.value_layer is not None
+            tau = torch.exp(self.log_tau) if self.log_tau is not None else 1.0
+            adv = tau * self.advantage_layer(h)
+            val = self.value_layer(h)
+            return val + (adv - adv.mean(dim=-1, keepdim=True))
+
+        assert self.output_layer is not None
+        return self.output_layer(h)
 
 
 class ReplayBuffer:
@@ -195,6 +322,7 @@ class DQNAgent(AIPlayer):
         terminal_on_goal: bool = False,
         score_context: bool = False,
         geometry_context: bool = False,
+        dueling: bool = False,
     ):
         """
         Vanilla DQN agent.
@@ -220,6 +348,7 @@ class DQNAgent(AIPlayer):
             terminal_on_goal: Stop the learning return at every goal without ending the match.
             score_context: Append own score, opponent score and match target (33 inputs).
             geometry_context: Append predicted intercept y, time to intercept, own paddle vel y, opponent paddle vel y (34 or 37 inputs).
+            dueling: Enable Dueling DQN architecture (advantage + value streams).
         """
         super().__init__(name)
 
@@ -242,6 +371,9 @@ class DQNAgent(AIPlayer):
         self.min_replay_size = min(memory_size, min_replay_size)
         self.target_update_frequency = target_update_frequency
         self.terminal_on_goal = terminal_on_goal
+        self.dueling = dueling
+        self.dueling_trained = False
+        self.q_semantics = "logits"
         # Training-only auxiliary state is owned and checkpointed by the frame runner.
         self.policy_anchor: PolicyAnchor | None = None
 
@@ -267,6 +399,7 @@ class DQNAgent(AIPlayer):
             hidden_layers=layer_widths,
             score_context=score_context,
             geometry_context=geometry_context,
+            dueling=dueling,
         ).to(device)
         self.target_network = DQNNetwork(
             state_size,
@@ -274,6 +407,7 @@ class DQNAgent(AIPlayer):
             hidden_layers=layer_widths,
             score_context=score_context,
             geometry_context=geometry_context,
+            dueling=dueling,
         ).to(device)
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
@@ -320,6 +454,41 @@ class DQNAgent(AIPlayer):
         self.state_size = self.layout.state_size
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
         self._clear_pending_transition()
+
+    def enable_dueling(
+        self,
+        tau: float = 0.03,
+        warm_start: bool = True,
+        q_semantics: str = "logits",
+    ) -> None:
+        """Convert this agent to Dueling DQN with advantage and value streams."""
+        self.q_network.enable_dueling(tau=tau, warm_start=warm_start, q_semantics=q_semantics)
+        self.target_network.enable_dueling(tau=tau, warm_start=warm_start, q_semantics=q_semantics)
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        self.dueling = True
+        self.dueling_trained = True
+        self.q_semantics = "returns"
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
+
+    def freeze_for_phase1(self) -> None:
+        """Phase 1: freeze trunk and advantage; train only value head and log_tau."""
+        if not self.q_network.dueling:
+            raise ValueError("Must be dueling to freeze for Phase 1")
+        for name, param in self.q_network.named_parameters():
+            if "value_layer" in name or name == "log_tau":
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        phase1_params = [p for p in self.q_network.parameters() if p.requires_grad]
+        self.optimizer = optim.Adam(phase1_params, lr=self.lr)
+
+    def unfreeze_for_phase2(self, lr: float | None = None) -> None:
+        """Phase 2: unfreeze all parameters for end-to-end fine-tuning."""
+        for param in self.q_network.parameters():
+            param.requires_grad = True
+        if lr is not None:
+            self.lr = lr
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
 
     def get_action(self, observation: dict[str, Any] | None, explore: bool | None = None) -> Action:
         """Convert observation to action via the Q-network (or epsilon-greedy)."""
@@ -703,23 +872,45 @@ class DQNAgent(AIPlayer):
 
     def save_model(self, filepath: str | PathLike[str] | BinaryIO) -> None:
         """Save checkpoint to disk."""
+        if self.q_network.dueling:
+            folded_q = self.q_network.fold_to_standard()
+            folded_target = self.target_network.fold_to_standard()
+            dummy_opt = optim.Adam(folded_q.parameters(), lr=self.lr)
+            q_dict = folded_q.state_dict()
+            target_dict = folded_target.state_dict()
+            opt_dict = dummy_opt.state_dict()
+            dueling_trained = True
+            q_semantics = "returns"
+        else:
+            q_dict = self.q_network.state_dict()
+            target_dict = self.target_network.state_dict()
+            opt_dict = self.optimizer.state_dict()
+            dueling_trained = getattr(self, "dueling_trained", False)
+            q_semantics = getattr(self, "q_semantics", "logits")
+
+        metadata = build_dqn_checkpoint_metadata(
+            state_size=self.state_size,
+            action_size=self.action_size,
+            score_context=self.score_context,
+            geometry_context=self.geometry_context,
+        )
+        if dueling_trained:
+            metadata["dueling_trained"] = True
+        if q_semantics:
+            metadata["q_semantics"] = q_semantics
+
         torch.save(
             {
-                "q_network_state_dict": self.q_network.state_dict(),
-                "target_network_state_dict": self.target_network.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
+                "q_network_state_dict": q_dict,
+                "target_network_state_dict": target_dict,
+                "optimizer_state_dict": opt_dict,
                 "epsilon": self.epsilon,
                 "training_step": self.training_step,
                 "step_count": self.step_count,
                 "loss_history": self.loss_history[-1000:],
                 "reward_history": self.reward_history[-1000:],
                 "grad_norm_history": self.grad_norm_history[-1000:],
-                "metadata": build_dqn_checkpoint_metadata(
-                    state_size=self.state_size,
-                    action_size=self.action_size,
-                    score_context=self.score_context,
-                    geometry_context=self.geometry_context,
-                ),
+                "metadata": metadata,
                 "hyperparameters": {
                     "state_size": self.state_size,
                     "action_size": self.action_size,
@@ -734,6 +925,7 @@ class DQNAgent(AIPlayer):
                     "hidden_size": self.hidden_size,
                     "layer_size": self.layer_size,
                     "hidden_layers": self.hidden_layers,
+                    "dueling": False if self.q_network.dueling else self.dueling,
                 },
             },
             filepath,
@@ -774,12 +966,16 @@ class DQNAgent(AIPlayer):
             )
             self.hidden_size = layer_widths[0]
             self.layer_size = len(layer_widths)
+            self.dueling = hyperparams.get("dueling", False)
+            self.dueling_trained = checkpoint.get("metadata", {}).get("dueling_trained", False)
+            self.q_semantics = checkpoint.get("metadata", {}).get("q_semantics", "logits")
             self.q_network = DQNNetwork(
                 self.state_size,
                 output_size=self.action_size,
                 hidden_layers=layer_widths,
                 score_context=self.score_context,
                 geometry_context=self.geometry_context,
+                dueling=self.dueling,
             ).to(device)
             self.target_network = DQNNetwork(
                 self.state_size,
@@ -787,6 +983,7 @@ class DQNAgent(AIPlayer):
                 hidden_layers=layer_widths,
                 score_context=self.score_context,
                 geometry_context=self.geometry_context,
+                dueling=self.dueling,
             ).to(device)
             self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
 

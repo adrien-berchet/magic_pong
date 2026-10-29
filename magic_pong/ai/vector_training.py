@@ -92,6 +92,13 @@ class VectorTrainingConfig:
     planner_horizon: int = 90
     planner_action_steps: int = 30
     initial_checkpoint: str | None = None
+    dueling: bool = False
+    warm_start_tau: float = 0.03
+    phase1_frames: int = 0
+    phase1_lr: float = 2e-4
+    phase2_lr: float = 3e-5
+    warmup_updates: int = 2_000
+    soft_target_tau: float = 0.0
 
     def __post_init__(self) -> None:
         self.opponent_mix = parse_opponent_mix(self.opponent_mix)
@@ -127,6 +134,14 @@ class VectorTrainingConfig:
             raise ValueError("snapshot_pool, huber_delta and grad_clip must be positive")
         if self.shaping_scale < 0 or self.hit_reward < 0:
             raise ValueError("shaping_scale and hit_reward must be nonnegative")
+        if self.phase1_frames < 0:
+            raise ValueError("phase1_frames must be nonnegative")
+        if self.warm_start_tau <= 0:
+            raise ValueError("warm_start_tau must be positive")
+        if self.phase1_lr <= 0 or self.phase2_lr <= 0:
+            raise ValueError("phase1_lr and phase2_lr must be positive")
+        if not 0.0 <= self.soft_target_tau <= 1.0:
+            raise ValueError("soft_target_tau must be in [0, 1]")
         unknown = set(self.eval_opponents) - set(BUILTIN_OPPONENTS)
         if unknown or not self.eval_opponents:
             raise ValueError(f"eval_opponents must be built-ins; unknown {sorted(unknown)}")
@@ -215,12 +230,16 @@ def _select_device(name: str) -> torch.device:
 
 
 def greedy_actions(network: torch.nn.Module, obs: np.ndarray, device: torch.device) -> np.ndarray:
-    if hasattr(network, "layout") and getattr(network.layout, "state_size", None) is not None:
-        expected_size = network.layout.state_size
-    elif hasattr(network, "fc_layers") and len(network.fc_layers) > 0:
-        expected_size = network.fc_layers[0].in_features
-    else:
-        expected_size = obs.shape[1]
+    expected_size: int = obs.shape[1]
+    layout = getattr(network, "layout", None)
+    if layout is not None and getattr(layout, "state_size", None) is not None:
+        expected_size = int(layout.state_size)
+    elif hasattr(network, "fc_layers"):
+        fc_layers = network.fc_layers
+        if len(fc_layers) > 0:
+            in_f = getattr(fc_layers[0], "in_features", None)
+            if in_f is not None:
+                expected_size = int(in_f)
     input_obs = obs[:, :expected_size] if obs.shape[1] > expected_size else obs
     with torch.no_grad():
         q = network(torch.as_tensor(input_obs, device=device))
@@ -355,23 +374,48 @@ class VectorDQNTrainer:
                 score_context=config.score_context,
                 geometry_context=config.geometry_context,
                 terminal_on_goal=config.terminal_on_goal,
+                dueling=config.dueling,
             )
             if config.initial_checkpoint:
                 self.agent.load_model(config.initial_checkpoint)
+                # Safeguard 2: restore correct learning rate and terminal_on_goal from config
+                self.agent.lr = config.learning_rate
+                self.agent.terminal_on_goal = config.terminal_on_goal
                 self.agent.q_network.to(self.device)
                 self.agent.target_network.to(self.device)
             if config.score_context and not self.agent.score_context:
                 self.agent.enable_score_context()
             if config.geometry_context and not self.agent.geometry_context:
                 self.agent.enable_geometry_context()
+            # Safeguard 1: Convert to dueling before building optimizer and target
+            if config.dueling and not self.agent.q_network.dueling:
+                self.agent.enable_dueling(
+                    tau=config.warm_start_tau, warm_start=True, q_semantics="logits"
+                )
+                self.agent.q_network.to(self.device)
+                self.agent.target_network.to(self.device)
+            if config.phase1_frames > 0:
+                if config.dueling:
+                    self.agent.freeze_for_phase1()
+                self.agent.lr = config.phase1_lr
         finally:
             dqn_ai.device = previous_device
         self.network = self.agent.q_network
         self.target = self.agent.target_network
         self.target.load_state_dict(self.network.state_dict())
         self.target.eval()
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=config.learning_rate)
-        self.agent.optimizer = self.optimizer
+        if config.phase1_frames > 0:
+            self.in_phase1 = True
+            self.optimizer = self.agent.optimizer
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = config.phase1_lr
+        else:
+            self.in_phase1 = False
+            self.optimizer = torch.optim.Adam(
+                [p for p in self.network.parameters() if p.requires_grad],
+                lr=config.learning_rate,
+            )
+            self.agent.optimizer = self.optimizer
         self.env = VectorEnv(
             config.n_envs,
             seed=config.seed + 2,
@@ -385,6 +429,11 @@ class VectorDQNTrainer:
             hit_reward=config.hit_reward,
             planner_horizon=config.planner_horizon,
             planner_action_steps=config.planner_action_steps,
+        )
+        # Safeguard 3: Observation dimension assertion
+        expected_obs_dim = 46 if config.geometry_context else 30
+        assert self.env.obs_dim == expected_obs_dim, (
+            f"Observation dimension mismatch: env has {self.env.obs_dim}, expected {expected_obs_dim}"
         )
         self.replay = ReplayBuffer(config.replay_capacity, config.n_envs, self.env.obs_dim)
         self.snapshots: list[torch.nn.Module] = []
@@ -440,6 +489,19 @@ class VectorDQNTrainer:
     # --- learning -----------------------------------------------------------------
     def _update(self) -> float:
         c = self.config
+        # Linear warmup in Phase 2
+        if (
+            hasattr(self, "_warmup_start_updates")
+            and c.warmup_updates > 0
+            and not getattr(self, "in_phase1", False)
+        ):
+            phase2_elapsed = self.updates - self._warmup_start_updates
+            if phase2_elapsed < c.warmup_updates:
+                factor = 0.1 + 0.9 * (phase2_elapsed / c.warmup_updates)
+                current_lr = c.phase2_lr * factor
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = current_lr
+
         batch = self.replay.sample(c.batch_size, c.n_step, c.gamma, self.rng)
         obs = torch.as_tensor(batch["obs"], device=self.device)
         next_obs = torch.as_tensor(batch["next_obs"], device=self.device)
@@ -458,11 +520,30 @@ class VectorDQNTrainer:
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), c.grad_clip)
         self.optimizer.step()
         self.updates += 1
+
+        if c.soft_target_tau > 0.0:
+            with torch.no_grad():
+                for p_target, p_online in zip(self.target.parameters(), self.network.parameters()):
+                    p_target.data.mul_(1.0 - c.soft_target_tau)
+                    p_target.data.add_(p_online.data * c.soft_target_tau)
+
         return float(loss.item())
 
     def train_step(self) -> dict[str, float]:
         """One decision for every environment plus the due gradient updates."""
         c = self.config
+        # Check if Phase 1 calibration has finished and transition to Phase 2 fine-tuning
+        if getattr(self, "in_phase1", False) and self.frames >= c.phase1_frames:
+            self.in_phase1 = False
+            if c.dueling:
+                self.agent.unfreeze_for_phase2(lr=c.phase2_lr)
+                self.optimizer = self.agent.optimizer
+            else:
+                self.optimizer = torch.optim.Adam(self.network.parameters(), lr=c.phase2_lr)
+                self.agent.optimizer = self.optimizer
+            self.target.load_state_dict(self.network.state_dict())
+            self._warmup_start_updates = self.updates
+
         epsilon = self.epsilon()
         obs = self.env.obs.copy()
         actions = self._learner_actions(epsilon)
@@ -507,7 +588,7 @@ class VectorDQNTrainer:
             if losses:
                 stats["loss"] = float(np.mean(losses))
                 self.losses.extend(losses)
-        if self.frames >= self._next_target:
+        if c.soft_target_tau <= 0.0 and self.frames >= self._next_target:
             self.target.load_state_dict(self.network.state_dict())
             self._next_target += c.target_update_frames
         if self.frames >= self._next_snapshot:
@@ -686,6 +767,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner_horizon", type=int, default=defaults.planner_horizon)
     parser.add_argument("--planner_action_steps", type=int, default=defaults.planner_action_steps)
     parser.add_argument("--initial_checkpoint")
+    parser.add_argument("--dueling", action="store_true")
+    parser.add_argument("--warm_start_tau", type=float, default=defaults.warm_start_tau)
+    parser.add_argument("--phase1_frames", type=int, default=defaults.phase1_frames)
+    parser.add_argument("--phase1_lr", type=float, default=defaults.phase1_lr)
+    parser.add_argument("--phase2_lr", type=float, default=defaults.phase2_lr)
+    parser.add_argument("--warmup_updates", type=int, default=defaults.warmup_updates)
+    parser.add_argument("--soft_target_tau", type=float, default=defaults.soft_target_tau)
     parser.add_argument("--log_interval_frames", type=int, default=250_000)
     parser.add_argument(
         "--final_panel", action="store_true", help="run the exact competitive panel on best.pth"
@@ -729,6 +817,13 @@ def config_from_args(args: argparse.Namespace) -> VectorTrainingConfig:
         planner_horizon=args.planner_horizon,
         planner_action_steps=args.planner_action_steps,
         initial_checkpoint=args.initial_checkpoint,
+        dueling=args.dueling,
+        warm_start_tau=args.warm_start_tau,
+        phase1_frames=args.phase1_frames,
+        phase1_lr=args.phase1_lr,
+        phase2_lr=args.phase2_lr,
+        warmup_updates=args.warmup_updates,
+        soft_target_tau=args.soft_target_tau,
     )
 
 
