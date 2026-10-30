@@ -172,10 +172,16 @@ flowchart LR
 ### 2. Curvature & Bounce-Targeted DAgger (Highest ROI Next Step)
 - Since the Concession Audit demonstrated that 84.8% of goals conceded were due to 2–4 frame reactive lag and spatial bounce miscalibration during incoming rallies, targeted imitation on high-speed trajectories directly addresses spatial positioning without inflating rally pace.
 
-### 3. Action Space Sub-stepping & Damping
-- Pong paddle moves at $500\text{ px/s}$ ($8.33\text{ px/frame}$ at 60 FPS).
-- Against 900 px/s shots, bang-bang discrete control ($\pm 1$) can induce a $\pm 8\text{ px}$ limit cycle around paddle corners.
-- Introduce 5-level vertical control ($\{-1.0, -0.5, 0.0, 0.5, 1.0\}$) or action smoothing during inference to eliminate spatial overshoot.
+### 3. Action Space Shaping & Geometric Shield: Empirical Findings & Promotion
+- **Diagnostic Reframing**: An empirical concession breakdown on `models/dqn_v7_promoted.pth` revealed that goals conceded to `EdgeStrikerAI` were predominantly side-of-paddle touches (57%) and untouched balls (38%), with median spatial misses of 16 px and 48 px. Small misses ($\le 8.33\text{ px}$) accounted for only 14% of concessions. The paddle was arriving late rather than overshooting; proportional vertical damping alone produced no measurable defense benefit.
+- **Implementation (Option B)**: Implemented an inference-time geometric shield and continuous action shaper (`magic_pong/ai/action_shaping.py`, `DQNAgent.configure_action_shaper`):
+  - **Geometric Barrier**: Active when `incoming` and `own_contact_valid` are set. When the distance between ball intercept and paddle center exceeds the capture width $w = \max(h/2 + r - 20, \text{STEP})$, it overrides vertical velocity to $\pm 1.0$ toward the intercept. When within the window, the network's argmax $v_y$ is preserved.
+  - **Soft-X Blending**: Computes continuous horizontal velocity $v_x = \sum_i \text{softmax}(Q / \tau_x)[i] \cdot \text{move\_x}_i$ ($\tau_x = 0.5$).
+- **Official Benchmark & Gating Results (`docs/ai/action_shaping_gate_results.json`)**:
+  - **Striker Screen (18k frames, seeds 770100..770115)**: Point share increased from **8.9%** (15 GF / 154 GA) to **40.4%** (23 GF / 34 GA), securing a match victory (W/L/T: 1/2/61). GA/1k dropped from **0.1644** to **0.0299** ($5.5\times$ reduction). 95% bootstrap CI on $\Delta\text{Share}$ is **`[+20.2%, +43.3%]`** (excludes 0).
+  - **Tracker Screen (18k frames)**: **96.9% win rate** (62 W / 0 L / 2 T, 187 GF / 3 GA), exceeding the $\ge 90\%$ gate.
+  - **Held-out Panel (6k frames)**: **0 non-Striker losses across 96 matches (0.0%)**, beating the $\le 3/96$ threshold.
+- **Attribution Note**: This performance boost is an architectural hybrid (**DQN + Geometric Shield / Soft-X Shaper**). The neural network alone retains its 12.5% baseline skill, while the runtime shield provides defensive reachability guarantees.
 
 ### 4. Active Bonus Strategic Awareness
 - Extend the 16 contact geometry features to include:

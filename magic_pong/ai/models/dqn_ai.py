@@ -18,6 +18,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+from magic_pong.ai.action_shaping import GeometricShieldConfig
+from magic_pong.ai.action_shaping import shape_action
 from magic_pong.ai.geometry import GEOMETRY_CONTEXT_FEATURES
 from magic_pong.ai.geometry import GEOMETRY_CONTEXT_HORIZON
 from magic_pong.ai.geometry import get_state_layout
@@ -433,6 +435,7 @@ class DQNAgent(AIPlayer):
         self.loss_history: list[float] = []
         self.reward_history: list[float] = []
         self.grad_norm_history: list[float] = []
+        self.action_shaper_config: GeometricShieldConfig | None = None
 
     def enable_score_context(self) -> None:
         """Upgrade a weights-only warm start; empty replay and a fresh optimizer are required."""
@@ -503,12 +506,46 @@ class DQNAgent(AIPlayer):
             self.lr = lr
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
 
+    def configure_action_shaper(self, config: GeometricShieldConfig | None) -> None:
+        """Configure inference-time action shaping (geometric barrier and soft-x).
+
+        Args:
+            config: GeometricShieldConfig instance, or None to disable shaping.
+
+        Raises:
+            ValueError: If shaping is enabled without geometry context, or if
+                training or exploration mode is active.
+        """
+        if config is not None:
+            if not self.geometry_context:
+                raise ValueError("Action shaping requires geometry_context=True")
+            if self.training_enabled or self.exploration_enabled:
+                raise ValueError(
+                    "Action shaping cannot be configured while training or exploration is enabled"
+                )
+        self.action_shaper_config = config
+
     def get_action(self, observation: dict[str, Any] | None, explore: bool | None = None) -> Action:
         """Convert observation to action via the Q-network (or epsilon-greedy)."""
         if observation is None:
             self._clear_pending_transition()
             self._last_chosen_action = None
             return Action(move_x=0.0, move_y=0.0)
+
+        if self.action_shaper_config is not None:
+            if self.training_enabled or self.exploration_enabled or (explore is True):
+                raise ValueError("Action shaping cannot be used while training or exploring")
+            state = self._observation_to_state(observation)
+            state_tensor = torch.as_tensor(state).unsqueeze(0).to(device)
+            was_training = self.q_network.training
+            self.q_network.eval()
+            with torch.no_grad():
+                q_values = self.q_network(state_tensor).cpu().numpy().ravel()
+            self.q_network.train(was_training)
+            action_idx = int(q_values.argmax())
+            self._last_chosen_action = action_idx
+            return shape_action(q_values, state, self.layout, self.action_shaper_config)
+
         state = self._observation_to_state(observation)
         action_idx = self.act(state, explore=explore)
         if self.training_enabled:
@@ -525,6 +562,8 @@ class DQNAgent(AIPlayer):
         info: dict[str, Any],
     ) -> None:
         """Store transition and train when conditions are met."""
+        if self.action_shaper_config is not None and self.training_enabled:
+            raise ValueError("Action shaping cannot be used while training")
         current_state = self._observation_to_state(observation)
         transition_done = bool(done)
         if "terminated" in info or "truncated" in info:
@@ -754,6 +793,8 @@ class DQNAgent(AIPlayer):
 
     def set_training_mode(self, training: bool) -> None:
         """Toggle training behavior and module train/eval modes."""
+        if training and self.action_shaper_config is not None:
+            raise ValueError("Cannot enable training mode while action shaping is configured")
         self.training_enabled = training
         self.exploration_enabled = training
         self.q_network.train(training)
@@ -762,6 +803,8 @@ class DQNAgent(AIPlayer):
 
     def set_exploration_mode(self, explore: bool) -> None:
         """Enable or disable epsilon-greedy exploration independently."""
+        if explore and self.action_shaper_config is not None:
+            raise ValueError("Cannot enable exploration mode while action shaping is configured")
         self.exploration_enabled = explore
 
     def remember(
@@ -949,6 +992,7 @@ class DQNAgent(AIPlayer):
         checkpoint = safe_torch_load(filepath, map_location=device)
         validate_dqn_checkpoint(checkpoint)
         self.policy_anchor = None
+        self.action_shaper_config = None
         self.terminal_on_goal = checkpoint.get("hyperparameters", {}).get("terminal_on_goal", False)
 
         if "hyperparameters" in checkpoint:
