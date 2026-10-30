@@ -61,6 +61,7 @@ class GameState(Enum):
     """Current application state"""
 
     MENU = "menu"
+    HUMAN_VS_AI_SELECT = "human_vs_ai_select"
     MODEL_SELECTION = "model_selection"
     WATCH_P1_SELECT = "watch_p1_select"
     WATCH_P2_SELECT = "watch_p2_select"
@@ -126,6 +127,54 @@ _WATCH_AI_TYPES: tuple[tuple[str, str], ...] = (
     ("dummy", "Dummy AI"),
 )
 
+_BUILTIN_AI_TYPES: tuple[tuple[str, str, str], ...] = (
+    (
+        "tracker",
+        "Goal-line Tracker AI",
+        "Holds the goal line and shadows the ball with micro-adjustments.",
+    ),
+    (
+        "striker",
+        "Edge Striker AI",
+        "Goal-line defender that aims returns using the paddle edge to cut corners.",
+    ),
+    (
+        "planner",
+        "Lookahead Planner AI",
+        "Plans each move on fast physics simulation rollouts. Strongest built-in AI.",
+    ),
+    (
+        "defensive",
+        "Defensive AI",
+        "Stays near its goal and predicts incoming ball trajectory.",
+    ),
+    (
+        "aggressive",
+        "Aggressive AI",
+        "Pursues bonuses and attacks aggressively with forward movement.",
+    ),
+    (
+        "follow_ball",
+        "Follow Ball AI",
+        "Chases the ball directly. Fast and simple vertical tracker.",
+    ),
+    (
+        "predictive",
+        "Predictive AI",
+        "Predicts future ball position and intercepts it.",
+    ),
+    (
+        "random",
+        "Random AI",
+        "Moves completely at random. Good for casual practice.",
+    ),
+    (
+        "dummy",
+        "Dummy AI",
+        "Never moves. Useful for target and angle practice.",
+    ),
+)
+
 
 class MagicPongApp:
     """Main application class for Magic Pong with PyGame GUI"""
@@ -159,10 +208,10 @@ class MagicPongApp:
             MainMenuOption(
                 "1 vs AI",
                 GameMode.ONE_VS_AI,
-                "Player vs Simple AI",
-                "Practice against the built-in defensive computer opponent.",
+                "Player vs Built-in AI",
+                "Choose any built-in computer opponent (Tracker, Striker, Planner, etc.) to practice against.",
                 (
-                    ("Players", "Human vs Simple AI"),
+                    ("Players", "Human vs Built-in AI"),
                     ("Controls", "Player uses WASD"),
                     ("Status", "Ready"),
                 ),
@@ -302,7 +351,7 @@ class MagicPongApp:
         # Model selection state
         self.model_selected = 0
         self.available_models: list[dict[str, Any]] = []
-        self.selected_model_path = None
+        self.selected_model_path: str | None = None
         self.model_info: dict[str, Any] | None = None
         self.model_info_by_path: dict[str, dict[str, Any]] = {}
         self.error_message: str | None = None
@@ -329,6 +378,10 @@ class MagicPongApp:
         self.config_confirm_action: Literal["save", "reset"] | None = None
         self.config_confirm_return_state = GameState.CONFIG_CATEGORY
         self.config_exit_state = GameState.MENU
+
+        # 1 vs AI selection state
+        self._human_vs_ai_idx = 0
+        self._human_vs_ai_type = "tracker"
 
         print("Magic Pong initialized successfully!")
         print("Use arrows to navigate and ENTER to select")
@@ -358,8 +411,16 @@ class MagicPongApp:
         ai_players: dict[int, Player | None] = {1: None, 2: None}
 
         if mode == GameMode.ONE_VS_AI:
-            # Human vs AI
-            ai_players[2] = SimpleAI("Simple AI")
+            # Human vs chosen built-in AI
+            ai_type = getattr(self, "_human_vs_ai_type", "tracker")
+            if ai_type == "planner":
+                from magic_pong.ai.models.planner_ai import PlannerAI
+
+                ai_players[2] = PlannerAI(name="Planner AI")
+            else:
+                from magic_pong.ai.models.simple_ai import create_ai
+
+                ai_players[2] = create_ai(ai_type)
 
         elif mode == GameMode.ONE_VS_PLANNER:
             # Human vs the lookahead planner (compiled rollouts when numba is installed)
@@ -374,9 +435,7 @@ class MagicPongApp:
                 self.state = GameState.MENU
                 self.current_mode = GameMode.MENU
                 return
-            ai_players[2] = self._create_trained_ai(  # type: ignore[unreachable]
-                self.selected_model_path
-            )
+            ai_players[2] = self._create_trained_ai(self.selected_model_path)
             if ai_players[2] is None:
                 print("Failed to load trained model, falling back to Simple AI")
                 ai_players[2] = SimpleAI("Simple AI (fallback)")
@@ -433,26 +492,108 @@ class MagicPongApp:
     def _discover_models(self) -> None:
         """Discover available trained models"""
         models_dir = "models"
+        self.available_models = [
+            {
+                "name": "📁 Browse Custom File...",
+                "path": "__BROWSE_FILE__",
+                "file": "Browse filesystem...",
+                "is_browse_action": True,
+            }
+        ]
         if not os.path.exists(models_dir):
             print("Models directory not found")
             return
 
-        self.available_models = []
-
-        # Look for .pth files in models directory
+        discovered = []
+        # Look for .pth and .pt files in models directory
         for file in os.listdir(models_dir):
-            if file.endswith(".pth") and not file.endswith("training.png"):
+            if (file.endswith(".pth") or file.endswith(".pt")) and not file.endswith(
+                "training.png"
+            ):
                 model_path = os.path.join(models_dir, file)
                 if not os.path.isfile(model_path):
                     continue
-                # Extract model name without extension for display
-                model_name = file.replace(".pth", "").replace("_", " ").title()
-                self.available_models.append({"name": model_name, "path": model_path, "file": file})
+                ext = ".pth" if file.endswith(".pth") else ".pt"
+                model_name = file[: -len(ext)].replace("_", " ").title()
+                discovered.append({"name": model_name, "path": model_path, "file": file})
 
         # Sort models by name for better UX
-        self.available_models.sort(key=lambda x: x["name"])
+        discovered.sort(key=lambda x: x["name"])
+        self.available_models.extend(discovered)
 
-        print(f"Discovered {len(self.available_models)} trained models")
+        print(f"Discovered {len(discovered)} trained models")
+
+    def _open_model_file_picker(self) -> str | None:
+        """Open a native file picker dialog to choose an arbitrary model checkpoint."""
+        if os.environ.get("SDL_VIDEODRIVER") == "dummy" and not os.environ.get("DISPLAY"):
+            self._show_error_message("File dialog unavailable in headless mode", 3.0)
+            return None
+
+        try:
+            import tkinter
+            from tkinter import filedialog
+
+            root = tkinter.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+
+            file_path = filedialog.askopenfilename(
+                title="Select Trained Model Checkpoint",
+                filetypes=[
+                    ("PyTorch Models", "*.pth *.pt"),
+                    ("PyTorch Checkpoints (*.pth)", "*.pth"),
+                    ("PyTorch Checkpoints (*.pt)", "*.pt"),
+                    ("All Files", "*.*"),
+                ],
+                initialdir=os.path.abspath("models") if os.path.exists("models") else os.getcwd(),
+            )
+            root.destroy()
+
+            if file_path and os.path.isfile(file_path):
+                return os.path.abspath(file_path)
+            return None
+        except Exception as e:
+            self._show_error_message(f"Could not open file picker: {e}", 3.0)
+            return None
+
+    def _select_and_load_custom_model_file(self, file_path: str) -> None:
+        """Add custom model file to available models, validate it, and focus it."""
+        abs_path = os.path.abspath(file_path)
+        file_name = os.path.basename(abs_path)
+        ext = ".pth" if abs_path.endswith(".pth") else (".pt" if abs_path.endswith(".pt") else "")
+        display_name = file_name[: -len(ext)] if ext else file_name
+        display_name = display_name.replace("_", " ").title()
+
+        # Check if already present
+        for idx, m in enumerate(self.available_models):
+            if os.path.abspath(str(m.get("path", ""))) == abs_path:
+                self.model_selected = idx
+                self.selected_model_path = abs_path
+                self.model_info = self._load_and_cache_model_info(abs_path)
+                return
+
+        custom_entry = {
+            "name": f"⭐ {display_name} (Custom)",
+            "path": abs_path,
+            "file": file_name,
+            "is_custom": True,
+        }
+        insert_idx = (
+            1 if (self.available_models and self.available_models[0].get("is_browse_action")) else 0
+        )
+        self.available_models.insert(insert_idx, custom_entry)
+        self.model_selected = insert_idx
+        self.selected_model_path = abs_path
+        self.model_info = self._load_and_cache_model_info(abs_path)
+
+    def _trigger_file_browser(self) -> None:
+        """Open file dialog and focus the chosen custom model."""
+        chosen_path = self._open_model_file_picker()
+        if chosen_path:
+            self._select_and_load_custom_model_file(chosen_path)
 
     def _load_model_info(self, model_path: str | None) -> dict:
         """Load basic information about a model"""
@@ -596,11 +737,14 @@ class MagicPongApp:
                     # Switch to model selection screen
                     self._watch_selecting_player = 0
                     self.state = GameState.MODEL_SELECTION
-                    self.model_selected = 0
+                    self.model_selected = 1 if len(self.available_models) > 1 else 0
                     if self.available_models:
                         print("Entering model selection mode")
                     else:
                         print("No trained models found!")
+                elif selected_mode == GameMode.ONE_VS_AI:
+                    self._human_vs_ai_idx = 0
+                    self.state = GameState.HUMAN_VS_AI_SELECT
                 elif selected_mode == GameMode.WATCH_AI:
                     self._watch_p1_idx = 0
                     self.state = GameState.WATCH_P1_SELECT
@@ -618,10 +762,15 @@ class MagicPongApp:
             elif event.key == pygame.K_DOWN:
                 if self.available_models:
                     self.model_selected = (self.model_selected + 1) % len(self.available_models)
+            elif event.key in (pygame.K_b, pygame.K_o):
+                self._trigger_file_browser()
             elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
                 # Load selected model and start game
                 if self.available_models:
                     selected_model = self.available_models[self.model_selected]
+                    if selected_model.get("is_browse_action"):
+                        self._trigger_file_browser()
+                        return
                     self.selected_model_path = selected_model["path"]
                     self.model_info = self._load_and_cache_model_info(self.selected_model_path)
 
@@ -652,6 +801,23 @@ class MagicPongApp:
                 print("Returning to main menu")
             elif event.key == pygame.K_F1:
                 self.show_help = True
+
+    def handle_human_vs_ai_select(self, event: pygame.event.Event) -> None:
+        """Handle AI opponent selection for 1 vs AI mode."""
+        if event.type != pygame.KEYDOWN:
+            return
+        n = len(_BUILTIN_AI_TYPES)
+        if event.key == pygame.K_UP:
+            self._human_vs_ai_idx = (self._human_vs_ai_idx - 1) % n
+        elif event.key == pygame.K_DOWN:
+            self._human_vs_ai_idx = (self._human_vs_ai_idx + 1) % n
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self._human_vs_ai_type = _BUILTIN_AI_TYPES[self._human_vs_ai_idx][0]
+            self.start_game_mode(GameMode.ONE_VS_AI)
+        elif event.key == pygame.K_ESCAPE:
+            self.state = GameState.MENU
+        elif event.key == pygame.K_F1:
+            self.show_help = True
 
     def handle_watch_player_select(self, event: pygame.event.Event, player_num: int) -> None:
         """Handle AI type selection for Watch AI vs AI mode."""
@@ -1013,7 +1179,8 @@ class MagicPongApp:
     def _build_main_menu_data(self) -> list[dict[str, Any]]:
         """Build renderer-friendly data for the main menu."""
         options_data = []
-        model_count = len(self.available_models)
+        model_count = sum(1 for m in self.available_models if not m.get("is_browse_action"))
+        has_browse = any(bool(m.get("is_browse_action")) for m in self.available_models)
 
         for option in self.menu_options:
             details = [{"label": label, "value": value} for label, value in option.details]
@@ -1021,13 +1188,18 @@ class MagicPongApp:
             available = True
 
             if option.mode == GameMode.LOAD_MODEL:
-                available = model_count > 0
                 if model_count == 1:
                     status = "1 model available"
+                    available = True
                 elif model_count > 1:
                     status = f"{model_count} models available"
+                    available = True
+                elif has_browse:
+                    status = "Browse files"
+                    available = True
                 else:
                     status = "No models available"
+                    available = False
                 details.append({"label": "Availability", "value": status})
             elif option.mode == GameMode.CONFIG:
                 status = "Available"
@@ -1156,10 +1328,15 @@ class MagicPongApp:
             return [
                 {"key": "UP/DOWN", "action": "Choose model"},
                 {"key": "ENTER/SPACE", "action": "Load model"},
+                {"key": "B", "action": "Browse files"},
             ]
-        if self.state in (GameState.WATCH_P1_SELECT, GameState.WATCH_P2_SELECT):
+        if self.state in (
+            GameState.WATCH_P1_SELECT,
+            GameState.WATCH_P2_SELECT,
+            GameState.HUMAN_VS_AI_SELECT,
+        ):
             return [
-                {"key": "UP/DOWN", "action": "Choose AI type"},
+                {"key": "UP/DOWN", "action": "Choose opponent"},
                 {"key": "ENTER/SPACE", "action": "Confirm selection"},
                 {"key": "ESC", "action": "Back"},
             ]
@@ -1238,6 +1415,7 @@ class MagicPongApp:
         """Return a display label for an app state."""
         labels = {
             GameState.MENU: "Main Menu",
+            GameState.HUMAN_VS_AI_SELECT: "Select Opponent",
             GameState.MODEL_SELECTION: "Model Browser",
             GameState.WATCH_P1_SELECT: "Select Player 1",
             GameState.WATCH_P2_SELECT: "Select Player 2",
@@ -1256,10 +1434,34 @@ class MagicPongApp:
         models_data = []
 
         for model in self.available_models:
+            if model.get("is_browse_action"):
+                models_data.append(
+                    {
+                        "label": str(model.get("name") or "📁 Browse Custom File..."),
+                        "title": "Browse Custom Model File",
+                        "file": "Select any .pth or .pt file",
+                        "path": "",
+                        "description": (
+                            "Open a native file picker dialog to choose any arbitrary model "
+                            "checkpoint from your computer (shortcut: 'B' or 'O')."
+                        ),
+                        "details": [
+                            {"label": "Action", "value": "Open file dialog"},
+                            {"label": "Supported", "value": "*.pth, *.pt checkpoints"},
+                            {"label": "Shortcut", "value": "Press 'B' or 'O' anytime"},
+                        ],
+                        "status": "Browse Files",
+                        "available": True,
+                        "is_browse_action": True,
+                    }
+                )
+                continue
+
             path = str(model.get("path") or "")
             file_name = str(model.get("file") or os.path.basename(path) or "Unknown file")
             display_name = str(
-                model.get("name") or file_name.replace(".pth", "").replace("_", " ").title()
+                model.get("name")
+                or file_name.replace(".pth", "").replace(".pt", "").replace("_", " ").title()
             )
             model_info = self.model_info_by_path.get(path)
             is_model_file = bool(path and os.path.isfile(path))
@@ -1463,6 +1665,28 @@ class MagicPongApp:
             )
         return options_data
 
+    def _build_human_vs_ai_data(self) -> list[dict[str, Any]]:
+        """Build renderer-friendly menu data for the 1 vs AI opponent selector."""
+        options_data = []
+        for type_key, label, description in _BUILTIN_AI_TYPES:
+            details = [
+                {"label": "Type", "value": "Built-in AI"},
+                {"label": "Opponent", "value": label},
+                {"label": "Status", "value": "Ready"},
+            ]
+            options_data.append(
+                {
+                    "label": label,
+                    "mode": type_key,
+                    "title": label,
+                    "description": description,
+                    "details": details,
+                    "status": "Ready",
+                    "available": True,
+                }
+            )
+        return options_data
+
     def _build_config_options_data(self, category: ConfigCategory) -> list[dict[str, Any]]:
         """Build renderer-friendly option data for a configuration category."""
         options_data = []
@@ -1485,6 +1709,15 @@ class MagicPongApp:
         """Render the current state"""
         if self.state == GameState.MENU:
             self.renderer.draw_menu(self._build_main_menu_data(), self.menu_selected)
+
+        elif self.state == GameState.HUMAN_VS_AI_SELECT:
+            self.renderer.draw_menu(
+                self._build_human_vs_ai_data(),
+                self._human_vs_ai_idx,
+                title="1 vs AI  —  Opponent",
+                subtitle="Choose a built-in computer opponent to practice against",
+                hint_esc="Back to menu",
+            )
 
         elif self.state == GameState.MODEL_SELECTION:
             if self._watch_selecting_player == 1:
@@ -1642,6 +1875,8 @@ class MagicPongApp:
                         self.handle_help_input(event)
                     elif self.state == GameState.MENU:
                         self.handle_menu_input(event)
+                    elif self.state == GameState.HUMAN_VS_AI_SELECT:
+                        self.handle_human_vs_ai_select(event)
                     elif self.state == GameState.MODEL_SELECTION:
                         self.handle_model_selection_input(event)
                     elif self.state == GameState.WATCH_P1_SELECT:

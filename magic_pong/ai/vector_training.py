@@ -99,6 +99,8 @@ class VectorTrainingConfig:
     phase2_lr: float = 3e-5
     warmup_updates: int = 2_000
     soft_target_tau: float = 0.0
+    anchor_lambda: float = 0.0
+    anchor_teacher_checkpoint: str | None = None
 
     def __post_init__(self) -> None:
         self.opponent_mix = parse_opponent_mix(self.opponent_mix)
@@ -142,6 +144,8 @@ class VectorTrainingConfig:
             raise ValueError("phase1_lr and phase2_lr must be positive")
         if not 0.0 <= self.soft_target_tau <= 1.0:
             raise ValueError("soft_target_tau must be in [0, 1]")
+        if self.anchor_lambda < 0.0:
+            raise ValueError("anchor_lambda must be nonnegative")
         unknown = set(self.eval_opponents) - set(BUILTIN_OPPONENTS)
         if unknown or not self.eval_opponents:
             raise ValueError(f"eval_opponents must be built-ins; unknown {sorted(unknown)}")
@@ -161,6 +165,7 @@ class ReplayBuffer:
         self.rewards = np.zeros((self.rows, n_envs), dtype=np.float32)
         self.dones = np.zeros((self.rows, n_envs), dtype=np.bool_)
         self.cuts = np.zeros((self.rows, n_envs), dtype=np.bool_)
+        self.opponents = np.zeros((self.rows, n_envs), dtype=np.int64)
         self.written = 0  # total decisions written (monotonic)
 
     def __len__(self) -> int:
@@ -174,6 +179,7 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         dones: np.ndarray,
         cuts: np.ndarray,
+        opponents: np.ndarray | None = None,
     ) -> None:
         row = self.written % self.rows
         self.obs[row] = obs
@@ -182,6 +188,8 @@ class ReplayBuffer:
         self.rewards[row] = rewards
         self.dones[row] = dones
         self.cuts[row] = cuts
+        if opponents is not None:
+            self.opponents[row] = opponents
         self.written += 1
 
     def sample(
@@ -220,6 +228,7 @@ class ReplayBuffer:
             "next_obs": self.next_obs[last, envs],
             "terminal": terminal,
             "discount": (gamma**length).astype(np.float32),
+            "opponents": self.opponents[first, envs],
         }
 
 
@@ -400,6 +409,30 @@ class VectorDQNTrainer:
                 self.agent.lr = config.phase1_lr
         finally:
             dqn_ai.device = previous_device
+
+        teacher_ckpt = config.anchor_teacher_checkpoint or (
+            config.initial_checkpoint if config.anchor_lambda > 0.0 else None
+        )
+        if teacher_ckpt:
+            from magic_pong.ai.models import dqn_ai
+
+            prev_dev = dqn_ai.device
+            dqn_ai.device = self.device
+            try:
+                t_agent = DQNAgent(
+                    hidden_layers=list(config.hidden_layers),
+                    score_context=config.score_context,
+                    geometry_context=config.geometry_context,
+                    dueling=False,
+                )
+                t_agent.load_model(teacher_ckpt)
+                self.teacher_network = copy.deepcopy(t_agent.q_network).to(self.device).eval()
+                self.teacher_network.requires_grad_(False)
+            finally:
+                dqn_ai.device = prev_dev
+        else:
+            self.teacher_network = None
+
         self.network = self.agent.q_network
         self.target = self.agent.target_network
         self.target.load_state_dict(self.network.state_dict())
@@ -444,6 +477,7 @@ class VectorDQNTrainer:
         self.best_rank: tuple[float, ...] | None = None
         self.best_frames = 0
         self.losses: list[float] = []
+        self.anchor_losses: list[float] = []
         self.match_log: list[dict[str, Any]] = []
         self._update_budget = 0.0
         self._next_target = config.target_update_frames
@@ -515,6 +549,39 @@ class VectorDQNTrainer:
             target = returns + discount * next_q * (~terminal)
         q = self.network(obs).gather(1, actions.unsqueeze(1)).squeeze(1)
         loss = F.smooth_l1_loss(q, target, beta=c.huber_delta)
+
+        # Phase 2 selective policy anchor on non-Striker / non-Planner transitions
+        if (
+            not getattr(self, "in_phase1", False)
+            and c.anchor_lambda > 0.0
+            and getattr(self, "teacher_network", None) is not None
+            and "opponents" in batch
+        ):
+            from magic_pong.ai.fast_policies import PLANNER_OPPONENT
+            from magic_pong.ai.fast_policies import POLICY_KINDS
+
+            striker_code = POLICY_KINDS["striker"]
+            opponents = batch["opponents"]
+            non_exempt = (opponents != striker_code) & (opponents != PLANNER_OPPONENT)
+            if non_exempt.any():
+                idx = np.flatnonzero(non_exempt)
+                sub_obs = obs[idx]
+                with torch.no_grad():
+                    teacher_logits = self.teacher_network(sub_obs)
+                    teacher_probs = F.softmax(teacher_logits, dim=-1)
+
+                if hasattr(self.network, "raw_advantage_logits"):
+                    student_adv = self.network.raw_advantage_logits(sub_obs)
+                elif hasattr(self.network, "advantage_layer") and hasattr(self.network, "trunk"):
+                    student_adv = self.network.advantage_layer(self.network.trunk(sub_obs))
+                else:
+                    student_adv = self.network(sub_obs)
+
+                student_log_probs = F.log_softmax(student_adv, dim=-1)
+                kl = F.kl_div(student_log_probs, teacher_probs, reduction="sum") / len(idx)
+                loss = loss + c.anchor_lambda * kl
+                self.anchor_losses.append(float(kl.item()))
+
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), c.grad_clip)
@@ -549,6 +616,7 @@ class VectorDQNTrainer:
         actions = self._learner_actions(epsilon)
         opponent_actions = self._opponent_actions()
         shaping_before = self.env.potentials() if c.shaping_scale > 0 else None
+        pre_step_kinds = self.env.kinds.copy()
         result = self.env.step(actions, opponent_actions)
         rewards = result.rewards.astype(np.float64)
         if shaping_before is not None:
@@ -566,6 +634,7 @@ class VectorDQNTrainer:
             result.next_obs,
             result.dones,
             result.truncated,
+            opponents=pre_step_kinds,
         )
         self.frames += int(result.events[:, 7].sum())
         self.decisions += 1
@@ -578,6 +647,7 @@ class VectorDQNTrainer:
             "goals_against": float(result.events[:, EV_GOALS_AGAINST].sum()),
             "hits": float(result.events[:, EV_LEARNER_HITS].sum()),
             "loss": float("nan"),
+            "anchor_loss": float("nan"),
         }
         if len(self.replay) >= c.min_replay:
             self._update_budget += c.replay_ratio * self.env.n / c.batch_size
@@ -588,6 +658,8 @@ class VectorDQNTrainer:
             if losses:
                 stats["loss"] = float(np.mean(losses))
                 self.losses.extend(losses)
+                if self.anchor_losses:
+                    stats["anchor_loss"] = float(np.mean(self.anchor_losses[-len(losses) :]))
         if c.soft_target_tau <= 0.0 and self.frames >= self._next_target:
             self.target.load_state_dict(self.network.state_dict())
             self._next_target += c.target_update_frames
@@ -693,6 +765,7 @@ class VectorDQNTrainer:
                     self._next_eval += c.eval_interval_frames
             if self.frames >= self._next_checkpoint:
                 self.save("latest.pth")
+                self.save(f"checkpoint_{self.frames:010d}.pth")
                 (self.output / "training.json").write_text(
                     json.dumps(self.summary(time.perf_counter() - start), indent=2) + "\n"
                 )

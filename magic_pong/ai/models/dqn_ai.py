@@ -246,7 +246,8 @@ class DQNNetwork(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
                 nn.init.constant_(m.bias, 0.01)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def trunk(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract hidden features from the shared MLP trunk."""
         if self.score_context_weight is not None or self.geometry_context_weight is not None:
             h = self.fc_layers[0](x[..., :30].contiguous())
             if self.score_context_weight is not None and self.layout.score_slice is not None:
@@ -260,7 +261,19 @@ class DQNNetwork(nn.Module):
             h = x
             for fc in self.fc_layers:
                 h = F.relu(fc(h))
+        return h
 
+    def raw_advantage_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute unscaled advantage/action logits (without value shift or tau multiplier)."""
+        h = self.trunk(x)
+        if self.dueling:
+            assert self.advantage_layer is not None
+            return self.advantage_layer(h)
+        assert self.output_layer is not None
+        return self.output_layer(h)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.trunk(x)
         if self.dueling:
             assert self.advantage_layer is not None and self.value_layer is not None
             tau = torch.exp(self.log_tau) if self.log_tau is not None else 1.0

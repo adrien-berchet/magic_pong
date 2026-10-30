@@ -660,3 +660,140 @@ def test_help_closes_with_f1_or_escape_from_game_over(monkeypatch: Any) -> None:
     app_for_escape.handle_help_input(key_event(pygame.K_ESCAPE))
 
     assert not bool(app_for_escape.show_help)
+
+
+def test_main_menu_one_vs_ai_opens_opponent_select(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.menu_selected = menu_mode_index(app, GameMode.ONE_VS_AI)
+
+    app.handle_menu_input(key_event(pygame.K_RETURN))
+
+    assert app.state == GameState.HUMAN_VS_AI_SELECT
+    assert app._human_vs_ai_idx == 0
+
+
+def test_human_vs_ai_select_navigation_and_cancel(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.HUMAN_VS_AI_SELECT
+    app._human_vs_ai_idx = 0
+
+    app.handle_human_vs_ai_select(key_event(pygame.K_DOWN))
+    assert app._human_vs_ai_idx == 1
+
+    app.handle_human_vs_ai_select(key_event(pygame.K_UP))
+    assert app._human_vs_ai_idx == 0
+
+    # ESC returns to main menu
+    app.handle_human_vs_ai_select(key_event(pygame.K_ESCAPE))
+    assert app.state == GameState.MENU
+
+
+def test_human_vs_ai_select_starts_chosen_opponent(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.HUMAN_VS_AI_SELECT
+    # Index 1 is striker in _BUILTIN_AI_TYPES
+    app._human_vs_ai_idx = 1
+
+    app.handle_human_vs_ai_select(key_event(pygame.K_RETURN))
+
+    assert app.state == GameState.PLAYING
+    assert app.current_mode == GameMode.ONE_VS_AI
+    assert app._human_vs_ai_type == "striker"
+    assert app.game_engine.player2 is not None
+    assert app.game_engine.player2.name == "EdgeStrikerAI"
+
+
+def test_human_vs_ai_select_planner_starts_planner(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.HUMAN_VS_AI_SELECT
+    # Find index for planner
+    from magic_pong.gui.game_app import _BUILTIN_AI_TYPES
+
+    planner_idx = next(i for i, (k, _, _) in enumerate(_BUILTIN_AI_TYPES) if k == "planner")
+    app._human_vs_ai_idx = planner_idx
+
+    app.handle_human_vs_ai_select(key_event(pygame.K_RETURN))
+
+    assert app.state == GameState.PLAYING
+    assert app.current_mode == GameMode.ONE_VS_AI
+    assert app._human_vs_ai_type == "planner"
+    assert app.game_engine.player2 is not None
+    assert app.game_engine.player2.name == "Planner AI"
+
+
+def test_build_human_vs_ai_data_contains_all_opponents(monkeypatch: Any) -> None:
+    app = create_app(monkeypatch)
+    data = app._build_human_vs_ai_data()
+
+    types = [item["mode"] for item in data]
+    assert "tracker" in types
+    assert "striker" in types
+    assert "planner" in types
+    assert "defensive" in types
+    assert len(data) == 9
+    assert all(item["available"] is True for item in data)
+
+
+def test_model_selection_browse_key_triggers_picker(monkeypatch: Any, tmp_path: Path) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.MODEL_SELECTION
+    app.available_models = [
+        {
+            "name": "📁 Browse Custom File...",
+            "path": "__BROWSE_FILE__",
+            "file": "Browse filesystem...",
+            "is_browse_action": True,
+        }
+    ]
+
+    custom_model_path = tmp_path / "custom_agent.pth"
+    custom_model_path.write_bytes(b"0" * 2048)
+
+    called = []
+
+    def fake_picker() -> str:
+        called.append(True)
+        return str(custom_model_path)
+
+    monkeypatch.setattr(app, "_open_model_file_picker", fake_picker)
+
+    # Press 'b' to trigger file browser
+    app.handle_model_selection_input(key_event(pygame.K_b))
+
+    assert called == [True]
+    # Check that custom model was loaded and selected
+    assert any(m.get("path") == str(custom_model_path) for m in app.available_models)
+    assert app.selected_model_path == str(custom_model_path)
+
+
+def test_model_selection_enter_on_browse_action_triggers_picker(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    app.state = GameState.MODEL_SELECTION
+    app.available_models = [
+        {
+            "name": "📁 Browse Custom File...",
+            "path": "__BROWSE_FILE__",
+            "file": "Browse filesystem...",
+            "is_browse_action": True,
+        }
+    ]
+    app.model_selected = 0
+
+    custom_model_path = tmp_path / "custom_agent_2.pt"
+    custom_model_path.write_bytes(b"0" * 2048)
+
+    called = []
+
+    def fake_picker() -> str:
+        called.append(True)
+        return str(custom_model_path)
+
+    monkeypatch.setattr(app, "_open_model_file_picker", fake_picker)
+
+    # Press ENTER on the browse action entry
+    app.handle_model_selection_input(key_event(pygame.K_RETURN))
+
+    assert called == [True]
+    assert app.selected_model_path == str(custom_model_path)

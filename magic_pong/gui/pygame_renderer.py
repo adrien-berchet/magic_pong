@@ -608,12 +608,13 @@ class PygameRenderer:
             hints = [
                 ("UP/DOWN", "Navigate"),
                 ("ENTER/SPACE", "Load"),
+                ("B", "Browse Files"),
                 ("ESC", "Back"),
             ]
         else:
             self._draw_option_rows([], 0, sidebar_rect, "MODELS")
             self._draw_empty_model_detail(detail_rect)
-            hints = [("ESC", "Main menu")]
+            hints = [("B", "Browse Files"), ("ESC", "Main menu")]
 
         self._draw_hint_bar(footer_rect, hints)
 
@@ -627,17 +628,33 @@ class PygameRenderer:
         option.setdefault("label", label)
         option.setdefault("title", label)
         option.setdefault("file", file_name)
-        option.setdefault("description", "Saved model checkpoint discovered locally.")
-        option.setdefault("status", "Discovered")
-        option.setdefault("available", True)
-        option.setdefault(
-            "details",
-            [
-                {"label": "Display name", "value": label},
-                {"label": "File", "value": file_name},
-                {"label": "Path", "value": path or "Unknown"},
-            ],
-        )
+        if option.get("is_browse_action"):
+            option.setdefault(
+                "description",
+                "Open a file dialog to select any arbitrary model file (*.pth, *.pt) from your computer.",
+            )
+            option.setdefault("status", "Browse Files")
+            option.setdefault("available", True)
+            option.setdefault(
+                "details",
+                [
+                    {"label": "Action", "value": "Open file dialog"},
+                    {"label": "Supported", "value": "*.pth, *.pt checkpoints"},
+                    {"label": "Shortcut", "value": "Press 'B' or 'O' anytime"},
+                ],
+            )
+        else:
+            option.setdefault("description", "Saved model checkpoint discovered locally.")
+            option.setdefault("status", "Discovered")
+            option.setdefault("available", True)
+            option.setdefault(
+                "details",
+                [
+                    {"label": "Display name", "value": label},
+                    {"label": "File", "value": file_name},
+                    {"label": "Path", "value": path or "Unknown"},
+                ],
+            )
         return option
 
     def _draw_model_detail(

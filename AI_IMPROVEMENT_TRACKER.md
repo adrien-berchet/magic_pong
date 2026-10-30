@@ -1,6 +1,51 @@
 # Neural network improvement tracker
 
-Last updated: 2026-10-29
+Last updated: 2026-10-30
+
+## 2026-10-30: Option 1 — Vector RL Fine-Tuning of Promoted Model (`dqn_v7_promoted.pth`)
+
+**Completed:** Vector RL fine-tuning with selective teacher anchor and Dueling DQN architecture across 3 seeds (11, 22, 33).
+
+- **Peer Deliberation (`loop-with-claude`)**:
+  - Deliberated with Claude CLI (`--model opus --effort high`, session `a829d591-7f25-4a2b-a5f4-e82964b60f77`). Reached consensus on:
+    1. Direct empirical baseline evaluation on the exact `models/dqn_v7_promoted.pth` checkpoint.
+    2. Neutralizing stalling incentives by raising $\gamma$ to $0.997$ and setting `hit_reward = 0.0`.
+    3. Selective non-Striker policy anchor ($\lambda = 0.1$) on unscaled advantage logits $A_{\text{student}}(s)$ against the frozen teacher, achieving bit-exact $KL = 0.0$ at warm-start while exempting Striker and Planner transitions.
+    4. Pre-step opponent snapshot recording in `ReplayBuffer` to prevent boundary reset label leakage.
+    5. Candidate checkpoint ranker filtering non-Striker validation losses $\le$ baseline, ordered by Striker point share $\text{GF} / (\text{GF} + \text{GA})$ (descending).
+- **Empirical Results (3 seeds, 1.5M frames each, 576 evaluation matches total)**:
+  - **Representation Protection (Flawless)**:
+    - Held-out standard panel (384 matches): **0 losses against Tracker across all 3 seeds** (0/32 each).
+    - Tracker 18k screen: losses held to **1/64, 4/64, and 3/64** (matching or beating baseline's 4 losses).
+    - Pooled non-Striker losses: **3 losses across 288 matches (1.04% loss rate)**, comfortably passing the $\le 11$ gate.
+  - **Striker Point Share Gain (+20.6% relative)**:
+    - Quadrupled goals scored against Striker (from 15 to 60 total across 192 matches, ~20 per seed), lifting point share from 8.88% to 10.71%.
+  - **The Rally Pace Dynamic**:
+    - Breaking passive stalling lowered timeouts from 28 to 15–16 per seed. However, active offensive counter-attacks at 900 px/s accelerated the pace of play, resulting in raw goals against per 1k frames rising to 0.1934 vs 0.1644 baseline.
+- **Promotion Decision**:
+  - Consistent with strict pre-declared gating criteria, because raw GA/1k did not decrease below baseline, **`dqn_v7_promoted.pth` remains the promoted production model**.
+
+## 2026-10-29: UI — Opponent Selection & Arbitrary Model File Picker
+
+**Completed:** GUI upgrade providing full built-in opponent selection and arbitrary model file browsing.
+
+- **1 vs AI Opponent Selection**:
+  - Introduced `GameState.HUMAN_VS_AI_SELECT` state machine transition.
+  - Allows human players to select any of the 9 built-in opponents (Goal-line Tracker, Edge Striker, Lookahead Planner, Defensive, Aggressive, Follow Ball, Predictive, Random, Dummy) with real-time status and tactical descriptions.
+- **Arbitrary Model File Picker**:
+  - Added native system file dialog integration via `tkinter.filedialog.askopenfilename` with instant hotkeys (<kbd>B</kbd> or <kbd>O</kbd>).
+  - Added `📁 Browse Custom File...` action in the model browser for `.pth` and `.pt` checkpoints.
+  - Live validation and parameter inspection panel displaying file size, training step, $\epsilon$, architecture, and validity tone.
+  - Safe fallback for headless CI environments (`SDL_VIDEODRIVER=dummy`).
+- **Tests**: Added 7 targeted unit tests in `tests/test_config_ui.py`. All 37 tests passing.
+
+## 2026-10-29: Priority 3 — Dueling DQN Architecture & Analytical Fold-on-Save
+
+**Completed:** implemented linear head Dueling DQN with analytical fold-on-save and two-phase calibration in vector training.
+
+- **Dueling Architecture**: $Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|A|} \sum_{a'} A(s, a')\right)$ with unscaled advantage logits for policy distillation.
+- **Fold-on-Save**: Analytically folds advantage and value heads into standard linear layer upon checkpoint save, ensuring 100% backward compatibility with GUI and evaluation runners.
+- **Empirical Impact**: Reduced Bellman TD loss variance by 3.1× compared to standard DQN.
 
 ## 2026-10-29: Priority 2 — Targeted Striker Optimization Pipeline & DAgger Round 2
 
