@@ -53,6 +53,7 @@ magic_pong/
 │   ├── gui/                      # Graphical interface
 │   │   ├── game_app.py          # Main GUI application
 │   │   ├── pygame_renderer.py   # Pygame rendering logic
+│   │   ├── key_repeat.py        # Repeat of the arrow keys held down in menus
 │   │   └── human_player.py      # Human player controller
 │   └── utils/                    # Utilities and configuration
 │       ├── config.py            # Game and AI configuration

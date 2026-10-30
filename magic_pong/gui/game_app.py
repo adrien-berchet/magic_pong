@@ -23,6 +23,7 @@ from magic_pong.core.game_engine import GameEngine
 from magic_pong.gui.human_player import HumanPlayer
 from magic_pong.gui.human_player import InputManager
 from magic_pong.gui.human_player import create_human_players
+from magic_pong.gui.key_repeat import KeyRepeater
 from magic_pong.gui.pygame_renderer import PygameRenderer
 from magic_pong.utils.config import game_config
 from magic_pong.utils.config import load_config_from_file
@@ -72,6 +73,24 @@ class GameState(Enum):
     PAUSED = "paused"
     GAME_OVER = "game_over"
     HELP = "help"
+
+
+MENU_KEY_REPEAT_DELAY_MS = 350
+MENU_KEY_REPEAT_INTERVAL_MS = 90
+
+_MENU_STATES = frozenset(
+    {
+        GameState.MENU,
+        GameState.HUMAN_VS_AI_SELECT,
+        GameState.MODEL_SELECTION,
+        GameState.WATCH_P1_SELECT,
+        GameState.WATCH_P2_SELECT,
+        GameState.CONFIG_CATEGORY,
+        GameState.CONFIG_OPTIONS,
+        GameState.PAUSED,
+        GameState.GAME_OVER,
+    }
+)
 
 
 class PauseAction(Enum):
@@ -185,6 +204,7 @@ class MagicPongApp:
         self.game_engine = GameEngine(headless=False)
         self.renderer = PygameRenderer()
         self.input_manager = InputManager()
+        self.menu_key_repeater = KeyRepeater(MENU_KEY_REPEAT_DELAY_MS, MENU_KEY_REPEAT_INTERVAL_MS)
 
         # Application state
         self.state = GameState.MENU
@@ -1863,6 +1883,68 @@ class MagicPongApp:
         # Present the frame
         self.renderer.present()
 
+    def _route_event(self, event: pygame.event.Event) -> None:
+        """Route an event to the input handler of the current state."""
+        if self.show_help and self.state != GameState.MENU:
+            self.handle_help_input(event)
+        elif self.state == GameState.MENU:
+            self.handle_menu_input(event)
+        elif self.state == GameState.HUMAN_VS_AI_SELECT:
+            self.handle_human_vs_ai_select(event)
+        elif self.state == GameState.MODEL_SELECTION:
+            self.handle_model_selection_input(event)
+        elif self.state == GameState.WATCH_P1_SELECT:
+            self.handle_watch_player_select(event, 1)
+        elif self.state == GameState.WATCH_P2_SELECT:
+            self.handle_watch_player_select(event, 2)
+        elif self.state == GameState.CONFIG_CATEGORY:
+            self.handle_config_category_input(event)
+        elif self.state == GameState.CONFIG_OPTIONS:
+            self.handle_config_options_input(event)
+        elif self.state == GameState.CONFIG_CONFIRM:
+            self.handle_config_confirm_input(event)
+        elif self.state == GameState.PLAYING:
+            self.handle_game_input(event)
+        elif self.state == GameState.PAUSED:
+            self.handle_pause_input(event)
+        elif self.state == GameState.GAME_OVER:
+            self.handle_game_over_input(event)
+
+    def _handle_event(self, event: pygame.event.Event) -> None:
+        """Route an event and track the arrow key to repeat in menus."""
+        screen_before = (self.state, self.show_help, self.config_is_editing)
+        self._route_event(event)
+
+        if (self.state, self.show_help, self.config_is_editing) != screen_before:
+            # The held key belongs to the previous screen
+            self.menu_key_repeater.cancel()
+        elif event.type == pygame.KEYUP:
+            self.menu_key_repeater.release(event.key)
+        elif event.type == pygame.KEYDOWN and self._is_menu_repeat_key(event.key):
+            self.menu_key_repeater.press(event.key, pygame.time.get_ticks())
+
+    def _is_menu_repeat_key(self, key: int) -> bool:
+        """Tell if holding this key should repeat its action on the current screen."""
+        if self.state not in _MENU_STATES or (self.show_help and self.state != GameState.MENU):
+            return False
+        if key in (pygame.K_UP, pygame.K_DOWN):
+            return not self.config_is_editing
+        if key in (pygame.K_LEFT, pygame.K_RIGHT):
+            # Holding a key on a boolean would only make the value flicker
+            return (
+                self.config_is_editing
+                and self.config_current_category is not None
+                and self.config_current_category.options[self.config_option_selected].field_type
+                != ConfigFieldType.BOOLEAN
+            )
+        return False
+
+    def _update_menu_key_repeat(self) -> None:
+        """Replay the arrow key held in a menu when its repeat is due."""
+        key = self.menu_key_repeater.poll(pygame.time.get_ticks())
+        if key is not None:
+            self._route_event(pygame.event.Event(pygame.KEYDOWN, key=key))
+
     def run(self) -> None:
         """Main application loop"""
         print("Starting Magic Pong...")
@@ -1875,31 +1957,9 @@ class MagicPongApp:
                         self.running = False
                         continue
 
-                    # Route events based on current state
-                    if self.show_help and self.state != GameState.MENU:
-                        self.handle_help_input(event)
-                    elif self.state == GameState.MENU:
-                        self.handle_menu_input(event)
-                    elif self.state == GameState.HUMAN_VS_AI_SELECT:
-                        self.handle_human_vs_ai_select(event)
-                    elif self.state == GameState.MODEL_SELECTION:
-                        self.handle_model_selection_input(event)
-                    elif self.state == GameState.WATCH_P1_SELECT:
-                        self.handle_watch_player_select(event, 1)
-                    elif self.state == GameState.WATCH_P2_SELECT:
-                        self.handle_watch_player_select(event, 2)
-                    elif self.state == GameState.CONFIG_CATEGORY:
-                        self.handle_config_category_input(event)
-                    elif self.state == GameState.CONFIG_OPTIONS:
-                        self.handle_config_options_input(event)
-                    elif self.state == GameState.CONFIG_CONFIRM:
-                        self.handle_config_confirm_input(event)
-                    elif self.state == GameState.PLAYING:
-                        self.handle_game_input(event)
-                    elif self.state == GameState.PAUSED:
-                        self.handle_pause_input(event)
-                    elif self.state == GameState.GAME_OVER:
-                        self.handle_game_over_input(event)
+                    self._handle_event(event)
+
+                self._update_menu_key_repeat()
 
                 # Update game logic
                 self.update()
