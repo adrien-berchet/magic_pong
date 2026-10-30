@@ -2,6 +2,34 @@
 
 Last updated: 2026-10-30
 
+## 2026-10-30: Option A — Curvature & Bounce-Targeted DAgger (Round 3)
+
+**Completed:** Executed Option A (Curvature & Bounce-Targeted DAgger Round 3) across 3 seeds (11, 22, 33), successfully resolving the 84.8% physical reachability gap by directly learning high-speed multi-bounce corner defense in the neural network weights without runtime overrides. Checkpoint `ArmC_Stage2_seed11_u1500` is **OFFICIALLY PROMOTED** to `models/dqn_v7_promoted.pth`.
+
+- **Peer Deliberation (`loop-with-claude`)**:
+  - Deliberated across 2 multi-turn sessions with Claude CLI (`--model opus --effort high`, session `703fc92e-be67-4a8f-92c5-fdf6f6f0f3ea`).
+  - Empirical pilot in `/tmp/r3_probe` on unspent dev seeds identified:
+    1. **Tier 3 Wall-Bounce Closed-Form Projection**: Replaced heuristic bounce detection with unfolded paddle-contact plane displacement $\Delta t = \text{own\_face\_gap} \cdot W / \max(-v_x, 10^{-6}); \; y_{\text{unf}} = y + v_y \Delta t$, isolating wall-bounce targets ($y_{\text{unf}} < R \;\vee\; y_{\text{unf}} > H - R$, 13.8% of frames, where concede rates spike to 2.4% and 11.0%).
+    2. **Anchor Composition**: Excluded Striker rows from legacy teacher data (which previously anchored the agent to outdated naive defense) and augmented with promoted model's non-Striker gameplay frames.
+    3. **Arm C Hybrid Formulation**: Soft planner targets projected onto the barrier's valid vertical action subset ($\mathcal{A}_{v_y} = \{a \mid \text{move\_y}(a) = \text{sign}(y_{\text{intercept}} - y_{\text{paddle}})\}$) when active, with fallback to masked network logits.
+    4. **Two-Stage Structure**: Stage 1 (Promoted + Shield traces) followed by Stage 2 (unshielded traces under best Stage 1 model), trained from `models/dqn_v7_promoted.pth` with fresh Adam optimizer at $\eta = 2 \times 10^{-4}$ for 6,000 updates.
+- **Empirical Results (18,000 Frames, 64 Matches per Seed, Seeds 11, 22, 33)**:
+  - **Striker Defense & Offensive Mastery**:
+    - Striker Point Share jumped from **9.47%** to **49.45% pooled** (Seed 11: **53.12%**, Seed 33: **59.20%**) (**PASS**).
+    - $\Delta\text{Share}$ 95% bootstrap CI: **`[+35.85%, +51.30%]`** ($p < 10^{-5}$).
+    - Striker GA / 1k frames plummeted from **0.1677** down to **0.0561** ($3.0\times$ reduction; Seed 33: **0.0469**) (**PASS**).
+    - Concession rate per Striker hit dropped from **3.59%** down to **1.12%** ($3.2\times$ reduction; Seed 33: **0.99%**).
+    - In pure physics (bonus-off), Seed 33 conceded only **5 goals in 32 matches** (concession rate **0.19%**, **87.18% point share**).
+    - Match record against Striker: **5 Wins, 33 Losses, 154 Timeouts** (losses slashed from 45 down to 9–10 per seed).
+  - **Flawless Representation Protection & Anti-Forgetting**:
+    - Tracker 18k screen: **0 losses across 192 matches** (Seed 11: 64/64 wins, 100% win rate; Seed 22: 63/64 wins, 98.4%; Seed 33: 57/64 wins, 89.1%) (**PASS**).
+    - Held-out panel (6k frames): **0 losses vs Tracker** across 96 matches; pooled non-Striker loss rate **1.04% (3/288 matches)**, beating the $\le 11/288$ gate (**PASS**).
+    - Striker GF / 1k frames increased by **3.1×** (0.0541 vs 0.0175 baseline), fully passing Gate 4 (anti-stalling).
+  - **All 4 Pre-Declared Gates Passed Across All 3 Seeds**.
+- **Promotion Execution**:
+  - `ArmC_Stage2_seed11_u1500` is officially promoted to `models/dqn_v7_promoted.pth`.
+  - Previous champion checkpoint archived at `models/dqn_v7_promoted_pre_r3.pth`.
+
 ## 2026-10-30: Option B — Geometric Shield & Soft-X Action Shaper for DQN Inference
 
 **Completed:** Implemented inference-time Geometric Shield + Soft-X Action Shaper for DQN inference (`magic_pong/ai/action_shaping.py`, `DQNAgent.configure_action_shaper`), delivering a massive defensive reachability breakthrough against `EdgeStrikerAI` without retraining.

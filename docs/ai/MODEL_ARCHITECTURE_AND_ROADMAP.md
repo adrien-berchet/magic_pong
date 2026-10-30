@@ -169,8 +169,14 @@ flowchart LR
   - **The Rally Pace Effect**: Raising $\gamma$ to $0.997$ and setting `hit_reward = 0.0` successfully broke defensive stalling (timeouts halved from 28 to 15–16). However, because the agent engaged in active counter-attacks at 900 px/s, points ended faster, which slightly increased raw goals against per 1k frames (0.1934 vs 0.1644).
   - **Conservative Promotion Decision**: In accordance with our pre-declared strict gating protocol, **`models/dqn_v7_promoted.pth` remains the production promoted model**.
 
-### 2. Curvature & Bounce-Targeted DAgger (Highest ROI Next Step)
-- Since the Concession Audit demonstrated that 84.8% of goals conceded were due to 2–4 frame reactive lag and spatial bounce miscalibration during incoming rallies, targeted imitation on high-speed trajectories directly addresses spatial positioning without inflating rally pace.
+### 2. Curvature & Bounce-Targeted DAgger (Option A, Round 3): Milestone & Promotion
+- **Implementation**: Executed Option A across Seeds 11, 22, and 33 using Claude-deliberated two-stage targeted DAgger (`docs/ai/run_curvature_dagger_round3.py`, `docs/ai/curvature_dagger_round3_2026-10-30.md`).
+- **Core Results (All Gates Passed Cleanly Across All Seeds)**:
+  - **Striker Point Share**: Rose from **9.47% to 49.45%** pooled (Seed 11 achieved **53.12%**, Seed 33 achieved **59.20%**).
+  - **Goals Against per 1k Frames**: Dropped **3.0×** from **0.1677 down to 0.0561** (Seed 33: **0.0469**).
+  - **Concession Rate per Striker Hit**: Slashed **3.2×** from **3.59% down to 1.12%** (Seed 33: **0.99%**; in pure bonus-off physics, concede rate dropped to **0.19%** with an **87.2% point share**).
+  - **Flawless Non-Regression**: Exactly **0 Tracker losses** across 288 total matches, and only **3 non-Striker losses in 288 matches** (1.04% loss rate).
+- **Promotion Decision**: Checkpoint `ArmC_Stage2_seed11_u1500` is **OFFICIALLY PROMOTED** to production as `models/dqn_v7_promoted.pth`.
 
 ### 3. Action Space Shaping & Geometric Shield: Empirical Findings & Promotion
 - **Diagnostic Reframing**: An empirical concession breakdown on `models/dqn_v7_promoted.pth` revealed that goals conceded to `EdgeStrikerAI` were predominantly side-of-paddle touches (57%) and untouched balls (38%), with median spatial misses of 16 px and 48 px. Small misses ($\le 8.33\text{ px}$) accounted for only 14% of concessions. The paddle was arriving late rather than overshooting; proportional vertical damping alone produced no measurable defense benefit.

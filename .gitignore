@@ -1,9 +1,12 @@
 /debug
+/scratch
 /docs/ai/*
 !/docs/ai/MODEL_ARCHITECTURE_AND_ROADMAP.md
 !/docs/ai/vector_rl_promoted_finetuning_2026-10-30.md
 !/docs/ai/run_vector_rl_promoted_finetuning.py
 !/docs/ai/action_shaping_gate_results.json
+!/docs/ai/curvature_dagger_round3_2026-10-30.md
+!/docs/ai/run_curvature_dagger_round3.py
 /models
 /model_new
 /search_runs
