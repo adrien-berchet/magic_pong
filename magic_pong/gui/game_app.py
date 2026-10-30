@@ -686,6 +686,11 @@ class MagicPongApp:
             # Set to evaluation mode; policy exploration is disabled there even if epsilon is saved.
             agent.set_training_mode(False)
 
+            if agent.geometry_context:
+                from magic_pong.ai.action_shaping import GeometricShieldConfig
+
+                agent.configure_action_shaper(GeometricShieldConfig(margin=20.0, soft_x_tau=0.5))
+
             training_steps = model_info.get("training_step", "Unknown")
             file_size = model_info.get("file_size_mb", "Unknown")
             print(f"Successfully loaded trained model: {os.path.basename(model_path)}")

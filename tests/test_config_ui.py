@@ -9,6 +9,7 @@ import pygame
 import pytest
 
 import magic_pong.gui.game_app as game_app_module
+from magic_pong.ai.models.dqn_ai import DQNAgent
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_PARAMETER_COUNT
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_DQN_STATE_DICT_SHAPES
 from magic_pong.ai.models.dqn_checkpoint import EXPECTED_STATE_SIZE
@@ -358,6 +359,23 @@ def test_create_trained_ai_returns_none_before_instantiating_invalid_metadata(
         app.error_message
         == "Cannot load model: Legacy DQN checkpoint without metadata is not supported by default."
     )
+
+
+def test_create_trained_ai_configures_action_shaper_for_geometry_model(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    app = create_app(monkeypatch)
+    model_path = tmp_path / "valid_geom_agent.pth"
+    agent = DQNAgent(geometry_context=True, hidden_layers=[16])
+    agent.save_model(model_path)
+
+    trained_ai = app._create_trained_ai(str(model_path))
+    assert trained_ai is not None
+    assert isinstance(trained_ai, DQNAgent)
+    assert trained_ai.geometry_context is True
+    assert trained_ai.action_shaper_config is not None
+    assert trained_ai.action_shaper_config.margin == 20.0
+    assert trained_ai.action_shaper_config.soft_x_tau == 0.5
 
 
 def test_model_selection_data_marks_pth_directory_unavailable(
