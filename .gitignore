@@ -1,5 +1,6 @@
 /debug
 /scratch
+*.mp4
 /docs/ai/*
 !/docs/ai/MODEL_ARCHITECTURE_AND_ROADMAP.md
 !/docs/ai/vector_rl_promoted_finetuning_2026-10-30.md
