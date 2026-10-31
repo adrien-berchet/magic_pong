@@ -2,6 +2,23 @@
 
 An advanced Pong game specifically designed for artificial intelligence training, featuring advanced functionality and flexible architecture.
 
+## AI Learning Progression
+
+Watch the Deep Q-Network (DQN) model learn to play Pong from scratch — progressing through 4 distinct stages of behavioral mastery:
+
+[![Magic Pong AI Learning Progression](https://img.youtube.com/vi/wRzNxExicuU/0.jpg)](https://youtu.be/wRzNxExicuU)
+
+> 📹 **[Watch the video on YouTube: https://youtu.be/wRzNxExicuU](https://youtu.be/wRzNxExicuU)**
+
+| Stage | Training Step | Behavior Observed |
+| :--- | :--- | :--- |
+| **1. Random Exploration** | Frame 0 | Pure uniform exploration ($\epsilon = 1.0$). Erratic twitching movements, paddle frequently misses incoming balls. |
+| **2. Directional Tracking** | ~500k frames | Coarse vertical tracking. The model recognizes ball trajectory and moves toward it, but frequently overshoots or oscillates. |
+| **3. Basic Rallies** | ~3M frames | Competent contact and basic rallies against standard opponents, returning predictable serves reliably. |
+| **4. Champion Mastery** | Promoted Model | Advanced multi-bounce geometry calculation, aggressive edge cuts, and high-speed wall reflections. |
+
+*Recorded using [`scripts/record_learning_progression.py`](scripts/record_learning_progression.py).*
+
 ## Features
 
 ### Advanced Gameplay
@@ -111,7 +128,7 @@ python -m magic_pong.ai.vector_training --output models/run2 --total_frames 4000
 ```
 
 `train_optimized.py` and the frame pipeline remain for the legacy episode-based
-loops; new experiments should use the vectorised trainer.
+loops; new experiments should use the vectorised trainer. See [`TRAINING_COMMANDS.md`](TRAINING_COMMANDS.md) for a comprehensive reference of all training commands and recipes.
 
 ### Planner and Distillation
 
